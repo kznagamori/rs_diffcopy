@@ -1,0 +1,1821 @@
+use anyhow::{Context, Result, bail};
+use chrono::Local;
+use clap::{Parser, ValueEnum};
+use glob::Pattern;
+use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File};
+#[cfg(windows)]
+use std::io::IsTerminal;
+use std::io::{BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+/// Permission check mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionCheckMode {
+    /// Do not check permissions (default)
+    #[default]
+    None,
+    /// Check only script files
+    Scripts,
+    /// Check all files
+    All,
+}
+
+/// Script file extensions for permission checking
+const SCRIPT_EXTENSIONS: &[&str] = &[
+    // Shell scripts
+    "sh", "bash", "zsh", "ksh", "fish",
+    // Perl
+    "pl", "pm",
+    // Python
+    "py", "pyw",
+    // Ruby
+    "rb",
+    // JavaScript/Node.js
+    "js", "mjs",
+    // TypeScript
+    "ts",
+    // PHP
+    "php",
+    // Lua
+    "lua",
+    // PowerShell
+    "ps1", "psm1",
+    // Windows batch
+    "bat", "cmd",
+    // Executables
+    "exe", "com",
+];
+
+/// Check if stdout is a terminal
+fn is_terminal() -> bool {
+    #[cfg(windows)]
+    {
+        std::io::stdout().is_terminal()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::io::IsTerminal;
+        std::io::stdout().is_terminal()
+    }
+}
+
+/// Print string to stdout, converting to CP932 on Windows console
+fn print_to_stdout(s: &str) {
+    #[cfg(windows)]
+    {
+        if std::io::stdout().is_terminal() {
+            // Windows console: convert UTF-8 to CP932 (Shift-JIS)
+            let (encoded, _, _) = encoding_rs::SHIFT_JIS.encode(s);
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            let _ = handle.write_all(&encoded);
+            let _ = handle.flush();
+        } else {
+            // Pipe or file: output as UTF-8
+            print!("{}", s);
+            let _ = std::io::stdout().flush();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        print!("{}", s);
+        let _ = std::io::stdout().flush();
+    }
+}
+
+/// Print progress bar to stdout (only if terminal)
+fn print_progress(current: usize, total: usize, prefix: &str) {
+    if !is_terminal() || total == 0 {
+        return;
+    }
+
+    let percentage = (current * 100) / total;
+    let bar_width = 30;
+    let filled = (current * bar_width) / total;
+    let empty = bar_width - filled;
+
+    let bar: String = "=".repeat(filled) + if filled < bar_width { ">" } else { "" } + &" ".repeat(if empty > 0 { empty - 1 } else { 0 });
+
+    // Use carriage return to overwrite the line
+    print_to_stdout(&format!("\r{}: [{}] {}% ({}/{})", prefix, &bar[..bar_width.min(bar.len())], percentage, current, total));
+}
+
+/// Clear the progress line
+fn clear_progress_line() {
+    if is_terminal() {
+        print_to_stdout("\r\x1b[K"); // Clear line
+    }
+}
+
+/// Print string with newline to stdout, converting to CP932 on Windows console
+fn println_to_stdout(s: &str) {
+    #[cfg(windows)]
+    {
+        if std::io::stdout().is_terminal() {
+            // Windows console: convert UTF-8 to CP932 (Shift-JIS)
+            let with_newline = format!("{}\n", s);
+            let (encoded, _, _) = encoding_rs::SHIFT_JIS.encode(&with_newline);
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            let _ = handle.write_all(&encoded);
+            let _ = handle.flush();
+        } else {
+            // Pipe or file: output as UTF-8
+            println!("{}", s);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        println!("{}", s);
+    }
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "rs_diffcopy")]
+#[command(version = "1.0.0")]
+#[command(about = "Compare two directories and extract files with differences")]
+#[command(long_about = "A tool to compare two directories (source and target) and extract only the files with differences while maintaining the directory structure.")]
+struct Args {
+    /// Source directory (before)
+    #[arg(short = 'S', long, value_name = "PATH")]
+    source: Option<PathBuf>,
+
+    /// Target directory (after)
+    #[arg(short = 'T', long, value_name = "PATH")]
+    target: Option<PathBuf>,
+
+    /// Output directory for diff files
+    #[arg(short = 'O', long, value_name = "PATH")]
+    output: Option<PathBuf>,
+
+    /// Configuration file (TOML format)
+    #[arg(short = 'c', long, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    /// Exclude patterns (glob format, can be specified multiple times)
+    #[arg(short, long, value_name = "PATTERN")]
+    exclude: Vec<String>,
+
+    /// Force: delete output directory if it exists and re-run
+    #[arg(short, long)]
+    force: bool,
+
+    /// Output summary to file (default: stdout)
+    #[arg(short, long, value_name = "PATH")]
+    summary: Option<PathBuf>,
+
+    /// Verbose mode: show processing file names
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// Dry-run: show target files without copying
+    #[arg(short = 'n', long)]
+    dry_run: bool,
+
+    /// Copy both old and new versions of modified files (adds .old/.new extensions)
+    #[arg(short = 'b', long)]
+    both_versions: bool,
+
+    /// Check file permissions/attributes for changes (none/scripts/all)
+    #[arg(short = 'P', long, value_enum, default_value = "none")]
+    check_permissions: PermissionCheckMode,
+}
+
+/// Configuration file structure (TOML format)
+#[derive(Debug, Deserialize, Default)]
+struct ConfigFile {
+    source: Option<String>,
+    target: Option<String>,
+    output: Option<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    verbose: bool,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    both_versions: bool,
+    summary: Option<String>,
+    #[serde(default)]
+    check_permissions: PermissionCheckMode,
+}
+
+/// Resolved configuration after merging CLI args and config file
+struct ResolvedConfig {
+    source_dir: PathBuf,
+    target_dir: PathBuf,
+    output_dir: PathBuf,
+    exclude: Vec<String>,
+    force: bool,
+    verbose: bool,
+    dry_run: bool,
+    both_versions: bool,
+    summary: Option<PathBuf>,
+    check_permissions: PermissionCheckMode,
+}
+
+impl ResolvedConfig {
+    /// Create resolved config from CLI args and optional config file
+    fn from_args(args: Args) -> Result<Self> {
+        // Load config file if specified
+        let config_file = if let Some(config_path) = &args.config {
+            let content = fs::read_to_string(config_path)
+                .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
+            toml::from_str::<ConfigFile>(&content)
+                .with_context(|| format!("Failed to parse config file: {}", config_path.display()))?
+        } else {
+            ConfigFile::default()
+        };
+
+        // Merge CLI args with config file (CLI takes precedence)
+        let source_dir = args.source
+            .or_else(|| config_file.source.map(PathBuf::from))
+            .ok_or_else(|| anyhow::anyhow!("Source directory is required. Use --source or specify in config file."))?;
+
+        let target_dir = args.target
+            .or_else(|| config_file.target.map(PathBuf::from))
+            .ok_or_else(|| anyhow::anyhow!("Target directory is required. Use --target or specify in config file."))?;
+
+        let output_dir = args.output
+            .or_else(|| config_file.output.map(PathBuf::from))
+            .ok_or_else(|| anyhow::anyhow!("Output directory is required. Use --output or specify in config file."))?;
+
+        // Merge exclude patterns (combine both)
+        let mut exclude = args.exclude;
+        exclude.extend(config_file.exclude);
+
+        // Boolean flags: CLI true overrides, otherwise use config
+        let force = args.force || config_file.force;
+        let verbose = args.verbose || config_file.verbose;
+        let dry_run = args.dry_run || config_file.dry_run;
+        let both_versions = args.both_versions || config_file.both_versions;
+
+        // Summary: CLI takes precedence
+        let summary = args.summary
+            .or_else(|| config_file.summary.map(PathBuf::from));
+
+        // Check permissions: CLI takes precedence if not None
+        let check_permissions = if args.check_permissions != PermissionCheckMode::None {
+            args.check_permissions
+        } else {
+            config_file.check_permissions
+        };
+
+        Ok(Self {
+            source_dir,
+            target_dir,
+            output_dir,
+            exclude,
+            force,
+            verbose,
+            dry_run,
+            both_versions,
+            summary,
+            check_permissions,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FileStatus {
+    Added,
+    Modified,
+    Deleted,
+    Symlink { target: PathBuf, exists: bool, is_dir: bool },
+    PermissionDenied { error: String },
+}
+
+#[derive(Debug, Clone)]
+struct DiffEntry {
+    relative_path: PathBuf,
+    is_dir: bool,
+    status: FileStatus,
+}
+
+/// Permission change entry
+#[derive(Debug, Clone)]
+struct PermissionChange {
+    relative_path: PathBuf,
+    old_mode: String,
+    new_mode: String,
+}
+
+struct DiffResult {
+    entries: Vec<DiffEntry>,
+    permission_changes: Vec<PermissionChange>,
+    source_dir: PathBuf,
+    target_dir: PathBuf,
+}
+
+impl DiffResult {
+    fn has_differences(&self) -> bool {
+        !self.entries.is_empty() || !self.permission_changes.is_empty()
+    }
+
+    fn count_by_status(&self) -> (usize, usize, usize, usize, usize, usize, usize, usize) {
+        let mut added_files = 0;
+        let mut added_dirs = 0;
+        let mut modified_files = 0;
+        let mut deleted_files = 0;
+        let mut deleted_dirs = 0;
+        let mut symlinks = 0;
+        let mut errors = 0;
+
+        for entry in &self.entries {
+            match &entry.status {
+                FileStatus::Added => {
+                    if entry.is_dir {
+                        added_dirs += 1;
+                    } else {
+                        added_files += 1;
+                    }
+                }
+                FileStatus::Modified => modified_files += 1,
+                FileStatus::Deleted => {
+                    if entry.is_dir {
+                        deleted_dirs += 1;
+                    } else {
+                        deleted_files += 1;
+                    }
+                }
+                FileStatus::Symlink { .. } => symlinks += 1,
+                FileStatus::PermissionDenied { .. } => errors += 1,
+            }
+        }
+
+        let permission_changes = self.permission_changes.len();
+
+        (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors)
+    }
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+
+    // Resolve configuration from CLI args and optional config file
+    let config = ResolvedConfig::from_args(args)?;
+
+    // Validate source directory
+    if !config.source_dir.exists() {
+        bail!("Source directory does not exist: {}", config.source_dir.display());
+    }
+    if !config.source_dir.is_dir() {
+        bail!("Source path is not a directory: {}", config.source_dir.display());
+    }
+
+    // Validate target directory
+    if !config.target_dir.exists() {
+        bail!("Target directory does not exist: {}", config.target_dir.display());
+    }
+    if !config.target_dir.is_dir() {
+        bail!("Target path is not a directory: {}", config.target_dir.display());
+    }
+
+    // Handle output directory
+    if config.output_dir.exists() {
+        if config.force {
+            if config.verbose {
+                println_to_stdout(&format!("Removing existing output directory: {}", config.output_dir.display()));
+            }
+            fs::remove_dir_all(&config.output_dir)
+                .with_context(|| format!("Failed to remove output directory: {}", config.output_dir.display()))?;
+        } else {
+            bail!(
+                "Output directory already exists: {}\nUse --force to delete and re-run",
+                config.output_dir.display()
+            );
+        }
+    }
+
+    // Parse exclude patterns
+    let exclude_patterns: Vec<Pattern> = config
+        .exclude
+        .iter()
+        .map(|p| Pattern::new(p).with_context(|| format!("Invalid glob pattern: {}", p)))
+        .collect::<Result<Vec<_>>>()?;
+
+    // Compare directories
+    let diff_result = compare_directories(
+        &config.source_dir,
+        &config.target_dir,
+        &exclude_patterns,
+        config.verbose,
+        config.check_permissions,
+    )?;
+
+    // Generate summary
+    let summary = generate_summary(&diff_result);
+
+    // Copy files (if not dry-run and has differences)
+    if !config.dry_run && diff_result.has_differences() {
+        copy_diff_files(&diff_result, &config.output_dir, config.verbose, config.both_versions)?;
+    }
+
+    // Output summary
+    if let Some(summary_path) = &config.summary {
+        let mut file = File::create(summary_path)
+            .with_context(|| format!("Failed to create summary file: {}", summary_path.display()))?;
+        file.write_all(summary.as_bytes())?;
+        if config.verbose {
+            println_to_stdout(&format!("Summary written to: {}", summary_path.display()));
+        }
+    } else {
+        println_to_stdout(&summary);
+    }
+
+    // Return appropriate exit code
+    if !diff_result.has_differences() {
+        std::process::exit(2);
+    }
+
+    Ok(())
+}
+
+fn compare_directories(
+    source_dir: &Path,
+    target_dir: &Path,
+    exclude_patterns: &[Pattern],
+    verbose: bool,
+    check_permissions: PermissionCheckMode,
+) -> Result<DiffResult> {
+    let mut entries = Vec::new();
+    let mut permission_changes = Vec::new();
+    let mut source_paths: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut target_paths: BTreeSet<PathBuf> = BTreeSet::new();
+
+    // Show scanning message
+    if is_terminal() {
+        println_to_stdout("Scanning directories...");
+    }
+
+    // Collect source paths
+    for entry in WalkDir::new(source_dir).min_depth(1) {
+        match entry {
+            Ok(e) => {
+                let rel_path = e.path().strip_prefix(source_dir).unwrap().to_path_buf();
+                if !is_excluded(&rel_path, exclude_patterns) {
+                    source_paths.insert(rel_path);
+                }
+            }
+            Err(err) => {
+                if let Some(path) = err.path() {
+                    let rel_path = path.strip_prefix(source_dir).unwrap_or(path).to_path_buf();
+                    entries.push(DiffEntry {
+                        relative_path: rel_path,
+                        is_dir: false,
+                        status: FileStatus::PermissionDenied {
+                            error: err.to_string(),
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    // Collect target paths
+    for entry in WalkDir::new(target_dir).min_depth(1) {
+        match entry {
+            Ok(e) => {
+                let rel_path = e.path().strip_prefix(target_dir).unwrap().to_path_buf();
+                if !is_excluded(&rel_path, exclude_patterns) {
+                    target_paths.insert(rel_path);
+                }
+            }
+            Err(err) => {
+                if let Some(path) = err.path() {
+                    let rel_path = path.strip_prefix(target_dir).unwrap_or(path).to_path_buf();
+                    entries.push(DiffEntry {
+                        relative_path: rel_path,
+                        is_dir: false,
+                        status: FileStatus::PermissionDenied {
+                            error: err.to_string(),
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    // Calculate total files to compare
+    let total_files = target_paths.len() + source_paths.iter().filter(|p| !target_paths.contains(*p)).count();
+
+    if is_terminal() {
+        println_to_stdout(&format!("Found {} files to compare.", total_files));
+    }
+
+    let mut processed = 0;
+
+    // Check for symlinks, added, modified, and deleted files
+    for rel_path in target_paths.iter() {
+        processed += 1;
+        print_progress(processed, total_files, "Comparing files");
+
+        let target_path = target_dir.join(rel_path);
+        let source_path = source_dir.join(rel_path);
+
+        if verbose {
+            clear_progress_line();
+            println_to_stdout(&format!("Checking: {}", rel_path.display()));
+        }
+
+        // Check if symlink
+        if target_path.is_symlink() {
+            let link_target = fs::read_link(&target_path).unwrap_or_default();
+            let exists = link_target.exists() || target_path.exists();
+            let is_dir = target_path.is_dir();
+            entries.push(DiffEntry {
+                relative_path: rel_path.clone(),
+                is_dir: false,
+                status: FileStatus::Symlink {
+                    target: link_target,
+                    exists,
+                    is_dir,
+                },
+            });
+            continue;
+        }
+
+        let is_dir = target_path.is_dir();
+
+        if !source_paths.contains(rel_path) {
+            // Added (only in target)
+            entries.push(DiffEntry {
+                relative_path: rel_path.clone(),
+                is_dir,
+                status: FileStatus::Added,
+            });
+        } else if !is_dir {
+            // Check if modified
+            match files_differ(&source_path, &target_path) {
+                Ok(true) => {
+                    entries.push(DiffEntry {
+                        relative_path: rel_path.clone(),
+                        is_dir: false,
+                        status: FileStatus::Modified,
+                    });
+                }
+                Ok(false) => {
+                    // Content is the same, check permissions if enabled
+                    if should_check_permissions(rel_path, check_permissions) {
+                        if let Some(change) = check_permission_change(&source_path, &target_path, rel_path) {
+                            permission_changes.push(change);
+                        }
+                    }
+                }
+                Err(err) => {
+                    entries.push(DiffEntry {
+                        relative_path: rel_path.clone(),
+                        is_dir: false,
+                        status: FileStatus::PermissionDenied {
+                            error: err.to_string(),
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    // Check for deleted files (only in source)
+    for rel_path in source_paths.iter() {
+        if !target_paths.contains(rel_path) {
+            processed += 1;
+            print_progress(processed, total_files, "Comparing files");
+
+            let source_path = source_dir.join(rel_path);
+
+            // Check if symlink
+            if source_path.is_symlink() {
+                let link_target = fs::read_link(&source_path).unwrap_or_default();
+                let exists = link_target.exists() || source_path.exists();
+                let is_dir = source_path.is_dir();
+                entries.push(DiffEntry {
+                    relative_path: rel_path.clone(),
+                    is_dir: false,
+                    status: FileStatus::Symlink {
+                        target: link_target,
+                        exists,
+                        is_dir,
+                    },
+                });
+                continue;
+            }
+
+            let is_dir = source_path.is_dir();
+            entries.push(DiffEntry {
+                relative_path: rel_path.clone(),
+                is_dir,
+                status: FileStatus::Deleted,
+            });
+        }
+    }
+
+    // Clear progress line and show completion
+    clear_progress_line();
+    if is_terminal() && total_files > 0 {
+        println_to_stdout(&format!("Compared {} files.", total_files));
+    }
+
+    // Sort entries by path
+    entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+
+    // Sort permission changes by path
+    permission_changes.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+
+    Ok(DiffResult {
+        entries,
+        permission_changes,
+        source_dir: source_dir.to_path_buf(),
+        target_dir: target_dir.to_path_buf(),
+    })
+}
+
+fn is_excluded(path: &Path, patterns: &[Pattern]) -> bool {
+    let path_str = path.to_string_lossy();
+    patterns.iter().any(|p| p.matches(&path_str))
+}
+
+/// Check if a file should have its permissions checked based on mode
+fn should_check_permissions(path: &Path, mode: PermissionCheckMode) -> bool {
+    match mode {
+        PermissionCheckMode::None => false,
+        PermissionCheckMode::All => true,
+        PermissionCheckMode::Scripts => {
+            if let Some(ext) = path.extension() {
+                let ext_lower = ext.to_string_lossy().to_lowercase();
+                SCRIPT_EXTENSIONS.contains(&ext_lower.as_str())
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// Get file permission mode as a string
+#[cfg(unix)]
+fn get_file_mode(path: &Path) -> Option<String> {
+    fs::metadata(path).ok().map(|m| {
+        let mode = m.permissions().mode() & 0o777;
+        format!("{:03o}", mode)
+    })
+}
+
+#[cfg(windows)]
+fn get_file_mode(path: &Path) -> Option<String> {
+    fs::metadata(path).ok().map(|m| {
+        if m.permissions().readonly() {
+            "readonly".to_string()
+        } else {
+            "writable".to_string()
+        }
+    })
+}
+
+/// Check if permissions differ between two files
+fn check_permission_change(source: &Path, target: &Path, rel_path: &Path) -> Option<PermissionChange> {
+    let old_mode = get_file_mode(source)?;
+    let new_mode = get_file_mode(target)?;
+
+    if old_mode != new_mode {
+        Some(PermissionChange {
+            relative_path: rel_path.to_path_buf(),
+            old_mode,
+            new_mode,
+        })
+    } else {
+        None
+    }
+}
+
+fn files_differ(path1: &Path, path2: &Path) -> Result<bool> {
+    let meta1 = fs::metadata(path1)?;
+    let meta2 = fs::metadata(path2)?;
+
+    // Quick check: if sizes differ, files are different
+    if meta1.len() != meta2.len() {
+        return Ok(true);
+    }
+
+    // Compare using BLAKE3 hash (fast and collision-resistant)
+    let hash1 = compute_file_hash(path1)?;
+    let hash2 = compute_file_hash(path2)?;
+
+    Ok(hash1 != hash2)
+}
+
+fn compute_file_hash(path: &Path) -> Result<blake3::Hash> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0u8; 65536]; // 64KB buffer for better performance
+
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(hasher.finalize())
+}
+
+fn copy_diff_files(diff_result: &DiffResult, output_dir: &Path, verbose: bool, both_versions: bool) -> Result<()> {
+    fs::create_dir_all(output_dir)?;
+
+    for entry in &diff_result.entries {
+        match &entry.status {
+            FileStatus::Added => {
+                let src = diff_result.target_dir.join(&entry.relative_path);
+                let dst = output_dir.join(&entry.relative_path);
+
+                if entry.is_dir {
+                    if verbose {
+                        println_to_stdout(&format!("Creating directory: {}", entry.relative_path.display()));
+                    }
+                    fs::create_dir_all(&dst)?;
+                } else {
+                    if let Some(parent) = dst.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    if verbose {
+                        println_to_stdout(&format!("Copying: {}", entry.relative_path.display()));
+                    }
+                    fs::copy(&src, &dst)?;
+                }
+            }
+            FileStatus::Modified => {
+                if entry.is_dir {
+                    continue;
+                }
+
+                let src_new = diff_result.target_dir.join(&entry.relative_path);
+                let dst_base = output_dir.join(&entry.relative_path);
+
+                if let Some(parent) = dst_base.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+
+                if both_versions {
+                    // Copy both old and new versions with .old/.new extensions
+                    let src_old = diff_result.source_dir.join(&entry.relative_path);
+                    let dst_old = add_extension(&dst_base, "old");
+                    let dst_new = add_extension(&dst_base, "new");
+
+                    if verbose {
+                        println_to_stdout(&format!("Copying (old): {} -> {}", entry.relative_path.display(), dst_old.file_name().unwrap_or_default().to_string_lossy()));
+                    }
+                    fs::copy(&src_old, &dst_old)?;
+
+                    if verbose {
+                        println_to_stdout(&format!("Copying (new): {} -> {}", entry.relative_path.display(), dst_new.file_name().unwrap_or_default().to_string_lossy()));
+                    }
+                    fs::copy(&src_new, &dst_new)?;
+                } else {
+                    // Default: copy only new version
+                    if verbose {
+                        println_to_stdout(&format!("Copying: {}", entry.relative_path.display()));
+                    }
+                    fs::copy(&src_new, &dst_base)?;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Add an extension suffix to a path (e.g., "file.txt" -> "file.txt.old")
+fn add_extension(path: &Path, ext: &str) -> PathBuf {
+    let mut new_path = path.as_os_str().to_owned();
+    new_path.push(".");
+    new_path.push(ext);
+    PathBuf::from(new_path)
+}
+
+fn generate_summary(diff_result: &DiffResult) -> String {
+    let mut output = String::new();
+    let now = Local::now();
+
+    output.push_str("rs_diffcopy Summary\n");
+    output.push_str("================\n");
+    output.push_str(&format!("Source: {}\n", diff_result.source_dir.display()));
+    output.push_str(&format!("Target: {}\n", diff_result.target_dir.display()));
+    output.push_str(&format!("Date: {}\n", now.format("%Y-%m-%d %H:%M:%S")));
+    output.push('\n');
+
+    if !diff_result.has_differences() {
+        output.push_str("No differences found.\n");
+        return output;
+    }
+
+    let (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors) =
+        diff_result.count_by_status();
+
+    // Statistics
+    if added_files > 0 || added_dirs > 0 {
+        let mut parts = Vec::new();
+        if added_files > 0 {
+            parts.push(format!("{} files", added_files));
+        }
+        if added_dirs > 0 {
+            parts.push(format!("{} dirs", added_dirs));
+        }
+        output.push_str(&format!("Added:      {}\n", parts.join(", ")));
+    }
+    if modified_files > 0 {
+        output.push_str(&format!("Modified:   {} files\n", modified_files));
+    }
+    if deleted_files > 0 || deleted_dirs > 0 {
+        let mut parts = Vec::new();
+        if deleted_files > 0 {
+            parts.push(format!("{} files", deleted_files));
+        }
+        if deleted_dirs > 0 {
+            parts.push(format!("{} dirs", deleted_dirs));
+        }
+        output.push_str(&format!("Deleted:    {}\n", parts.join(", ")));
+    }
+    if symlinks > 0 {
+        output.push_str(&format!("Symlinks:   {} files\n", symlinks));
+    }
+    if permission_changes > 0 {
+        output.push_str(&format!("Permissions: {} files\n", permission_changes));
+    }
+    if errors > 0 {
+        output.push_str(&format!("Errors:     {} files\n", errors));
+    }
+
+    let total = added_files + added_dirs + modified_files + deleted_files + deleted_dirs + symlinks + permission_changes + errors;
+    output.push_str("--------------------------\n");
+    output.push_str(&format!("Total:     {} items\n", total));
+    output.push('\n');
+
+    // File Tree
+    output.push_str("================\n");
+    output.push_str("File Tree\n");
+    output.push_str("================\n");
+    output.push_str(&generate_tree(&diff_result.entries));
+    output.push('\n');
+
+    // Symlink Details
+    let symlink_entries: Vec<_> = diff_result
+        .entries
+        .iter()
+        .filter(|e| matches!(e.status, FileStatus::Symlink { .. }))
+        .collect();
+
+    if !symlink_entries.is_empty() {
+        output.push_str("================\n");
+        output.push_str("Symlink Details\n");
+        output.push_str("================\n");
+        for entry in symlink_entries {
+            if let FileStatus::Symlink { target, exists, is_dir } = &entry.status {
+                let type_str = if *is_dir { "directory" } else { "file" };
+                output.push_str(&format!(
+                    "{} -> {} (target exists: {}, type: {})\n",
+                    entry.relative_path.display(),
+                    target.display(),
+                    if *exists { "yes" } else { "no" },
+                    type_str
+                ));
+            }
+        }
+        output.push('\n');
+    }
+
+    // Permission Changes
+    if !diff_result.permission_changes.is_empty() {
+        output.push_str("================\n");
+        output.push_str("Permission Changes\n");
+        output.push_str("================\n");
+        for change in &diff_result.permission_changes {
+            output.push_str(&format!(
+                "{}: {} -> {}\n",
+                change.relative_path.display(),
+                change.old_mode,
+                change.new_mode
+            ));
+        }
+        output.push('\n');
+    }
+
+    // Errors
+    let error_entries: Vec<_> = diff_result
+        .entries
+        .iter()
+        .filter(|e| matches!(e.status, FileStatus::PermissionDenied { .. }))
+        .collect();
+
+    if !error_entries.is_empty() {
+        output.push_str("================\n");
+        output.push_str("Errors\n");
+        output.push_str("================\n");
+        for entry in error_entries {
+            if let FileStatus::PermissionDenied { error } = &entry.status {
+                output.push_str(&format!("{}: {}\n", entry.relative_path.display(), error));
+            }
+        }
+    }
+
+    output
+}
+
+fn generate_tree(entries: &[DiffEntry]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    output.push_str(".\n");
+
+    // Build tree structure
+    let mut tree: BTreeMap<PathBuf, Vec<&DiffEntry>> = BTreeMap::new();
+
+    for entry in entries {
+        let parent = entry.relative_path.parent().unwrap_or(Path::new("")).to_path_buf();
+        tree.entry(parent).or_default().push(entry);
+    }
+
+    // Get all unique directory paths
+    let mut all_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    for entry in entries {
+        let mut current = entry.relative_path.parent();
+        while let Some(dir) = current {
+            if !dir.as_os_str().is_empty() {
+                all_dirs.insert(dir.to_path_buf());
+            }
+            current = dir.parent();
+        }
+    }
+
+    // Generate tree output
+    let root_entries = tree.get(&PathBuf::new()).cloned().unwrap_or_default();
+    let root_dirs: Vec<_> = all_dirs
+        .iter()
+        .filter(|d| d.parent().is_none() || d.parent() == Some(Path::new("")))
+        .collect();
+
+    // Combine directories and files at root level
+    let mut root_items: Vec<(PathBuf, Option<&DiffEntry>)> = Vec::new();
+
+    for dir in &root_dirs {
+        root_items.push(((*dir).clone(), None));
+    }
+    for entry in &root_entries {
+        if !entry.is_dir || !all_dirs.contains(&entry.relative_path) {
+            root_items.push((entry.relative_path.clone(), Some(entry)));
+        }
+    }
+    root_items.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (i, (path, entry_opt)) in root_items.iter().enumerate() {
+        let is_last = i == root_items.len() - 1;
+        let prefix = if is_last { "└── " } else { "├── " };
+        let child_prefix = if is_last { "    " } else { "│   " };
+
+        if let Some(entry) = entry_opt {
+            output.push_str(&format!("{}{}\n", prefix, format_entry(entry)));
+        } else {
+            // It's a directory
+            let dir_entry = entries.iter().find(|e| e.relative_path == *path && e.is_dir);
+            let tag = dir_entry.map(|e| format_status_tag(&e.status)).unwrap_or_default();
+            output.push_str(&format!("{}{}/{}\n", prefix, path.display(), tag));
+            output.push_str(&generate_subtree(entries, &all_dirs, path, child_prefix));
+        }
+    }
+
+    output
+}
+
+fn generate_subtree(
+    entries: &[DiffEntry],
+    all_dirs: &BTreeSet<PathBuf>,
+    parent: &Path,
+    prefix: &str,
+) -> String {
+    let mut output = String::new();
+
+    // Get items in this directory
+    let mut items: Vec<(PathBuf, Option<&DiffEntry>)> = Vec::new();
+
+    // Subdirectories
+    for dir in all_dirs {
+        if dir.parent() == Some(parent) {
+            items.push((dir.clone(), None));
+        }
+    }
+
+    // Files in this directory
+    for entry in entries {
+        if entry.relative_path.parent() == Some(parent) {
+            if !entry.is_dir || !all_dirs.contains(&entry.relative_path) {
+                items.push((entry.relative_path.clone(), Some(entry)));
+            }
+        }
+    }
+
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (i, (path, entry_opt)) in items.iter().enumerate() {
+        let is_last = i == items.len() - 1;
+        let line_prefix = if is_last { "└── " } else { "├── " };
+        let child_prefix = if is_last {
+            format!("{}    ", prefix)
+        } else {
+            format!("{}│   ", prefix)
+        };
+
+        if let Some(entry) = entry_opt {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            output.push_str(&format!("{}{}{}\n", prefix, line_prefix, format_entry_with_name(&name, entry)));
+        } else {
+            // Directory
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let dir_entry = entries.iter().find(|e| e.relative_path == *path && e.is_dir);
+            let tag = dir_entry.map(|e| format_status_tag(&e.status)).unwrap_or_default();
+            output.push_str(&format!("{}{}{}/{}\n", prefix, line_prefix, name, tag));
+            output.push_str(&generate_subtree(entries, all_dirs, path, &child_prefix));
+        }
+    }
+
+    output
+}
+
+fn format_entry(entry: &DiffEntry) -> String {
+    let name = entry.relative_path.file_name().unwrap_or_default().to_string_lossy();
+    format_entry_with_name(&name, entry)
+}
+
+fn format_entry_with_name(name: &str, entry: &DiffEntry) -> String {
+    match &entry.status {
+        FileStatus::Symlink { target, .. } => {
+            format!("{} -> {} [symlink]", name, target.display())
+        }
+        _ => {
+            let suffix = if entry.is_dir { "/" } else { "" };
+            let tag = format_status_tag(&entry.status);
+            format!("{}{} {}", name, suffix, tag)
+        }
+    }
+}
+
+fn format_status_tag(status: &FileStatus) -> String {
+    match status {
+        FileStatus::Added => "[added]".to_string(),
+        FileStatus::Modified => "[modified]".to_string(),
+        FileStatus::Deleted => "[deleted]".to_string(),
+        FileStatus::Symlink { .. } => "[symlink]".to_string(),
+        FileStatus::PermissionDenied { .. } => "[permission denied]".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn create_temp_dir() -> TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    fn create_file(dir: &Path, name: &str, content: &str) -> PathBuf {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let mut file = File::create(&path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        path
+    }
+
+    // ==================== compute_file_hash tests ====================
+
+    #[test]
+    fn test_compute_file_hash_same_content() {
+        let temp = create_temp_dir();
+        let file1 = create_file(temp.path(), "file1.txt", "Hello, World!");
+        let file2 = create_file(temp.path(), "file2.txt", "Hello, World!");
+
+        let hash1 = compute_file_hash(&file1).unwrap();
+        let hash2 = compute_file_hash(&file2).unwrap();
+
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_compute_file_hash_different_content() {
+        let temp = create_temp_dir();
+        let file1 = create_file(temp.path(), "file1.txt", "Hello, World!");
+        let file2 = create_file(temp.path(), "file2.txt", "Goodbye, World!");
+
+        let hash1 = compute_file_hash(&file1).unwrap();
+        let hash2 = compute_file_hash(&file2).unwrap();
+
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_compute_file_hash_empty_file() {
+        let temp = create_temp_dir();
+        let file1 = create_file(temp.path(), "empty1.txt", "");
+        let file2 = create_file(temp.path(), "empty2.txt", "");
+
+        let hash1 = compute_file_hash(&file1).unwrap();
+        let hash2 = compute_file_hash(&file2).unwrap();
+
+        assert_eq!(hash1, hash2);
+    }
+
+    // ==================== files_differ tests ====================
+
+    #[test]
+    fn test_files_differ_same_content() {
+        let temp = create_temp_dir();
+        let file1 = create_file(temp.path(), "file1.txt", "Same content");
+        let file2 = create_file(temp.path(), "file2.txt", "Same content");
+
+        assert!(!files_differ(&file1, &file2).unwrap());
+    }
+
+    #[test]
+    fn test_files_differ_different_content() {
+        let temp = create_temp_dir();
+        let file1 = create_file(temp.path(), "file1.txt", "Content A");
+        let file2 = create_file(temp.path(), "file2.txt", "Content B");
+
+        assert!(files_differ(&file1, &file2).unwrap());
+    }
+
+    #[test]
+    fn test_files_differ_different_size() {
+        let temp = create_temp_dir();
+        let file1 = create_file(temp.path(), "file1.txt", "Short");
+        let file2 = create_file(temp.path(), "file2.txt", "Much longer content");
+
+        assert!(files_differ(&file1, &file2).unwrap());
+    }
+
+    #[test]
+    fn test_files_differ_binary_content() {
+        let temp = create_temp_dir();
+        let path1 = temp.path().join("binary1.bin");
+        let path2 = temp.path().join("binary2.bin");
+
+        let binary_data: Vec<u8> = (0..256).map(|i| i as u8).collect();
+        fs::write(&path1, &binary_data).unwrap();
+        fs::write(&path2, &binary_data).unwrap();
+
+        assert!(!files_differ(&path1, &path2).unwrap());
+    }
+
+    // ==================== is_excluded tests ====================
+
+    #[test]
+    fn test_is_excluded_match() {
+        let patterns = vec![Pattern::new("*.log").unwrap()];
+        assert!(is_excluded(Path::new("debug.log"), &patterns));
+        assert!(is_excluded(Path::new("error.log"), &patterns));
+    }
+
+    #[test]
+    fn test_is_excluded_no_match() {
+        let patterns = vec![Pattern::new("*.log").unwrap()];
+        assert!(!is_excluded(Path::new("main.rs"), &patterns));
+        assert!(!is_excluded(Path::new("config.toml"), &patterns));
+    }
+
+    #[test]
+    fn test_is_excluded_multiple_patterns() {
+        let patterns = vec![
+            Pattern::new("*.log").unwrap(),
+            Pattern::new("*.tmp").unwrap(),
+            Pattern::new("node_modules").unwrap(),
+        ];
+        assert!(is_excluded(Path::new("debug.log"), &patterns));
+        assert!(is_excluded(Path::new("cache.tmp"), &patterns));
+        assert!(is_excluded(Path::new("node_modules"), &patterns));
+        assert!(!is_excluded(Path::new("main.rs"), &patterns));
+    }
+
+    #[test]
+    fn test_is_excluded_empty_patterns() {
+        let patterns: Vec<Pattern> = vec![];
+        assert!(!is_excluded(Path::new("any_file.txt"), &patterns));
+    }
+
+    // ==================== compare_directories tests ====================
+
+    #[test]
+    fn test_compare_directories_added_file() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+
+        create_file(target.path(), "new_file.txt", "New content");
+
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, FileStatus::Added);
+        assert_eq!(result.entries[0].relative_path, PathBuf::from("new_file.txt"));
+    }
+
+    #[test]
+    fn test_compare_directories_deleted_file() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+
+        create_file(source.path(), "old_file.txt", "Old content");
+
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, FileStatus::Deleted);
+        assert_eq!(result.entries[0].relative_path, PathBuf::from("old_file.txt"));
+    }
+
+    #[test]
+    fn test_compare_directories_modified_file() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+
+        create_file(source.path(), "file.txt", "Original content");
+        create_file(target.path(), "file.txt", "Modified content");
+
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, FileStatus::Modified);
+        assert_eq!(result.entries[0].relative_path, PathBuf::from("file.txt"));
+    }
+
+    #[test]
+    fn test_compare_directories_unchanged_file() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+
+        create_file(source.path(), "file.txt", "Same content");
+        create_file(target.path(), "file.txt", "Same content");
+
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+
+        assert!(result.entries.is_empty());
+    }
+
+    #[test]
+    fn test_compare_directories_with_subdirectories() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+
+        create_file(source.path(), "src/main.rs", "fn main() {}");
+        create_file(target.path(), "src/main.rs", "fn main() { println!(\"Hello\"); }");
+        create_file(target.path(), "src/lib.rs", "pub fn hello() {}");
+
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+
+        assert_eq!(result.entries.len(), 2);
+
+        let paths: Vec<_> = result.entries.iter().map(|e| &e.relative_path).collect();
+        assert!(paths.contains(&&PathBuf::from("src/lib.rs")));
+        assert!(paths.contains(&&PathBuf::from("src/main.rs")));
+    }
+
+    #[test]
+    fn test_compare_directories_with_exclude() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+
+        create_file(target.path(), "main.rs", "fn main() {}");
+        create_file(target.path(), "debug.log", "log content");
+
+        let patterns = vec![Pattern::new("*.log").unwrap()];
+        let result = compare_directories(source.path(), target.path(), &patterns, false, PermissionCheckMode::None).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].relative_path, PathBuf::from("main.rs"));
+    }
+
+    #[test]
+    fn test_compare_directories_added_empty_directory() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+
+        fs::create_dir(target.path().join("new_dir")).unwrap();
+
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, FileStatus::Added);
+        assert!(result.entries[0].is_dir);
+    }
+
+    // ==================== DiffResult tests ====================
+
+    #[test]
+    fn test_diff_result_has_differences() {
+        let result = DiffResult {
+            entries: vec![DiffEntry {
+                relative_path: PathBuf::from("file.txt"),
+                is_dir: false,
+                status: FileStatus::Added,
+            }],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+        };
+
+        assert!(result.has_differences());
+    }
+
+    #[test]
+    fn test_diff_result_no_differences() {
+        let result = DiffResult {
+            entries: vec![],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+        };
+
+        assert!(!result.has_differences());
+    }
+
+    #[test]
+    fn test_diff_result_count_by_status() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("new1.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("new2.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("new_dir"),
+                    is_dir: true,
+                    status: FileStatus::Added,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("modified.txt"),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("deleted.txt"),
+                    is_dir: false,
+                    status: FileStatus::Deleted,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+        };
+
+        let (added_files, added_dirs, modified, deleted_files, deleted_dirs, symlinks, perm_changes, errors) =
+            result.count_by_status();
+
+        assert_eq!(added_files, 2);
+        assert_eq!(added_dirs, 1);
+        assert_eq!(modified, 1);
+        assert_eq!(deleted_files, 1);
+        assert_eq!(deleted_dirs, 0);
+        assert_eq!(symlinks, 0);
+        assert_eq!(perm_changes, 0);
+        assert_eq!(errors, 0);
+    }
+
+    // ==================== format_status_tag tests ====================
+
+    #[test]
+    fn test_format_status_tag() {
+        assert_eq!(format_status_tag(&FileStatus::Added), "[added]");
+        assert_eq!(format_status_tag(&FileStatus::Modified), "[modified]");
+        assert_eq!(format_status_tag(&FileStatus::Deleted), "[deleted]");
+        assert_eq!(
+            format_status_tag(&FileStatus::Symlink {
+                target: PathBuf::from("/tmp"),
+                exists: true,
+                is_dir: true
+            }),
+            "[symlink]"
+        );
+        assert_eq!(
+            format_status_tag(&FileStatus::PermissionDenied {
+                error: "Permission denied".to_string()
+            }),
+            "[permission denied]"
+        );
+    }
+
+    // ==================== generate_summary tests ====================
+
+    #[test]
+    fn test_generate_summary_no_differences() {
+        let result = DiffResult {
+            entries: vec![],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+        };
+
+        let summary = generate_summary(&result);
+
+        assert!(summary.contains("No differences found."));
+        assert!(summary.contains("Source: /source"));
+        assert!(summary.contains("Target: /target"));
+    }
+
+    #[test]
+    fn test_generate_summary_with_differences() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("new_file.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("modified_file.txt"),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+        };
+
+        let summary = generate_summary(&result);
+
+        assert!(summary.contains("Added:"));
+        assert!(summary.contains("Modified:"));
+        assert!(summary.contains("File Tree"));
+        assert!(summary.contains("[added]"));
+        assert!(summary.contains("[modified]"));
+    }
+
+    // ==================== copy_diff_files tests ====================
+
+    #[test]
+    fn test_copy_diff_files() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+        let output = create_temp_dir();
+
+        create_file(target.path(), "new_file.txt", "New content");
+        create_file(target.path(), "src/main.rs", "fn main() {}");
+
+        let diff_result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("new_file.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("src/main.rs"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: source.path().to_path_buf(),
+            target_dir: target.path().to_path_buf(),
+        };
+
+        copy_diff_files(&diff_result, output.path(), false, false).unwrap();
+
+        assert!(output.path().join("new_file.txt").exists());
+        assert!(output.path().join("src/main.rs").exists());
+
+        let content = fs::read_to_string(output.path().join("new_file.txt")).unwrap();
+        assert_eq!(content, "New content");
+    }
+
+    #[test]
+    fn test_copy_diff_files_creates_directories() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+        let output = create_temp_dir();
+
+        fs::create_dir_all(target.path().join("deep/nested/dir")).unwrap();
+        create_file(target.path(), "deep/nested/dir/file.txt", "Content");
+
+        let diff_result = DiffResult {
+            entries: vec![DiffEntry {
+                relative_path: PathBuf::from("deep/nested/dir/file.txt"),
+                is_dir: false,
+                status: FileStatus::Added,
+            }],
+            permission_changes: vec![],
+            source_dir: source.path().to_path_buf(),
+            target_dir: target.path().to_path_buf(),
+        };
+
+        copy_diff_files(&diff_result, output.path(), false, false).unwrap();
+
+        assert!(output.path().join("deep/nested/dir/file.txt").exists());
+    }
+
+    #[test]
+    fn test_copy_diff_files_skips_deleted() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+        let output = create_temp_dir();
+
+        create_file(source.path(), "deleted_file.txt", "Old content");
+
+        let diff_result = DiffResult {
+            entries: vec![DiffEntry {
+                relative_path: PathBuf::from("deleted_file.txt"),
+                is_dir: false,
+                status: FileStatus::Deleted,
+            }],
+            permission_changes: vec![],
+            source_dir: source.path().to_path_buf(),
+            target_dir: target.path().to_path_buf(),
+        };
+
+        copy_diff_files(&diff_result, output.path(), false, false).unwrap();
+
+        assert!(!output.path().join("deleted_file.txt").exists());
+    }
+
+    // ==================== both_versions tests ====================
+
+    #[test]
+    fn test_copy_diff_files_both_versions() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+        let output = create_temp_dir();
+
+        create_file(source.path(), "file.txt", "Old content");
+        create_file(target.path(), "file.txt", "New content");
+
+        let diff_result = DiffResult {
+            entries: vec![DiffEntry {
+                relative_path: PathBuf::from("file.txt"),
+                is_dir: false,
+                status: FileStatus::Modified,
+            }],
+            permission_changes: vec![],
+            source_dir: source.path().to_path_buf(),
+            target_dir: target.path().to_path_buf(),
+        };
+
+        copy_diff_files(&diff_result, output.path(), false, true).unwrap();
+
+        assert!(output.path().join("file.txt.old").exists());
+        assert!(output.path().join("file.txt.new").exists());
+
+        let old_content = fs::read_to_string(output.path().join("file.txt.old")).unwrap();
+        let new_content = fs::read_to_string(output.path().join("file.txt.new")).unwrap();
+
+        assert_eq!(old_content, "Old content");
+        assert_eq!(new_content, "New content");
+    }
+
+    #[test]
+    fn test_copy_diff_files_both_versions_with_subdirectory() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+        let output = create_temp_dir();
+
+        create_file(source.path(), "src/main.rs", "fn main() {}");
+        create_file(target.path(), "src/main.rs", "fn main() { println!(\"Hello\"); }");
+
+        let diff_result = DiffResult {
+            entries: vec![DiffEntry {
+                relative_path: PathBuf::from("src/main.rs"),
+                is_dir: false,
+                status: FileStatus::Modified,
+            }],
+            permission_changes: vec![],
+            source_dir: source.path().to_path_buf(),
+            target_dir: target.path().to_path_buf(),
+        };
+
+        copy_diff_files(&diff_result, output.path(), false, true).unwrap();
+
+        assert!(output.path().join("src/main.rs.old").exists());
+        assert!(output.path().join("src/main.rs.new").exists());
+    }
+
+    #[test]
+    fn test_add_extension() {
+        let path = PathBuf::from("/path/to/file.txt");
+        let result = add_extension(&path, "old");
+        assert_eq!(result, PathBuf::from("/path/to/file.txt.old"));
+
+        let path2 = PathBuf::from("file");
+        let result2 = add_extension(&path2, "new");
+        assert_eq!(result2, PathBuf::from("file.new"));
+    }
+
+    // ==================== should_check_permissions tests ====================
+
+    #[test]
+    fn test_should_check_permissions_none() {
+        assert!(!should_check_permissions(Path::new("script.sh"), PermissionCheckMode::None));
+        assert!(!should_check_permissions(Path::new("file.txt"), PermissionCheckMode::None));
+    }
+
+    #[test]
+    fn test_should_check_permissions_all() {
+        assert!(should_check_permissions(Path::new("script.sh"), PermissionCheckMode::All));
+        assert!(should_check_permissions(Path::new("file.txt"), PermissionCheckMode::All));
+        assert!(should_check_permissions(Path::new("readme.md"), PermissionCheckMode::All));
+    }
+
+    #[test]
+    fn test_should_check_permissions_scripts() {
+        // Script files should be checked
+        assert!(should_check_permissions(Path::new("script.sh"), PermissionCheckMode::Scripts));
+        assert!(should_check_permissions(Path::new("script.bash"), PermissionCheckMode::Scripts));
+        assert!(should_check_permissions(Path::new("script.py"), PermissionCheckMode::Scripts));
+        assert!(should_check_permissions(Path::new("script.rb"), PermissionCheckMode::Scripts));
+        assert!(should_check_permissions(Path::new("script.pl"), PermissionCheckMode::Scripts));
+        assert!(should_check_permissions(Path::new("script.js"), PermissionCheckMode::Scripts));
+        assert!(should_check_permissions(Path::new("script.php"), PermissionCheckMode::Scripts));
+        assert!(should_check_permissions(Path::new("script.ps1"), PermissionCheckMode::Scripts));
+        assert!(should_check_permissions(Path::new("script.bat"), PermissionCheckMode::Scripts));
+
+        // Non-script files should not be checked
+        assert!(!should_check_permissions(Path::new("file.txt"), PermissionCheckMode::Scripts));
+        assert!(!should_check_permissions(Path::new("file.rs"), PermissionCheckMode::Scripts));
+        assert!(!should_check_permissions(Path::new("file.md"), PermissionCheckMode::Scripts));
+        assert!(!should_check_permissions(Path::new("file.json"), PermissionCheckMode::Scripts));
+    }
+
+    #[test]
+    fn test_should_check_permissions_case_insensitive() {
+        assert!(should_check_permissions(Path::new("script.SH"), PermissionCheckMode::Scripts));
+        assert!(should_check_permissions(Path::new("script.PY"), PermissionCheckMode::Scripts));
+        assert!(should_check_permissions(Path::new("script.Py"), PermissionCheckMode::Scripts));
+    }
+
+    // ==================== permission change detection tests ====================
+
+    #[cfg(unix)]
+    #[test]
+    fn test_get_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = create_temp_dir();
+        let file = create_file(temp.path(), "test.sh", "#!/bin/bash\necho hello");
+
+        // Set file to 755
+        let mut perms = fs::metadata(&file).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&file, perms).unwrap();
+
+        let mode = get_file_mode(&file);
+        assert_eq!(mode, Some("755".to_string()));
+
+        // Set file to 644
+        let mut perms = fs::metadata(&file).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&file, perms).unwrap();
+
+        let mode = get_file_mode(&file);
+        assert_eq!(mode, Some("644".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_permission_change_detected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source_temp = create_temp_dir();
+        let target_temp = create_temp_dir();
+
+        let source_file = create_file(source_temp.path(), "script.sh", "#!/bin/bash");
+        let target_file = create_file(target_temp.path(), "script.sh", "#!/bin/bash");
+
+        // Set different permissions
+        let mut perms_old = fs::metadata(&source_file).unwrap().permissions();
+        perms_old.set_mode(0o755);
+        fs::set_permissions(&source_file, perms_old).unwrap();
+
+        let mut perms_new = fs::metadata(&target_file).unwrap().permissions();
+        perms_new.set_mode(0o644);
+        fs::set_permissions(&target_file, perms_new).unwrap();
+
+        let change = check_permission_change(&source_file, &target_file, Path::new("script.sh"));
+
+        assert!(change.is_some());
+        let change = change.unwrap();
+        assert_eq!(change.old_mode, "755");
+        assert_eq!(change.new_mode, "644");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_permission_change_not_detected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source_temp = create_temp_dir();
+        let target_temp = create_temp_dir();
+
+        let source_file = create_file(source_temp.path(), "script.sh", "#!/bin/bash");
+        let target_file = create_file(target_temp.path(), "script.sh", "#!/bin/bash");
+
+        // Set same permissions
+        let mut perms = fs::metadata(&source_file).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&source_file, perms.clone()).unwrap();
+        fs::set_permissions(&target_file, perms).unwrap();
+
+        let change = check_permission_change(&source_file, &target_file, Path::new("script.sh"));
+
+        assert!(change.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_compare_directories_with_permission_check() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+
+        // Create files with same content but different permissions
+        let source_file = create_file(source.path(), "script.sh", "#!/bin/bash\necho hello");
+        let target_file = create_file(target.path(), "script.sh", "#!/bin/bash\necho hello");
+
+        // Set different permissions
+        let mut perms_old = fs::metadata(&source_file).unwrap().permissions();
+        perms_old.set_mode(0o755);
+        fs::set_permissions(&source_file, perms_old).unwrap();
+
+        let mut perms_new = fs::metadata(&target_file).unwrap().permissions();
+        perms_new.set_mode(0o644);
+        fs::set_permissions(&target_file, perms_new).unwrap();
+
+        // With permission check enabled for scripts
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::Scripts).unwrap();
+
+        assert!(result.entries.is_empty()); // Content is same, so no file entries
+        assert_eq!(result.permission_changes.len(), 1);
+        assert_eq!(result.permission_changes[0].old_mode, "755");
+        assert_eq!(result.permission_changes[0].new_mode, "644");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_compare_directories_permission_check_none() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+
+        // Create files with same content but different permissions
+        let source_file = create_file(source.path(), "script.sh", "#!/bin/bash\necho hello");
+        let target_file = create_file(target.path(), "script.sh", "#!/bin/bash\necho hello");
+
+        // Set different permissions
+        let mut perms_old = fs::metadata(&source_file).unwrap().permissions();
+        perms_old.set_mode(0o755);
+        fs::set_permissions(&source_file, perms_old).unwrap();
+
+        let mut perms_new = fs::metadata(&target_file).unwrap().permissions();
+        perms_new.set_mode(0o644);
+        fs::set_permissions(&target_file, perms_new).unwrap();
+
+        // With permission check disabled (default)
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+
+        assert!(result.entries.is_empty());
+        assert!(result.permission_changes.is_empty());
+    }
+
+    #[test]
+    fn test_diff_result_has_differences_permission_only() {
+        let result = DiffResult {
+            entries: vec![],
+            permission_changes: vec![PermissionChange {
+                relative_path: PathBuf::from("script.sh"),
+                old_mode: "755".to_string(),
+                new_mode: "644".to_string(),
+            }],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+        };
+
+        assert!(result.has_differences());
+    }
+}

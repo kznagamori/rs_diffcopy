@@ -1,0 +1,291 @@
+# rs_diffcopy
+
+[Japanese](README.md)
+
+A CLI tool that compares two directories and extracts only the files with differences.
+
+## Features
+
+- Extracts diff files while maintaining directory structure
+- Fast and accurate file comparison using BLAKE3 hash
+- Displays added, modified, and deleted files in tree format
+- TOML config file support for reusable settings
+- Japanese path support (no garbled characters on Windows console)
+- Cross-platform (Windows / Linux / macOS)
+
+## Installation
+
+### Install via Cargo
+
+```bash
+cargo install --git https://github.com/kznagamori/rs_diffcopy.git
+```
+
+### Build from Source
+
+```bash
+git clone https://github.com/kznagamori/rs_diffcopy.git
+cd rs_diffcopy
+cargo build --release
+```
+
+### Static Linking Build (Linux)
+
+Build a statically linked binary that works on systems with older glibc:
+
+```bash
+# Install musl target and tools
+rustup target add x86_64-unknown-linux-musl
+sudo apt install musl-tools  # Ubuntu/Debian
+
+# Build with static linking
+cargo build --release --target x86_64-unknown-linux-musl
+
+# Binary is generated at:
+# target/x86_64-unknown-linux-musl/release/rs_diffcopy
+```
+
+## Usage
+
+### Basic Usage
+
+```bash
+rs_diffcopy -S <source_dir> -T <target_dir> -O <output_dir>
+```
+
+```bash
+# Example: Compare old_version and new_version, output diff to output
+rs_diffcopy -S old_version -T new_version -O output
+
+# Long option names also work
+rs_diffcopy --source old_version --target new_version --output output
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `-S, --source <PATH>` | Source directory (required) |
+| `-T, --target <PATH>` | Target directory (required) |
+| `-O, --output <PATH>` | Output directory for diff files (required) |
+| `-c, --config <PATH>` | Config file (TOML format) |
+| `-e, --exclude <PATTERN>` | Exclude patterns (glob format, can be specified multiple times) |
+| `-f, --force` | Delete output directory and re-run |
+| `-s, --summary <PATH>` | Output summary to file |
+| `-v, --verbose` | Verbose mode |
+| `-n, --dry-run` | Show target files without copying |
+| `-b, --both-versions` | Copy both old and new versions of modified files (.old/.new extensions) |
+| `-P, --check-permissions <MODE>` | Check permission changes (none/scripts/all) |
+| `-h, --help` | Show help |
+| `-V, --version` | Show version |
+
+### Examples
+
+```bash
+# Basic usage (summary to stdout)
+rs_diffcopy -S old_version -T new_version -O output
+
+# Save summary to file
+rs_diffcopy -S old -T new -O output -s summary.txt
+
+# Specify exclude patterns (multiple allowed)
+rs_diffcopy -S old -T new -O output -e "*.log" -e "node_modules/**"
+
+# Force re-run (delete output directory first)
+rs_diffcopy -S old -T new -O output --force
+
+# Dry-run (preview only, no copy)
+rs_diffcopy -S old -T new -O output --dry-run
+
+# Verbose mode
+rs_diffcopy -S old -T new -O output --verbose
+
+# Copy both old and new versions of modified files
+rs_diffcopy -S old -T new -O output --both-versions
+
+# Check permission changes (script files only)
+rs_diffcopy -S old -T new -O output -P scripts
+
+# Check permission changes (all files)
+rs_diffcopy -S old -T new -O output --check-permissions all
+
+# Use config file
+rs_diffcopy --config ./diffcopy.toml
+```
+
+## Config File (TOML Format)
+
+Use a config file to make complex settings reusable.
+
+### Config File Example (diffcopy.toml)
+
+```toml
+# Required settings
+source = "./old_version"
+target = "./new_version"
+output = "./diff_output"
+
+# Optional settings
+force = false
+verbose = false
+dry_run = false
+both_versions = false
+summary = "./summary.txt"
+check_permissions = "none"  # none / scripts / all
+
+# Exclude patterns (multiple can be specified)
+exclude = [
+    "*.log",
+    "*.tmp",
+    "node_modules/**",
+    ".git/**",
+    "__pycache__/**"
+]
+```
+
+### Config File Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source` | string | Yes | Source directory |
+| `target` | string | Yes | Target directory |
+| `output` | string | Yes | Output directory |
+| `exclude` | array | - | List of exclude patterns |
+| `force` | bool | - | Delete output and re-run |
+| `verbose` | bool | - | Verbose mode |
+| `dry_run` | bool | - | Dry run |
+| `both_versions` | bool | - | Copy both versions |
+| `summary` | string | - | Summary output file |
+| `check_permissions` | string | - | Permission check mode (none/scripts/all) |
+
+### Priority
+
+When both command-line arguments and config file are specified, **command-line arguments take precedence**.
+
+## Output Example
+
+### Summary Output
+
+```
+rs_diffcopy Summary
+================
+Source: /path/to/source
+Target: /path/to/target
+Date: 2025-12-18 10:30:00
+
+Added:      5 files, 1 dir
+Modified:   8 files
+Deleted:    2 files, 1 dir
+--------------------------
+Total:     16 items
+
+================
+File Tree
+================
+.
+├── src/
+│   ├── main.rs [modified]
+│   ├── new_feature.rs [added]
+│   └── old_module.rs [deleted]
+├── docs/ [added]
+├── config.toml [modified]
+└── legacy.rs [deleted]
+```
+
+### Status Tags
+
+| Tag | Meaning |
+|-----|---------|
+| `[added]` | Newly added |
+| `[modified]` | Content changed |
+| `[deleted]` | Deleted (not copied) |
+| `[symlink]` | Symbolic link (not copied) |
+| `[permission denied]` | Permission error (skipped) |
+
+## Specifications
+
+### File Comparison
+
+- Fast comparison using BLAKE3 hash
+- Compares file size first, calculates hash only if sizes match
+
+### File Status Handling
+
+| Status | Handling |
+|--------|----------|
+| New file | Copy to output |
+| Modified file | Copy to output (from target) |
+| New directory (including empty) | Create in output |
+| Deleted file/directory | Report in summary only |
+| Symbolic link | Report in summary only |
+
+### --both-versions Mode
+
+When using `--both-versions` option, both old and new versions of modified files are copied:
+
+```
+output/
+├── file.txt.old      # Old version (from source)
+├── file.txt.new      # New version (from target)
+└── new_file.txt      # Added files are copied as-is
+```
+
+### Permission Check Mode
+
+The `-P/--check-permissions` option detects file permission changes.
+
+| Mode | Description |
+|------|-------------|
+| `none` | No check (default) |
+| `scripts` | Check script files only |
+| `all` | Check all files |
+
+**Extensions checked in scripts mode:**
+`.sh`, `.bash`, `.zsh`, `.py`, `.rb`, `.pl`, `.js`, `.php`, `.ps1`, `.bat`, `.cmd`, etc.
+
+When permission changes are detected, they appear in the summary:
+
+```
+================
+Permission Changes
+================
+scripts/build.sh: 755 -> 644
+src/main.py: 755 -> 644
+```
+
+### Progress Display
+
+A progress bar is displayed during comparison:
+
+```
+Scanning directories...
+Found 1234 files to compare.
+Comparing files: [=====>                    ] 25% (308/1234)
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success (with differences) |
+| 1 | Error |
+| 2 | Success (no differences) |
+
+## Character Encoding
+
+| Condition | Encoding |
+|-----------|----------|
+| Windows + Console | CP932 (Shift-JIS) |
+| Windows + Pipe/Redirect | UTF-8 |
+| Linux/macOS | UTF-8 |
+| Summary file (-s) | UTF-8 |
+
+Japanese paths are handled correctly without garbled characters on Windows console.
+
+## License
+
+MIT License
+
+## Contributing
+
+Please report bugs and feature requests to [Issues](https://github.com/kznagamori/rs_diffcopy/issues).
