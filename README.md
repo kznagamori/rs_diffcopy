@@ -8,7 +8,10 @@
 
 - 差分ファイルを階層構造を維持したまま別フォルダへ抽出
 - BLAKE3ハッシュによる高速かつ正確なファイル比較
+- **並列処理**による高速な比較・コピー（rayon使用）
+- フェーズ別進捗表示で処理状況を可視化
 - 追加・変更・削除ファイルをツリー形式で表示
+- シンボリックリンクの詳細な状態表示（追加/削除/変更/壊れたリンク）
 - TOML設定ファイルによる複雑な設定の再利用
 - 日本語パス対応（Windowsコンソールでも文字化けなし）
 - クロスプラットフォーム（Windows / Linux / macOS）
@@ -199,7 +202,10 @@ File Tree
 | `[added]` | 新規追加 |
 | `[modified]` | 変更あり |
 | `[deleted]` | 削除（コピーされない） |
-| `[symlink]` | シンボリックリンク（コピーされない） |
+| `[symlink: added]` | 新規追加されたシンボリックリンク |
+| `[symlink: added, broken]` | 壊れたシンボリックリンク |
+| `[symlink: deleted]` | 削除されたシンボリックリンク |
+| `[symlink: changed]` | リンク先が変更されたシンボリックリンク |
 | `[permission denied]` | 権限エラー（スキップ） |
 
 ## 動作仕様
@@ -255,13 +261,26 @@ src/main.py: 755 -> 644
 
 ### 進捗表示
 
-比較処理中はプログレスバーで進捗を表示します：
+処理はフェーズ別に進捗表示されます：
 
 ```
-Scanning directories...
-Found 1234 files to compare.
-Comparing files: [=====>                    ] 25% (308/1234)
+[1/4] Scanning directories...
+Found 1234 items.
+[2/4] Comparing: [=============>              ] 45% (555/1234)
+Compared 1234 items.
+[3/4] Copying files...
+Copied 100 files.
+[4/4] Writing summary...
+Done.
 ```
+
+**処理フェーズ:**
+| フェーズ | 処理内容 | 並列化 |
+|---------|---------|:------:|
+| Phase 1 | Scanning | - |
+| Phase 2 | Comparing | 並列 |
+| Phase 3 | Copying | 並列 |
+| Phase 4 | Summary | - |
 
 ### 終了コード
 

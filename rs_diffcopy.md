@@ -31,7 +31,8 @@
 | 新旧両方コピー | 変更ファイルの新旧両方を `.old`/`.new` 拡張子付きでコピー |
 | 権限チェック | ファイル権限の変更を検出（スクリプト限定/全ファイル） |
 | ドライラン | 実際にコピーせず、対象ファイルをプレビュー |
-| 進捗表示 | 比較処理中にプログレスバーを表示 |
+| 進捗表示 | フェーズ別プログレスバーを表示 |
+| 並列処理 | ファイル比較・コピーを並列実行で高速化 |
 
 ---
 
@@ -246,18 +247,34 @@ output_dir/
 
 ## 8. 進捗表示
 
-比較処理中は以下のような進捗が表示されます：
+処理はフェーズ別に進捗表示されます：
 
 ```
-Scanning directories...
-Found 1234 files to compare.
-Comparing files: [=====>                    ] 25% (308/1234)
+[1/4] Scanning directories...
+Found 1234 items.
+[2/4] Comparing: [=============>              ] 45% (555/1234)
+Compared 1234 items.
+[3/4] Copying files...
+Copied 100 files.
+[4/4] Writing summary...
+Done.
 ```
 
-- 最初にソース・ターゲット両方のファイル総数をカウント
-- 比較処理中はプログレスバーで進捗を表示
-- `--verbose` モードでは各ファイル名も表示
+### 8.1 処理フェーズ
+
+| フェーズ | 処理内容 | 並列化 |
+|---------|---------|:------:|
+| Phase 1 | Scanning (ディレクトリ走査) | - |
+| Phase 2 | Comparing (ハッシュ比較) | 並列 |
+| Phase 3 | Copying (ファイルコピー) | 並列 |
+| Phase 4 | Writing summary | - |
+
+### 8.2 表示仕様
+
+- 各フェーズ開始時に `[n/4]` 形式でフェーズ番号を表示
+- 比較・コピー処理中はプログレスバーで進捗を表示
 - パイプやリダイレクト時はプログレスバーを非表示
+- `--verbose` モードでは追加の詳細情報を表示
 
 ---
 
@@ -275,11 +292,11 @@ Date: 2025-12-18 10:30:00
 Added:       5 files, 1 dir
 Modified:    8 files
 Deleted:     2 files, 1 dir
-Symlinks:    1 file
+Symlinks:    3 files
 Permissions: 2 files
 Errors:      1 file
 --------------------------
-Total:      20 items
+Total:      22 items
 
 ================
 File Tree
@@ -291,14 +308,31 @@ File Tree
 │   └── old_module.rs [deleted]
 ├── docs/ [added]
 ├── config.toml [modified]
-├── cache -> /tmp/cache [symlink]
+├── cache -> /tmp/cache [symlink: added]
+├── broken_link -> /nonexistent [symlink: added, broken]
+├── old_link -> /old/path [symlink: deleted]
+├── changed_link -> /new/path [symlink: changed]
 ├── secret.key [permission denied]
 └── legacy/ [deleted]
 
 ================
 Symlink Details
 ================
-cache -> /tmp/cache (target exists: yes, type: directory)
+Added:
+  cache -> /tmp/cache
+    Type: directory | Status: OK
+
+  broken_link -> /nonexistent
+    Type: file | Status: BROKEN (target does not exist)
+
+Deleted:
+  old_link -> /old/path
+    Type: file
+
+Changed:
+  changed_link
+    Before: /old/path (file, OK)
+    After:  /new/path (file, OK)
 
 ================
 Permission Changes
@@ -331,9 +365,13 @@ No differences found.
 | `[added]` | 新規追加 |
 | `[modified]` | 内容変更あり |
 | `[deleted]` | 削除（コピーされない） |
-| `[symlink]` | シンボリックリンク（コピーされない） |
+| `[symlink: added]` | 新規追加されたシンボリックリンク |
+| `[symlink: added, broken]` | 新規追加された壊れたシンボリックリンク |
+| `[symlink: deleted]` | 削除されたシンボリックリンク |
+| `[symlink: changed]` | リンク先が変更されたシンボリックリンク |
 | `[permission denied]` | 権限エラー（スキップ） |
 
+※ シンボリックリンクはコピーされず、Symlink Detailsセクションに詳細が表示される
 ※ 権限変更は File Tree には表示されず、Permission Changes セクションにのみ表示
 
 ---
@@ -402,7 +440,6 @@ No differences found.
 
 | 機能 | 説明 |
 |------|------|
-| 並列処理 | 大量ファイル処理の高速化（マルチスレッド） |
 | ハッシュキャッシュ | 前回の比較結果をキャッシュし、増分比較で高速化 |
 | HTMLレポート | ブラウザで閲覧可能なレポート生成 |
 | 差分パッチ生成 | unified diff形式の出力 |

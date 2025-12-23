@@ -80,8 +80,19 @@
 
 | ID | テスト名 | 説明 | 期待結果 |
 |----|---------|------|----------|
-| IT-601 | シンボリックリンク検出 | symlinkの検出 | [symlink]として検出、コピーされない |
+| IT-601 | シンボリックリンク追加検出 | targetにのみ存在するsymlink | [symlink: added]として検出、コピーされない |
 | IT-602 | シンボリックリンク詳細 | symlink詳細情報 | リンク先情報がサマリーに記載 |
+| IT-603 | シンボリックリンク削除検出 | sourceにのみ存在するsymlink | [symlink: deleted]として検出 |
+| IT-604 | シンボリックリンク変更検出 | リンク先が変更されたsymlink | [symlink: changed]として検出 |
+| IT-605 | 壊れたシンボリックリンク検出 | 存在しないパスを指すsymlink | [symlink: added, broken]として検出 |
+
+### 3.8 並列処理テスト
+
+| ID | テスト名 | 説明 | 期待結果 |
+|----|---------|------|----------|
+| IT-701 | 並列比較処理 | 多数ファイルの並列比較 | 全ファイルが正確に比較される |
+| IT-702 | 並列コピー処理 | 多数ファイルの並列コピー | 全ファイルが正確にコピーされる |
+| IT-703 | 進捗表示 | フェーズ別進捗表示 | [1/4]〜[4/4]の進捗が表示される |
 
 ---
 
@@ -118,6 +129,52 @@ output/
 ├── tests/              # [added]
 │   └── test_main.rs    # [added]
 └── new_config.toml     # [added]
+```
+
+### 4.3 シンボリックリンクテストデータ（Linux）
+
+```
+# IT-601: 追加検出
+source/
+└── (empty)
+
+target/
+└── link.txt -> real.txt    # 新規symlink
+
+# IT-603: 削除検出
+source/
+└── link.txt -> real.txt    # 削除対象symlink
+
+target/
+└── (empty)
+
+# IT-604: 変更検出
+source/
+└── link.txt -> old_target.txt
+
+target/
+└── link.txt -> new_target.txt  # リンク先変更
+
+# IT-605: 壊れたリンク検出
+target/
+└── broken.txt -> nonexistent.txt  # 存在しないパス
+```
+
+### 4.4 シンボリックリンク詳細出力形式
+
+```
+================
+Symlink Details
+================
+Added:
+  new_link.txt -> target.txt
+  another.txt -> dest.txt (broken)
+
+Deleted:
+  old_link.txt -> removed_target.txt
+
+Changed:
+  changed_link.txt: old_target.txt -> new_target.txt
 ```
 
 ---

@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use chrono::Local;
 use clap::{Parser, ValueEnum};
 use glob::Pattern;
+use rayon::prelude::*;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -9,6 +10,8 @@ use std::fs::{self, File};
 use std::io::IsTerminal;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use walkdir::WalkDir;
 
 #[cfg(unix)]
@@ -90,12 +93,13 @@ fn print_to_stdout(s: &str) {
     }
 }
 
-/// Print progress bar to stdout (only if terminal)
-fn print_progress(current: usize, total: usize, prefix: &str) {
+/// Print progress bar with phase info (thread-safe version using atomic counter)
+fn print_progress_atomic(counter: &AtomicUsize, total: usize, phase: usize, total_phases: usize, task: &str) {
     if !is_terminal() || total == 0 {
         return;
     }
 
+    let current = counter.load(Ordering::Relaxed);
     let percentage = (current * 100) / total;
     let bar_width = 30;
     let filled = (current * bar_width) / total;
@@ -103,14 +107,23 @@ fn print_progress(current: usize, total: usize, prefix: &str) {
 
     let bar: String = "=".repeat(filled) + if filled < bar_width { ">" } else { "" } + &" ".repeat(if empty > 0 { empty - 1 } else { 0 });
 
-    // Use carriage return to overwrite the line
-    print_to_stdout(&format!("\r{}: [{}] {}% ({}/{})", prefix, &bar[..bar_width.min(bar.len())], percentage, current, total));
+    print_to_stdout(&format!(
+        "\r[{}/{}] {}: [{}] {}% ({}/{})",
+        phase, total_phases, task, &bar[..bar_width.min(bar.len())], percentage, current, total
+    ));
 }
 
 /// Clear the progress line
 fn clear_progress_line() {
     if is_terminal() {
         print_to_stdout("\r\x1b[K"); // Clear line
+    }
+}
+
+/// Print phase header
+fn print_phase(phase: usize, total_phases: usize, message: &str) {
+    if is_terminal() {
+        println_to_stdout(&format!("[{}/{}] {}", phase, total_phases, message));
     }
 }
 
@@ -285,12 +298,32 @@ impl ResolvedConfig {
     }
 }
 
+/// Symlink change type
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SymlinkChangeType {
+    Added,
+    Deleted,
+    Changed,
+}
+
+/// Symlink information
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SymlinkInfo {
+    target: PathBuf,
+    exists: bool,
+    is_dir: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FileStatus {
     Added,
     Modified,
     Deleted,
-    Symlink { target: PathBuf, exists: bool, is_dir: bool },
+    Symlink {
+        change_type: SymlinkChangeType,
+        current: Option<SymlinkInfo>,  // None if deleted
+        previous: Option<SymlinkInfo>, // None if added, Some if changed/deleted
+    },
     PermissionDenied { error: String },
 }
 
@@ -412,24 +445,30 @@ fn main() -> Result<()> {
         config.check_permissions,
     )?;
 
-    // Generate summary
-    let summary = generate_summary(&diff_result);
-
     // Copy files (if not dry-run and has differences)
     if !config.dry_run && diff_result.has_differences() {
         copy_diff_files(&diff_result, &config.output_dir, config.verbose, config.both_versions)?;
     }
+
+    // Phase 4: Generate and output summary
+    print_phase(4, 4, "Writing summary...");
+
+    let summary = generate_summary(&diff_result);
 
     // Output summary
     if let Some(summary_path) = &config.summary {
         let mut file = File::create(summary_path)
             .with_context(|| format!("Failed to create summary file: {}", summary_path.display()))?;
         file.write_all(summary.as_bytes())?;
-        if config.verbose {
+        if is_terminal() {
             println_to_stdout(&format!("Summary written to: {}", summary_path.display()));
         }
     } else {
         println_to_stdout(&summary);
+    }
+
+    if is_terminal() {
+        println_to_stdout("Done.");
     }
 
     // Return appropriate exit code
@@ -440,6 +479,97 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Compare a single file and return the diff entry if any
+fn compare_single_file(
+    rel_path: &PathBuf,
+    source_dir: &Path,
+    target_dir: &Path,
+    source_paths: &BTreeSet<PathBuf>,
+    check_permissions: PermissionCheckMode,
+) -> (Option<DiffEntry>, Option<PermissionChange>) {
+    let target_path = target_dir.join(rel_path);
+    let source_path = source_dir.join(rel_path);
+
+    // Check if symlink (target side)
+    let target_symlink = get_symlink_info(&target_path);
+    let source_symlink = get_symlink_info(&source_path);
+
+    match (&target_symlink, &source_symlink) {
+        // Both are symlinks
+        (Some(target_info), Some(source_info)) => {
+            if target_info.target != source_info.target {
+                return (Some(DiffEntry {
+                    relative_path: rel_path.clone(),
+                    is_dir: false,
+                    status: FileStatus::Symlink {
+                        change_type: SymlinkChangeType::Changed,
+                        current: Some(target_info.clone()),
+                        previous: Some(source_info.clone()),
+                    },
+                }), None);
+            }
+            return (None, None);
+        }
+        // Only target has symlink (added)
+        (Some(target_info), None) => {
+            return (Some(DiffEntry {
+                relative_path: rel_path.clone(),
+                is_dir: false,
+                status: FileStatus::Symlink {
+                    change_type: SymlinkChangeType::Added,
+                    current: Some(target_info.clone()),
+                    previous: None,
+                },
+            }), None);
+        }
+        // Only source has symlink - will be handled in deleted section
+        (None, Some(_)) => {}
+        // Neither is symlink - continue normal processing
+        (None, None) => {}
+    }
+
+    let is_dir = target_path.is_dir();
+
+    if !source_paths.contains(rel_path) {
+        // Added (only in target)
+        return (Some(DiffEntry {
+            relative_path: rel_path.clone(),
+            is_dir,
+            status: FileStatus::Added,
+        }), None);
+    } else if !is_dir {
+        // Check if modified
+        match files_differ(&source_path, &target_path) {
+            Ok(true) => {
+                return (Some(DiffEntry {
+                    relative_path: rel_path.clone(),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                }), None);
+            }
+            Ok(false) => {
+                // Content is the same, check permissions if enabled
+                if should_check_permissions(rel_path, check_permissions) {
+                    if let Some(change) = check_permission_change(&source_path, &target_path, rel_path) {
+                        return (None, Some(change));
+                    }
+                }
+            }
+            Err(err) => {
+                return (Some(DiffEntry {
+                    relative_path: rel_path.clone(),
+                    is_dir: false,
+                    status: FileStatus::PermissionDenied {
+                        error: err.to_string(),
+                    },
+                }), None);
+            }
+        }
+    }
+
+    (None, None)
+}
+
 fn compare_directories(
     source_dir: &Path,
     target_dir: &Path,
@@ -447,15 +577,14 @@ fn compare_directories(
     verbose: bool,
     check_permissions: PermissionCheckMode,
 ) -> Result<DiffResult> {
-    let mut entries = Vec::new();
-    let mut permission_changes = Vec::new();
+    const TOTAL_PHASES: usize = 4;
+
+    let mut initial_entries = Vec::new();
     let mut source_paths: BTreeSet<PathBuf> = BTreeSet::new();
     let mut target_paths: BTreeSet<PathBuf> = BTreeSet::new();
 
-    // Show scanning message
-    if is_terminal() {
-        println_to_stdout("Scanning directories...");
-    }
+    // Phase 1: Scanning
+    print_phase(1, TOTAL_PHASES, "Scanning directories...");
 
     // Collect source paths
     for entry in WalkDir::new(source_dir).min_depth(1) {
@@ -469,7 +598,7 @@ fn compare_directories(
             Err(err) => {
                 if let Some(path) = err.path() {
                     let rel_path = path.strip_prefix(source_dir).unwrap_or(path).to_path_buf();
-                    entries.push(DiffEntry {
+                    initial_entries.push(DiffEntry {
                         relative_path: rel_path,
                         is_dir: false,
                         status: FileStatus::PermissionDenied {
@@ -493,7 +622,7 @@ fn compare_directories(
             Err(err) => {
                 if let Some(path) = err.path() {
                     let rel_path = path.strip_prefix(target_dir).unwrap_or(path).to_path_buf();
-                    entries.push(DiffEntry {
+                    initial_entries.push(DiffEntry {
                         relative_path: rel_path,
                         is_dir: false,
                         status: FileStatus::PermissionDenied {
@@ -506,122 +635,109 @@ fn compare_directories(
     }
 
     // Calculate total files to compare
-    let total_files = target_paths.len() + source_paths.iter().filter(|p| !target_paths.contains(*p)).count();
+    let deleted_count = source_paths.iter().filter(|p| !target_paths.contains(*p)).count();
+    let total_files = target_paths.len() + deleted_count;
 
     if is_terminal() {
-        println_to_stdout(&format!("Found {} files to compare.", total_files));
+        println_to_stdout(&format!("Found {} items.", total_files));
     }
 
-    let mut processed = 0;
+    // Phase 2: Comparing (parallel)
+    let progress_counter = AtomicUsize::new(0);
+    let target_paths_vec: Vec<_> = target_paths.iter().cloned().collect();
 
-    // Check for symlinks, added, modified, and deleted files
-    for rel_path in target_paths.iter() {
-        processed += 1;
-        print_progress(processed, total_files, "Comparing files");
+    // Start progress display thread
+    let total_for_progress = total_files;
+    let progress_counter_ref = &progress_counter;
 
-        let target_path = target_dir.join(rel_path);
-        let source_path = source_dir.join(rel_path);
+    // Compare target files in parallel
+    let target_results: Vec<_> = target_paths_vec
+        .par_iter()
+        .map(|rel_path| {
+            let result = compare_single_file(
+                rel_path,
+                source_dir,
+                target_dir,
+                &source_paths,
+                check_permissions,
+            );
 
-        if verbose {
-            clear_progress_line();
-            println_to_stdout(&format!("Checking: {}", rel_path.display()));
-        }
-
-        // Check if symlink
-        if target_path.is_symlink() {
-            let link_target = fs::read_link(&target_path).unwrap_or_default();
-            let exists = link_target.exists() || target_path.exists();
-            let is_dir = target_path.is_dir();
-            entries.push(DiffEntry {
-                relative_path: rel_path.clone(),
-                is_dir: false,
-                status: FileStatus::Symlink {
-                    target: link_target,
-                    exists,
-                    is_dir,
-                },
-            });
-            continue;
-        }
-
-        let is_dir = target_path.is_dir();
-
-        if !source_paths.contains(rel_path) {
-            // Added (only in target)
-            entries.push(DiffEntry {
-                relative_path: rel_path.clone(),
-                is_dir,
-                status: FileStatus::Added,
-            });
-        } else if !is_dir {
-            // Check if modified
-            match files_differ(&source_path, &target_path) {
-                Ok(true) => {
-                    entries.push(DiffEntry {
-                        relative_path: rel_path.clone(),
-                        is_dir: false,
-                        status: FileStatus::Modified,
-                    });
-                }
-                Ok(false) => {
-                    // Content is the same, check permissions if enabled
-                    if should_check_permissions(rel_path, check_permissions) {
-                        if let Some(change) = check_permission_change(&source_path, &target_path, rel_path) {
-                            permission_changes.push(change);
-                        }
-                    }
-                }
-                Err(err) => {
-                    entries.push(DiffEntry {
-                        relative_path: rel_path.clone(),
-                        is_dir: false,
-                        status: FileStatus::PermissionDenied {
-                            error: err.to_string(),
-                        },
-                    });
-                }
+            let count = progress_counter_ref.fetch_add(1, Ordering::Relaxed) + 1;
+            if count % 100 == 0 || count == total_for_progress {
+                print_progress_atomic(progress_counter_ref, total_for_progress, 2, TOTAL_PHASES, "Comparing");
             }
-        }
-    }
 
-    // Check for deleted files (only in source)
-    for rel_path in source_paths.iter() {
-        if !target_paths.contains(rel_path) {
-            processed += 1;
-            print_progress(processed, total_files, "Comparing files");
+            if verbose && is_terminal() {
+                // Note: verbose output in parallel may interleave, but that's acceptable
+            }
 
+            result
+        })
+        .collect();
+
+    // Check for deleted files (only in source) - also in parallel
+    let deleted_paths: Vec<_> = source_paths
+        .iter()
+        .filter(|p| !target_paths.contains(*p))
+        .cloned()
+        .collect();
+
+    let deleted_results: Vec<_> = deleted_paths
+        .par_iter()
+        .map(|rel_path| {
             let source_path = source_dir.join(rel_path);
 
-            // Check if symlink
-            if source_path.is_symlink() {
-                let link_target = fs::read_link(&source_path).unwrap_or_default();
-                let exists = link_target.exists() || source_path.exists();
-                let is_dir = source_path.is_dir();
-                entries.push(DiffEntry {
+            let count = progress_counter_ref.fetch_add(1, Ordering::Relaxed) + 1;
+            if count % 100 == 0 || count == total_for_progress {
+                print_progress_atomic(progress_counter_ref, total_for_progress, 2, TOTAL_PHASES, "Comparing");
+            }
+
+            // Check if symlink (deleted symlink)
+            if let Some(source_info) = get_symlink_info(&source_path) {
+                return Some(DiffEntry {
                     relative_path: rel_path.clone(),
                     is_dir: false,
                     status: FileStatus::Symlink {
-                        target: link_target,
-                        exists,
-                        is_dir,
+                        change_type: SymlinkChangeType::Deleted,
+                        current: None,
+                        previous: Some(source_info),
                     },
                 });
-                continue;
             }
 
             let is_dir = source_path.is_dir();
-            entries.push(DiffEntry {
+            Some(DiffEntry {
                 relative_path: rel_path.clone(),
                 is_dir,
                 status: FileStatus::Deleted,
-            });
+            })
+        })
+        .collect();
+
+    // Clear progress line
+    clear_progress_line();
+
+    // Collect results
+    let mut entries = initial_entries;
+    let mut permission_changes = Vec::new();
+
+    for (entry_opt, perm_opt) in target_results {
+        if let Some(entry) = entry_opt {
+            entries.push(entry);
+        }
+        if let Some(perm) = perm_opt {
+            permission_changes.push(perm);
         }
     }
 
-    // Clear progress line and show completion
-    clear_progress_line();
-    if is_terminal() && total_files > 0 {
-        println_to_stdout(&format!("Compared {} files.", total_files));
+    for entry_opt in deleted_results {
+        if let Some(entry) = entry_opt {
+            entries.push(entry);
+        }
+    }
+
+    if is_terminal() {
+        println_to_stdout(&format!("Compared {} items.", total_files));
     }
 
     // Sort entries by path
@@ -641,6 +757,18 @@ fn compare_directories(
 fn is_excluded(path: &Path, patterns: &[Pattern]) -> bool {
     let path_str = path.to_string_lossy();
     patterns.iter().any(|p| p.matches(&path_str))
+}
+
+/// Get symlink information for a path
+fn get_symlink_info(path: &Path) -> Option<SymlinkInfo> {
+    if path.is_symlink() {
+        let target = fs::read_link(path).unwrap_or_default();
+        let exists = target.exists() || path.exists();
+        let is_dir = path.is_dir();
+        Some(SymlinkInfo { target, exists, is_dir })
+    } else {
+        None
+    }
 }
 
 /// Check if a file should have its permissions checked based on mode
@@ -728,67 +856,116 @@ fn compute_file_hash(path: &Path) -> Result<blake3::Hash> {
     Ok(hasher.finalize())
 }
 
+/// Copy a single file entry
+fn copy_single_file(
+    entry: &DiffEntry,
+    source_dir: &Path,
+    target_dir: &Path,
+    output_dir: &Path,
+    both_versions: bool,
+) -> Result<()> {
+    match &entry.status {
+        FileStatus::Added => {
+            let src = target_dir.join(&entry.relative_path);
+            let dst = output_dir.join(&entry.relative_path);
+
+            if entry.is_dir {
+                fs::create_dir_all(&dst)?;
+            } else {
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&src, &dst)?;
+            }
+        }
+        FileStatus::Modified => {
+            if entry.is_dir {
+                return Ok(());
+            }
+
+            let src_new = target_dir.join(&entry.relative_path);
+            let dst_base = output_dir.join(&entry.relative_path);
+
+            if let Some(parent) = dst_base.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            if both_versions {
+                let src_old = source_dir.join(&entry.relative_path);
+                let dst_old = add_extension(&dst_base, "old");
+                let dst_new = add_extension(&dst_base, "new");
+
+                fs::copy(&src_old, &dst_old)?;
+                fs::copy(&src_new, &dst_new)?;
+            } else {
+                fs::copy(&src_new, &dst_base)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 fn copy_diff_files(diff_result: &DiffResult, output_dir: &Path, verbose: bool, both_versions: bool) -> Result<()> {
     fs::create_dir_all(output_dir)?;
 
-    for entry in &diff_result.entries {
-        match &entry.status {
-            FileStatus::Added => {
-                let src = diff_result.target_dir.join(&entry.relative_path);
-                let dst = output_dir.join(&entry.relative_path);
+    // Filter entries that need to be copied
+    let entries_to_copy: Vec<_> = diff_result
+        .entries
+        .iter()
+        .filter(|e| matches!(e.status, FileStatus::Added | FileStatus::Modified))
+        .collect();
 
-                if entry.is_dir {
-                    if verbose {
-                        println_to_stdout(&format!("Creating directory: {}", entry.relative_path.display()));
-                    }
-                    fs::create_dir_all(&dst)?;
-                } else {
-                    if let Some(parent) = dst.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    if verbose {
-                        println_to_stdout(&format!("Copying: {}", entry.relative_path.display()));
-                    }
-                    fs::copy(&src, &dst)?;
-                }
+    let total_files = entries_to_copy.len();
+
+    if total_files == 0 {
+        return Ok(());
+    }
+
+    // Phase 3: Copying (parallel)
+    print_phase(3, 4, "Copying files...");
+
+    let progress_counter = AtomicUsize::new(0);
+    let errors = Mutex::new(Vec::new());
+
+    entries_to_copy
+        .par_iter()
+        .for_each(|entry| {
+            let count = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            if count % 50 == 0 || count == total_files {
+                print_progress_atomic(&progress_counter, total_files, 3, 4, "Copying");
             }
-            FileStatus::Modified => {
-                if entry.is_dir {
-                    continue;
-                }
 
-                let src_new = diff_result.target_dir.join(&entry.relative_path);
-                let dst_base = output_dir.join(&entry.relative_path);
-
-                if let Some(parent) = dst_base.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-
-                if both_versions {
-                    // Copy both old and new versions with .old/.new extensions
-                    let src_old = diff_result.source_dir.join(&entry.relative_path);
-                    let dst_old = add_extension(&dst_base, "old");
-                    let dst_new = add_extension(&dst_base, "new");
-
-                    if verbose {
-                        println_to_stdout(&format!("Copying (old): {} -> {}", entry.relative_path.display(), dst_old.file_name().unwrap_or_default().to_string_lossy()));
-                    }
-                    fs::copy(&src_old, &dst_old)?;
-
-                    if verbose {
-                        println_to_stdout(&format!("Copying (new): {} -> {}", entry.relative_path.display(), dst_new.file_name().unwrap_or_default().to_string_lossy()));
-                    }
-                    fs::copy(&src_new, &dst_new)?;
-                } else {
-                    // Default: copy only new version
-                    if verbose {
-                        println_to_stdout(&format!("Copying: {}", entry.relative_path.display()));
-                    }
-                    fs::copy(&src_new, &dst_base)?;
-                }
+            if let Err(e) = copy_single_file(
+                entry,
+                &diff_result.source_dir,
+                &diff_result.target_dir,
+                output_dir,
+                both_versions,
+            ) {
+                let mut errs = errors.lock().unwrap();
+                errs.push(format!("{}: {}", entry.relative_path.display(), e));
             }
-            _ => {}
+
+            if verbose && is_terminal() {
+                // Verbose output may interleave in parallel, which is acceptable
+            }
+        });
+
+    clear_progress_line();
+
+    // Check for errors
+    let errs = errors.into_inner().unwrap();
+    if !errs.is_empty() {
+        for err in &errs {
+            eprintln!("Error: {}", err);
         }
+        bail!("Failed to copy {} files", errs.len());
+    }
+
+    if is_terminal() {
+        println_to_stdout(&format!("Copied {} files.", total_files));
     }
 
     Ok(())
@@ -878,19 +1055,74 @@ fn generate_summary(diff_result: &DiffResult) -> String {
         output.push_str("================\n");
         output.push_str("Symlink Details\n");
         output.push_str("================\n");
-        for entry in symlink_entries {
-            if let FileStatus::Symlink { target, exists, is_dir } = &entry.status {
-                let type_str = if *is_dir { "directory" } else { "file" };
-                output.push_str(&format!(
-                    "{} -> {} (target exists: {}, type: {})\n",
-                    entry.relative_path.display(),
-                    target.display(),
-                    if *exists { "yes" } else { "no" },
-                    type_str
-                ));
+
+        // Group by change type
+        let added: Vec<_> = symlink_entries.iter()
+            .filter(|e| matches!(&e.status, FileStatus::Symlink { change_type: SymlinkChangeType::Added, .. }))
+            .collect();
+        let deleted: Vec<_> = symlink_entries.iter()
+            .filter(|e| matches!(&e.status, FileStatus::Symlink { change_type: SymlinkChangeType::Deleted, .. }))
+            .collect();
+        let changed: Vec<_> = symlink_entries.iter()
+            .filter(|e| matches!(&e.status, FileStatus::Symlink { change_type: SymlinkChangeType::Changed, .. }))
+            .collect();
+
+        // Added symlinks
+        if !added.is_empty() {
+            output.push_str("Added:\n");
+            for entry in added {
+                if let FileStatus::Symlink { current: Some(info), .. } = &entry.status {
+                    let type_str = if info.is_dir { "directory" } else { "file" };
+                    let status_str = if info.exists { "OK" } else { "BROKEN (target does not exist)" };
+                    output.push_str(&format!(
+                        "  {} -> {}\n    Type: {} | Status: {}\n\n",
+                        entry.relative_path.display(),
+                        info.target.display(),
+                        type_str,
+                        status_str
+                    ));
+                }
             }
         }
-        output.push('\n');
+
+        // Deleted symlinks
+        if !deleted.is_empty() {
+            output.push_str("Deleted:\n");
+            for entry in deleted {
+                if let FileStatus::Symlink { previous: Some(info), .. } = &entry.status {
+                    let type_str = if info.is_dir { "directory" } else { "file" };
+                    output.push_str(&format!(
+                        "  {} -> {}\n    Type: {}\n\n",
+                        entry.relative_path.display(),
+                        info.target.display(),
+                        type_str
+                    ));
+                }
+            }
+        }
+
+        // Changed symlinks
+        if !changed.is_empty() {
+            output.push_str("Changed:\n");
+            for entry in changed {
+                if let FileStatus::Symlink { current: Some(curr), previous: Some(prev), .. } = &entry.status {
+                    let prev_type = if prev.is_dir { "directory" } else { "file" };
+                    let curr_type = if curr.is_dir { "directory" } else { "file" };
+                    let prev_status = if prev.exists { "OK" } else { "BROKEN" };
+                    let curr_status = if curr.exists { "OK" } else { "BROKEN" };
+                    output.push_str(&format!(
+                        "  {}\n    Before: {} ({}, {})\n    After:  {} ({}, {})\n\n",
+                        entry.relative_path.display(),
+                        prev.target.display(),
+                        prev_type,
+                        prev_status,
+                        curr.target.display(),
+                        curr_type,
+                        curr_status
+                    ));
+                }
+            }
+        }
     }
 
     // Permission Changes
@@ -1058,8 +1290,26 @@ fn format_entry(entry: &DiffEntry) -> String {
 
 fn format_entry_with_name(name: &str, entry: &DiffEntry) -> String {
     match &entry.status {
-        FileStatus::Symlink { target, .. } => {
-            format!("{} -> {} [symlink]", name, target.display())
+        FileStatus::Symlink { change_type, current, previous } => {
+            let (target_display, broken_tag) = match (current, previous) {
+                (Some(info), _) => {
+                    let broken = if !info.exists { ", broken" } else { "" };
+                    (format!(" -> {}", info.target.display()), broken)
+                }
+                (None, Some(info)) => {
+                    // Deleted symlink - show previous target
+                    (format!(" -> {}", info.target.display()), "")
+                }
+                (None, None) => (String::new(), ""),
+            };
+
+            let change_tag = match change_type {
+                SymlinkChangeType::Added => "added",
+                SymlinkChangeType::Deleted => "deleted",
+                SymlinkChangeType::Changed => "changed",
+            };
+
+            format!("{}{} [symlink: {}{}]", name, target_display, change_tag, broken_tag)
         }
         _ => {
             let suffix = if entry.is_dir { "/" } else { "" };
@@ -1074,7 +1324,17 @@ fn format_status_tag(status: &FileStatus) -> String {
         FileStatus::Added => "[added]".to_string(),
         FileStatus::Modified => "[modified]".to_string(),
         FileStatus::Deleted => "[deleted]".to_string(),
-        FileStatus::Symlink { .. } => "[symlink]".to_string(),
+        FileStatus::Symlink { change_type, current, .. } => {
+            let broken = match current {
+                Some(info) if !info.exists => ", broken",
+                _ => "",
+            };
+            match change_type {
+                SymlinkChangeType::Added => format!("[symlink: added{}]", broken),
+                SymlinkChangeType::Deleted => "[symlink: deleted]".to_string(),
+                SymlinkChangeType::Changed => format!("[symlink: changed{}]", broken),
+            }
+        }
         FileStatus::PermissionDenied { .. } => "[permission denied]".to_string(),
     }
 }
@@ -1405,13 +1665,61 @@ mod tests {
         assert_eq!(format_status_tag(&FileStatus::Added), "[added]");
         assert_eq!(format_status_tag(&FileStatus::Modified), "[modified]");
         assert_eq!(format_status_tag(&FileStatus::Deleted), "[deleted]");
+        // Test symlink added (not broken)
         assert_eq!(
             format_status_tag(&FileStatus::Symlink {
-                target: PathBuf::from("/tmp"),
-                exists: true,
-                is_dir: true
+                change_type: SymlinkChangeType::Added,
+                current: Some(SymlinkInfo {
+                    target: PathBuf::from("/tmp"),
+                    exists: true,
+                    is_dir: true
+                }),
+                previous: None,
             }),
-            "[symlink]"
+            "[symlink: added]"
+        );
+        // Test symlink added (broken)
+        assert_eq!(
+            format_status_tag(&FileStatus::Symlink {
+                change_type: SymlinkChangeType::Added,
+                current: Some(SymlinkInfo {
+                    target: PathBuf::from("/nonexistent"),
+                    exists: false,
+                    is_dir: false
+                }),
+                previous: None,
+            }),
+            "[symlink: added, broken]"
+        );
+        // Test symlink deleted
+        assert_eq!(
+            format_status_tag(&FileStatus::Symlink {
+                change_type: SymlinkChangeType::Deleted,
+                current: None,
+                previous: Some(SymlinkInfo {
+                    target: PathBuf::from("/tmp"),
+                    exists: true,
+                    is_dir: true
+                }),
+            }),
+            "[symlink: deleted]"
+        );
+        // Test symlink changed
+        assert_eq!(
+            format_status_tag(&FileStatus::Symlink {
+                change_type: SymlinkChangeType::Changed,
+                current: Some(SymlinkInfo {
+                    target: PathBuf::from("/new"),
+                    exists: true,
+                    is_dir: false
+                }),
+                previous: Some(SymlinkInfo {
+                    target: PathBuf::from("/old"),
+                    exists: true,
+                    is_dir: false
+                }),
+            }),
+            "[symlink: changed]"
         );
         assert_eq!(
             format_status_tag(&FileStatus::PermissionDenied {

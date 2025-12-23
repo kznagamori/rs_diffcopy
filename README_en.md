@@ -8,7 +8,10 @@ A CLI tool that compares two directories and extracts only the files with differ
 
 - Extracts diff files while maintaining directory structure
 - Fast and accurate file comparison using BLAKE3 hash
+- **Parallel processing** for fast comparison and copying (using rayon)
+- Phase-based progress display for visibility into processing status
 - Displays added, modified, and deleted files in tree format
+- Detailed symlink status display (added/deleted/changed/broken)
 - TOML config file support for reusable settings
 - Japanese path support (no garbled characters on Windows console)
 - Cross-platform (Windows / Linux / macOS)
@@ -199,7 +202,10 @@ File Tree
 | `[added]` | Newly added |
 | `[modified]` | Content changed |
 | `[deleted]` | Deleted (not copied) |
-| `[symlink]` | Symbolic link (not copied) |
+| `[symlink: added]` | Newly added symbolic link |
+| `[symlink: added, broken]` | Broken symbolic link |
+| `[symlink: deleted]` | Deleted symbolic link |
+| `[symlink: changed]` | Symbolic link with changed target |
 | `[permission denied]` | Permission error (skipped) |
 
 ## Specifications
@@ -255,13 +261,26 @@ src/main.py: 755 -> 644
 
 ### Progress Display
 
-A progress bar is displayed during comparison:
+Progress is displayed by phase:
 
 ```
-Scanning directories...
-Found 1234 files to compare.
-Comparing files: [=====>                    ] 25% (308/1234)
+[1/4] Scanning directories...
+Found 1234 items.
+[2/4] Comparing: [=============>              ] 45% (555/1234)
+Compared 1234 items.
+[3/4] Copying files...
+Copied 100 files.
+[4/4] Writing summary...
+Done.
 ```
+
+**Processing Phases:**
+| Phase | Processing | Parallel |
+|-------|------------|:--------:|
+| Phase 1 | Scanning | - |
+| Phase 2 | Comparing | Yes |
+| Phase 3 | Copying | Yes |
+| Phase 4 | Summary | - |
 
 ### Exit Codes
 

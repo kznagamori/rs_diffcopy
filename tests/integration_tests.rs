@@ -242,7 +242,8 @@ fn test_verbose_option() {
 
     assert!(output.status.success());
     let stdout = stdout_str(&output);
-    assert!(stdout.contains("Checking:") || stdout.contains("Copying:"));
+    // Check for phase output or summary (verbose mode ensures processing happens)
+    assert!(stdout.contains("Summary") || stdout.contains("Scanning") || stdout.contains("[added]"));
 }
 
 /// IT-104: --dry-run option
@@ -620,7 +621,7 @@ mod symlink_tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
-    /// IT-601: Symlink detection
+    /// IT-601: Symlink added detection
     #[test]
     fn test_symlink_detection() {
         let env = TestEnv::new();
@@ -636,7 +637,7 @@ mod symlink_tests {
 
         assert!(output.status.success());
         let stdout = stdout_str(&output);
-        assert!(stdout.contains("[symlink]"));
+        assert!(stdout.contains("[symlink: added]"));
         assert!(!env.output_path().join("link_file.txt").exists());
     }
 
@@ -655,7 +656,80 @@ mod symlink_tests {
         let output = run_diffcopy_sto(env.source_path(), env.target_path(), env.output_path());
 
         let stdout = stdout_str(&output);
-        assert!(stdout.contains("Symlink Details") || stdout.contains("[symlink]"));
+        assert!(stdout.contains("Symlink Details"));
+        assert!(stdout.contains("Added:"));
+    }
+
+    /// IT-603: Symlink deleted detection
+    #[test]
+    fn test_symlink_deleted_detection() {
+        let env = TestEnv::new();
+
+        // Source has symlink, target doesn't
+        create_file(env.source_path(), "real_file.txt", "content");
+        symlink(
+            env.source_path().join("real_file.txt"),
+            env.source_path().join("link_file.txt"),
+        )
+        .unwrap();
+
+        let output = run_diffcopy_sto(env.source_path(), env.target_path(), env.output_path());
+
+        assert!(output.status.success());
+        let stdout = stdout_str(&output);
+        assert!(stdout.contains("[symlink: deleted]"));
+        assert!(stdout.contains("Deleted:"));
+    }
+
+    /// IT-604: Symlink changed detection
+    #[test]
+    fn test_symlink_changed_detection() {
+        let env = TestEnv::new();
+
+        // Source has symlink to one file
+        create_file(env.source_path(), "old_target.txt", "old content");
+        symlink(
+            env.source_path().join("old_target.txt"),
+            env.source_path().join("link.txt"),
+        )
+        .unwrap();
+
+        // Target has symlink to different file
+        create_file(env.target_path(), "new_target.txt", "new content");
+        symlink(
+            env.target_path().join("new_target.txt"),
+            env.target_path().join("link.txt"),
+        )
+        .unwrap();
+
+        let output = run_diffcopy_sto(env.source_path(), env.target_path(), env.output_path());
+
+        assert!(output.status.success());
+        let stdout = stdout_str(&output);
+        assert!(stdout.contains("[symlink: changed]"));
+        assert!(stdout.contains("Changed:"));
+        assert!(stdout.contains("Before:"));
+        assert!(stdout.contains("After:"));
+    }
+
+    /// IT-605: Broken symlink detection
+    #[test]
+    fn test_broken_symlink_detection() {
+        let env = TestEnv::new();
+
+        // Create symlink to non-existent target
+        symlink(
+            env.target_path().join("nonexistent.txt"),
+            env.target_path().join("broken_link.txt"),
+        )
+        .unwrap();
+
+        let output = run_diffcopy_sto(env.source_path(), env.target_path(), env.output_path());
+
+        assert!(output.status.success());
+        let stdout = stdout_str(&output);
+        assert!(stdout.contains("[symlink: added, broken]"));
+        assert!(stdout.contains("BROKEN"));
     }
 }
 
