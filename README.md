@@ -15,6 +15,7 @@
 - `git apply`互換のパッチファイル生成
 - Excelレポート出力（Summary/File Tree/Detailsの3シート構成）
 - TOML設定ファイルによる複雑な設定の再利用
+- **安全機能**: `--force`時の危険なパス保護と削除確認
 - 日本語パス対応（Windowsコンソールでも文字化けなし）
 - クロスプラットフォーム（Windows / Linux / macOS）
 

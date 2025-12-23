@@ -57,6 +57,44 @@ const SCRIPT_EXTENSIONS: &[&str] = &[
     "exe", "com",
 ];
 
+/// Dangerous paths that should never be deleted (Linux/Unix)
+#[cfg(unix)]
+const DANGEROUS_PATHS_UNIX: &[&str] = &[
+    "/",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/home",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/libx32",
+    "/media",
+    "/mnt",
+    "/opt",
+    "/proc",
+    "/root",
+    "/run",
+    "/sbin",
+    "/srv",
+    "/sys",
+    "/tmp",
+    "/usr",
+    "/var",
+];
+
+/// Dangerous paths that should never be deleted (Windows)
+#[cfg(windows)]
+const DANGEROUS_PATHS_WINDOWS: &[&str] = &[
+    "windows",
+    "program files",
+    "program files (x86)",
+    "programdata",
+    "system volume information",
+    "$recycle.bin",
+];
+
 /// Check if stdout is a terminal
 fn is_terminal() -> bool {
     #[cfg(windows)]
@@ -479,6 +517,16 @@ fn main() -> Result<()> {
     // Handle output directory
     if config.output_dir.exists() {
         if config.force {
+            // Check if the path is dangerous to delete (error immediately)
+            if let Some(reason) = is_dangerous_path(&config.output_dir) {
+                bail!("Cannot delete output directory: {}", reason);
+            }
+
+            // Ask for user confirmation
+            if !confirm_deletion(&config.output_dir)? {
+                bail!("Deletion cancelled by user");
+            }
+
             if config.verbose {
                 println_to_stdout(&format!("Removing existing output directory: {}", config.output_dir.display()));
             }
@@ -884,6 +932,117 @@ fn is_excluded(path: &Path, patterns: &[Pattern]) -> bool {
 
         false
     })
+}
+
+/// Check if a path is dangerous to delete
+/// Returns Some(reason) if dangerous, None if safe
+fn is_dangerous_path(path: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        // Check the original path first (handles symlinks like /lib -> /usr/lib)
+        let original_str = path.to_string_lossy();
+        let original_str = original_str.trim_end_matches('/');
+
+        // Handle root directory special case
+        if original_str.is_empty() || original_str == "/" {
+            return Some("Root directory '/' cannot be deleted".to_string());
+        }
+
+        // Check against dangerous system paths (original path)
+        for dangerous in DANGEROUS_PATHS_UNIX {
+            if original_str == *dangerous {
+                return Some(format!("System directory '{}' cannot be deleted", dangerous));
+            }
+        }
+
+        // Also check canonical path if different (for symlinks pointing to dangerous locations)
+        if let Ok(canonical) = path.canonicalize() {
+            let canonical_str = canonical.to_string_lossy();
+            let canonical_str = canonical_str.trim_end_matches('/');
+
+            for dangerous in DANGEROUS_PATHS_UNIX {
+                if canonical_str == *dangerous {
+                    return Some(format!("System directory '{}' (resolves to '{}') cannot be deleted", original_str, dangerous));
+                }
+            }
+        }
+
+        // Block /home/<username> (user home directory)
+        if original_str.starts_with("/home/") {
+            let after_home = &original_str[6..]; // Skip "/home/"
+            if !after_home.contains('/') && !after_home.is_empty() {
+                return Some(format!("User home directory '{}' cannot be deleted", original_str));
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // Try to canonicalize, but fall back to the original path
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let path_str = canonical.to_string_lossy().to_lowercase();
+        let path_str = path_str.trim_end_matches('\\');
+
+        // Block drive roots (C:\, D:\, etc.)
+        if path_str.len() == 2 && path_str.ends_with(':') {
+            return Some(format!("Drive root '{}' cannot be deleted", path_str));
+        }
+
+        // Check for dangerous Windows directories
+        for dangerous in DANGEROUS_PATHS_WINDOWS {
+            // Match C:\Windows, D:\Windows, etc.
+            if path_str.len() >= 3 && path_str.chars().nth(1) == Some(':') {
+                let after_drive = &path_str[3..]; // Skip "C:\"
+                if after_drive == *dangerous {
+                    return Some(format!("System directory '{}' cannot be deleted", path_str));
+                }
+            }
+        }
+
+        // Block C:\Users\<username> and C:\Users\<username>\<foldername>
+        if path_str.len() >= 3 && path_str.chars().nth(1) == Some(':') {
+            let after_drive = &path_str[3..]; // Skip "C:\"
+            if after_drive.starts_with("users\\") {
+                let after_users = &after_drive[6..]; // Skip "users\"
+                let parts: Vec<&str> = after_users.split('\\').collect();
+                // Block: C:\Users\username (1 part) or C:\Users\username\foldername (2 parts)
+                if parts.len() <= 2 && !parts.is_empty() && !parts[0].is_empty() {
+                    return Some(format!("User directory '{}' cannot be deleted", path_str));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Ask for user confirmation before deletion
+/// Returns true if user confirms, false if user declines
+/// Skips prompt and returns true if stdin is not a terminal (non-interactive mode)
+fn confirm_deletion(path: &Path) -> Result<bool> {
+    use std::io::{self, BufRead, IsTerminal};
+
+    // Skip confirmation if stdin is not a terminal (non-interactive mode)
+    // This allows scripts and automated tests to run without interaction
+    if !io::stdin().is_terminal() {
+        return Ok(true);
+    }
+
+    println_to_stdout(&format!(
+        "\nWarning: About to delete directory:\n  {}\n",
+        path.display()
+    ));
+    print_to_stdout("Are you sure you want to delete this directory? [yes/no]: ");
+
+    // Flush stdout to ensure the prompt is displayed
+    io::stdout().flush().ok();
+
+    let stdin = io::stdin();
+    let mut input = String::new();
+    stdin.lock().read_line(&mut input)?;
+
+    let input = input.trim().to_lowercase();
+    Ok(input == "yes" || input == "y")
 }
 
 /// Get symlink information for a path
@@ -2620,6 +2779,86 @@ mod tests {
     fn test_is_excluded_empty_patterns() {
         let patterns: Vec<Pattern> = vec![];
         assert!(!is_excluded(Path::new("any_file.txt"), &patterns));
+    }
+
+    // ==================== is_dangerous_path tests ====================
+
+    #[test]
+    #[cfg(unix)]
+    fn test_is_dangerous_path_unix_system_dirs() {
+        // System directories should be dangerous
+        assert!(is_dangerous_path(Path::new("/")).is_some());
+        assert!(is_dangerous_path(Path::new("/usr")).is_some());
+        assert!(is_dangerous_path(Path::new("/lib")).is_some());
+        assert!(is_dangerous_path(Path::new("/etc")).is_some());
+        assert!(is_dangerous_path(Path::new("/var")).is_some());
+        assert!(is_dangerous_path(Path::new("/home")).is_some());
+        assert!(is_dangerous_path(Path::new("/bin")).is_some());
+        assert!(is_dangerous_path(Path::new("/tmp")).is_some());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_is_dangerous_path_unix_user_home() {
+        // User home directory should be dangerous
+        assert!(is_dangerous_path(Path::new("/home/user")).is_some());
+        assert!(is_dangerous_path(Path::new("/home/testuser")).is_some());
+        // But subdirectories of home should be safe
+        assert!(is_dangerous_path(Path::new("/home/user/projects")).is_none());
+        assert!(is_dangerous_path(Path::new("/home/user/Documents")).is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_is_dangerous_path_unix_safe_paths() {
+        // Regular paths should be safe
+        assert!(is_dangerous_path(Path::new("/home/user/projects/myapp")).is_none());
+        assert!(is_dangerous_path(Path::new("/tmp/test_output")).is_none());
+        assert!(is_dangerous_path(Path::new("/var/tmp/mydata")).is_none());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_is_dangerous_path_windows_drive_roots() {
+        // Drive roots should be dangerous
+        assert!(is_dangerous_path(Path::new("C:\\")).is_some());
+        assert!(is_dangerous_path(Path::new("D:\\")).is_some());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_is_dangerous_path_windows_system_dirs() {
+        // System directories should be dangerous
+        assert!(is_dangerous_path(Path::new("C:\\Windows")).is_some());
+        assert!(is_dangerous_path(Path::new("C:\\Program Files")).is_some());
+        assert!(is_dangerous_path(Path::new("C:\\Program Files (x86)")).is_some());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_is_dangerous_path_windows_user_dirs() {
+        // User directories should be dangerous
+        assert!(is_dangerous_path(Path::new("C:\\Users\\TestUser")).is_some());
+        assert!(is_dangerous_path(Path::new("C:\\Users\\TestUser\\Desktop")).is_some());
+        assert!(is_dangerous_path(Path::new("C:\\Users\\TestUser\\Documents")).is_some());
+        // But deeper subdirectories should be safe
+        assert!(is_dangerous_path(Path::new("C:\\Users\\TestUser\\Documents\\Projects")).is_none());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_is_dangerous_path_windows_safe_paths() {
+        // Regular paths should be safe
+        assert!(is_dangerous_path(Path::new("C:\\Users\\TestUser\\Documents\\Projects\\myapp")).is_none());
+        assert!(is_dangerous_path(Path::new("D:\\Projects\\output")).is_none());
+    }
+
+    #[test]
+    fn test_is_dangerous_path_relative_paths() {
+        // Relative paths that don't exist should be safe (they'll fail canonicalization)
+        assert!(is_dangerous_path(Path::new("output")).is_none());
+        assert!(is_dangerous_path(Path::new("./output")).is_none());
+        assert!(is_dangerous_path(Path::new("../output")).is_none());
     }
 
     // ==================== compare_directories tests ====================

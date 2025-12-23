@@ -15,6 +15,7 @@ A CLI tool that compares two directories and extracts only the files with differ
 - `git apply` compatible patch file generation
 - Excel report output (3-sheet layout: Summary/File Tree/Details)
 - TOML config file support for reusable settings
+- **Safety features**: Dangerous path protection and deletion confirmation with `--force`
 - Japanese path support (no garbled characters on Windows console)
 - Cross-platform (Windows / Linux / macOS)
 

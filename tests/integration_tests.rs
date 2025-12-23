@@ -453,6 +453,36 @@ fn test_output_directory_exists() {
     assert!(stderr.contains("already exists") || stderr.contains("--force"));
 }
 
+/// IT-203b: --force successfully deletes and recreates safe output directory
+/// Note: Dangerous path detection is tested via unit tests in main.rs
+/// (test_is_dangerous_path_*) to avoid any risk of accidental system damage.
+#[test]
+fn test_force_with_nested_output() {
+    let env = TestEnv::new();
+
+    // Create nested output directory structure
+    let nested_output = env.output.join("level1").join("level2");
+    fs::create_dir_all(&nested_output).unwrap();
+    create_file(&nested_output, "deep_file.txt", "deep content");
+
+    // Create a file in target to trigger diff
+    create_file(env.target_path(), "new_file.txt", "new content");
+
+    // Run with --force, should delete nested structure and recreate
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--force"],
+    );
+
+    assert!(output.status.success());
+    // Old nested structure should be gone
+    assert!(!nested_output.exists());
+    // New file should be copied
+    assert!(env.output_path().join("new_file.txt").exists());
+}
+
 /// IT-204: Invalid exclude pattern
 #[test]
 fn test_invalid_exclude_pattern() {
