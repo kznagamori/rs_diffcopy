@@ -497,7 +497,8 @@ fn compare_single_file(
     match (&target_symlink, &source_symlink) {
         // Both are symlinks
         (Some(target_info), Some(source_info)) => {
-            if target_info.target != source_info.target {
+            // Check if target path changed OR if broken status changed
+            if target_info.target != source_info.target || target_info.exists != source_info.exists {
                 return (Some(DiffEntry {
                     relative_path: rel_path.clone(),
                     is_dir: false,
@@ -510,7 +511,7 @@ fn compare_single_file(
             }
             return (None, None);
         }
-        // Only target has symlink (added)
+        // Only target has symlink (added) - source was a regular file or didn't exist
         (Some(target_info), None) => {
             return (Some(DiffEntry {
                 relative_path: rel_path.clone(),
@@ -522,8 +523,19 @@ fn compare_single_file(
                 },
             }), None);
         }
-        // Only source has symlink - will be handled in deleted section
-        (None, Some(_)) => {}
+        // Source has symlink, target is a regular file (symlink became file)
+        (None, Some(source_info)) => {
+            // Symlink was replaced by a regular file - report as symlink deleted
+            return (Some(DiffEntry {
+                relative_path: rel_path.clone(),
+                is_dir: false,
+                status: FileStatus::Symlink {
+                    change_type: SymlinkChangeType::Deleted,
+                    current: None,
+                    previous: Some(source_info.clone()),
+                },
+            }), None);
+        }
         // Neither is symlink - continue normal processing
         (None, None) => {}
     }
@@ -756,14 +768,34 @@ fn compare_directories(
 
 fn is_excluded(path: &Path, patterns: &[Pattern]) -> bool {
     let path_str = path.to_string_lossy();
-    patterns.iter().any(|p| p.matches(&path_str))
+
+    patterns.iter().any(|p| {
+        // Match against full path
+        if p.matches(&path_str) {
+            return true;
+        }
+
+        // Also match against each path component
+        // This allows patterns like "__pycache__" to match "src/__pycache__/file.py"
+        for component in path.components() {
+            if let std::path::Component::Normal(name) = component {
+                if p.matches(&name.to_string_lossy()) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    })
 }
 
 /// Get symlink information for a path
 fn get_symlink_info(path: &Path) -> Option<SymlinkInfo> {
     if path.is_symlink() {
         let target = fs::read_link(path).unwrap_or_default();
-        let exists = target.exists() || path.exists();
+        // Check if symlink target exists by following the symlink
+        // path.exists() follows symlinks, returns false for broken symlinks
+        let exists = path.exists();
         let is_dir = path.is_dir();
         Some(SymlinkInfo { target, exists, is_dir })
     } else {
@@ -1291,25 +1323,41 @@ fn format_entry(entry: &DiffEntry) -> String {
 fn format_entry_with_name(name: &str, entry: &DiffEntry) -> String {
     match &entry.status {
         FileStatus::Symlink { change_type, current, previous } => {
-            let (target_display, broken_tag) = match (current, previous) {
-                (Some(info), _) => {
-                    let broken = if !info.exists { ", broken" } else { "" };
-                    (format!(" -> {}", info.target.display()), broken)
-                }
-                (None, Some(info)) => {
-                    // Deleted symlink - show previous target
-                    (format!(" -> {}", info.target.display()), "")
-                }
-                (None, None) => (String::new(), ""),
+            let target_display = match (current, previous) {
+                (Some(info), _) => format!(" -> {}", info.target.display()),
+                (None, Some(info)) => format!(" -> {}", info.target.display()),
+                (None, None) => String::new(),
             };
 
             let change_tag = match change_type {
-                SymlinkChangeType::Added => "added",
-                SymlinkChangeType::Deleted => "deleted",
-                SymlinkChangeType::Changed => "changed",
+                SymlinkChangeType::Added => {
+                    let broken = match current {
+                        Some(info) if !info.exists => ", broken",
+                        _ => "",
+                    };
+                    format!("added{}", broken)
+                }
+                SymlinkChangeType::Deleted => "deleted".to_string(),
+                SymlinkChangeType::Changed => {
+                    // Check if it's only a broken status change
+                    let curr_broken = current.as_ref().map(|i| !i.exists).unwrap_or(false);
+                    let prev_broken = previous.as_ref().map(|i| !i.exists).unwrap_or(false);
+                    let same_target = match (current, previous) {
+                        (Some(c), Some(p)) => c.target == p.target,
+                        _ => false,
+                    };
+
+                    if same_target && !prev_broken && curr_broken {
+                        "broken".to_string()
+                    } else if curr_broken {
+                        "changed, broken".to_string()
+                    } else {
+                        "changed".to_string()
+                    }
+                }
             };
 
-            format!("{}{} [symlink: {}{}]", name, target_display, change_tag, broken_tag)
+            format!("{}{} [symlink: {}]", name, target_display, change_tag)
         }
         _ => {
             let suffix = if entry.is_dir { "/" } else { "" };
@@ -1324,15 +1372,34 @@ fn format_status_tag(status: &FileStatus) -> String {
         FileStatus::Added => "[added]".to_string(),
         FileStatus::Modified => "[modified]".to_string(),
         FileStatus::Deleted => "[deleted]".to_string(),
-        FileStatus::Symlink { change_type, current, .. } => {
-            let broken = match current {
-                Some(info) if !info.exists => ", broken",
-                _ => "",
-            };
+        FileStatus::Symlink { change_type, current, previous } => {
             match change_type {
-                SymlinkChangeType::Added => format!("[symlink: added{}]", broken),
+                SymlinkChangeType::Added => {
+                    let broken = match current {
+                        Some(info) if !info.exists => ", broken",
+                        _ => "",
+                    };
+                    format!("[symlink: added{}]", broken)
+                }
                 SymlinkChangeType::Deleted => "[symlink: deleted]".to_string(),
-                SymlinkChangeType::Changed => format!("[symlink: changed{}]", broken),
+                SymlinkChangeType::Changed => {
+                    // Check if it's a broken status change
+                    let curr_broken = current.as_ref().map(|i| !i.exists).unwrap_or(false);
+                    let prev_broken = previous.as_ref().map(|i| !i.exists).unwrap_or(false);
+                    let same_target = match (current, previous) {
+                        (Some(c), Some(p)) => c.target == p.target,
+                        _ => false,
+                    };
+
+                    if same_target && !prev_broken && curr_broken {
+                        // Same target but became broken
+                        "[symlink: broken]".to_string()
+                    } else if curr_broken {
+                        "[symlink: changed, broken]".to_string()
+                    } else {
+                        "[symlink: changed]".to_string()
+                    }
+                }
             }
         }
         FileStatus::PermissionDenied { .. } => "[permission denied]".to_string(),
@@ -1467,6 +1534,27 @@ mod tests {
         assert!(is_excluded(Path::new("cache.tmp"), &patterns));
         assert!(is_excluded(Path::new("node_modules"), &patterns));
         assert!(!is_excluded(Path::new("main.rs"), &patterns));
+    }
+
+    #[test]
+    fn test_is_excluded_path_component() {
+        // Test that patterns match path components, not just full paths
+        let patterns = vec![
+            Pattern::new("__pycache__").unwrap(),
+            Pattern::new("node_modules").unwrap(),
+            Pattern::new(".git").unwrap(),
+        ];
+        // Should match as path component
+        assert!(is_excluded(Path::new("src/__pycache__"), &patterns));
+        assert!(is_excluded(Path::new("src/__pycache__/module.pyc"), &patterns));
+        assert!(is_excluded(Path::new("project/node_modules/package"), &patterns));
+        assert!(is_excluded(Path::new(".git/config"), &patterns));
+        // Should match exact path
+        assert!(is_excluded(Path::new("__pycache__"), &patterns));
+        assert!(is_excluded(Path::new("node_modules"), &patterns));
+        // Should not match partial names
+        assert!(!is_excluded(Path::new("my__pycache__dir"), &patterns));
+        assert!(!is_excluded(Path::new("not_node_modules"), &patterns));
     }
 
     #[test]

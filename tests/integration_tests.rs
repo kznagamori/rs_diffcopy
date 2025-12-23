@@ -351,6 +351,47 @@ fn test_multiple_exclude_options() {
     assert!(!env.output_path().join("cache.tmp").exists());
 }
 
+/// IT-109: Exclude pattern matches path components (e.g., __pycache__)
+#[test]
+fn test_exclude_path_component() {
+    let env = TestEnv::new();
+
+    // Create nested __pycache__ directories
+    fs::create_dir_all(env.target_path().join("src/__pycache__")).unwrap();
+    fs::create_dir_all(env.target_path().join("lib/__pycache__")).unwrap();
+    create_file(env.target_path(), "src/__pycache__/module.pyc", "bytecode");
+    create_file(env.target_path(), "lib/__pycache__/util.pyc", "bytecode");
+    create_file(env.target_path(), "src/main.py", "print('hello')");
+
+    // Also test with source having __pycache__ (should be excluded from deleted)
+    fs::create_dir_all(env.source_path().join("old/__pycache__")).unwrap();
+    create_file(env.source_path(), "old/__pycache__/old.pyc", "old bytecode");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--exclude", "__pycache__"],
+    );
+
+    assert!(output.status.success());
+    let stdout = stdout_str(&output);
+
+    // main.py should be added (not excluded)
+    assert!(env.output_path().join("src/main.py").exists());
+
+    // __pycache__ directories and contents should be excluded
+    assert!(!env.output_path().join("src/__pycache__").exists());
+    assert!(!env.output_path().join("lib/__pycache__").exists());
+
+    // __pycache__ should not appear in output as deleted
+    assert!(
+        !stdout.contains("__pycache__"),
+        "__pycache__ should be excluded from output but got:\n{}",
+        stdout
+    );
+}
+
 // ============================================================================
 // 3.3 Error Handling Tests
 // ============================================================================
@@ -730,6 +771,124 @@ mod symlink_tests {
         let stdout = stdout_str(&output);
         assert!(stdout.contains("[symlink: added, broken]"));
         assert!(stdout.contains("BROKEN"));
+    }
+
+    /// IT-606: Symlink becomes broken (same target, but target no longer exists)
+    #[test]
+    fn test_symlink_becomes_broken() {
+        let env = TestEnv::new();
+
+        // Source has working symlink
+        create_file(env.source_path(), "target.txt", "content");
+        symlink(
+            Path::new("target.txt"),
+            env.source_path().join("link.txt"),
+        )
+        .unwrap();
+
+        // Target has same symlink but target file doesn't exist (broken)
+        symlink(
+            Path::new("target.txt"),
+            env.target_path().join("link.txt"),
+        )
+        .unwrap();
+        // Don't create target.txt in target dir - symlink will be broken
+
+        let output = run_diffcopy_sto(env.source_path(), env.target_path(), env.output_path());
+
+        assert!(output.status.success());
+        let stdout = stdout_str(&output);
+        assert!(
+            stdout.contains("[symlink: broken]"),
+            "Expected [symlink: broken] but got:\n{}",
+            stdout
+        );
+    }
+
+    /// IT-607: Regular file becomes symlink
+    #[test]
+    fn test_file_becomes_symlink() {
+        let env = TestEnv::new();
+
+        // Source has regular file
+        create_file(env.source_path(), "file.txt", "regular content");
+
+        // Target has symlink with same name
+        create_file(env.target_path(), "target.txt", "target content");
+        symlink(
+            Path::new("target.txt"),
+            env.target_path().join("file.txt"),
+        )
+        .unwrap();
+
+        let output = run_diffcopy_sto(env.source_path(), env.target_path(), env.output_path());
+
+        assert!(output.status.success());
+        let stdout = stdout_str(&output);
+        assert!(
+            stdout.contains("[symlink: added]"),
+            "Expected [symlink: added] but got:\n{}",
+            stdout
+        );
+    }
+
+    /// IT-608: Symlink becomes regular file
+    #[test]
+    fn test_symlink_becomes_file() {
+        let env = TestEnv::new();
+
+        // Source has symlink
+        create_file(env.source_path(), "target.txt", "target content");
+        symlink(
+            Path::new("target.txt"),
+            env.source_path().join("file.txt"),
+        )
+        .unwrap();
+
+        // Target has regular file with same name
+        create_file(env.target_path(), "file.txt", "regular content");
+
+        let output = run_diffcopy_sto(env.source_path(), env.target_path(), env.output_path());
+
+        assert!(output.status.success());
+        let stdout = stdout_str(&output);
+        assert!(
+            stdout.contains("[symlink: deleted]"),
+            "Expected [symlink: deleted] but got:\n{}",
+            stdout
+        );
+    }
+
+    /// IT-609: Symlink changes target and becomes broken
+    #[test]
+    fn test_symlink_changed_and_broken() {
+        let env = TestEnv::new();
+
+        // Source has working symlink to one target
+        create_file(env.source_path(), "old_target.txt", "old content");
+        symlink(
+            Path::new("old_target.txt"),
+            env.source_path().join("link.txt"),
+        )
+        .unwrap();
+
+        // Target has symlink to different target that doesn't exist
+        symlink(
+            Path::new("new_target.txt"),
+            env.target_path().join("link.txt"),
+        )
+        .unwrap();
+        // Don't create new_target.txt - symlink will be broken
+
+        let output = run_diffcopy_sto(env.source_path(), env.target_path(), env.output_path());
+
+        assert!(output.status.success());
+        let stdout = stdout_str(&output);
+        assert!(
+            stdout.contains("[symlink: changed, broken]"),
+            "Expected [symlink: changed, broken] but got:\n{}",
+            stdout
+        );
     }
 }
 

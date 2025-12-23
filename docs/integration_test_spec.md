@@ -85,6 +85,10 @@
 | IT-603 | シンボリックリンク削除検出 | sourceにのみ存在するsymlink | [symlink: deleted]として検出 |
 | IT-604 | シンボリックリンク変更検出 | リンク先が変更されたsymlink | [symlink: changed]として検出 |
 | IT-605 | 壊れたシンボリックリンク検出 | 存在しないパスを指すsymlink | [symlink: added, broken]として検出 |
+| IT-606 | シンボリックリンク壊れ検出 | 同じターゲットでリンク先が消失 | [symlink: broken]として検出 |
+| IT-607 | 通常ファイル→symlink変換検出 | 通常ファイルがsymlinkに変更 | [symlink: added]として検出 |
+| IT-608 | symlink→通常ファイル変換検出 | symlinkが通常ファイルに変更 | [symlink: deleted]として検出 |
+| IT-609 | symlink変更かつ壊れ検出 | リンク先変更＋リンク先が存在しない | [symlink: changed, broken]として検出 |
 
 ### 3.8 並列処理テスト
 
@@ -155,9 +159,41 @@ source/
 target/
 └── link.txt -> new_target.txt  # リンク先変更
 
-# IT-605: 壊れたリンク検出
+# IT-605: 壊れたリンク検出（新規追加）
 target/
 └── broken.txt -> nonexistent.txt  # 存在しないパス
+
+# IT-606: シンボリックリンク壊れ検出（同じターゲット）
+source/
+├── target.txt                     # 実ファイル
+└── link.txt -> target.txt         # 動作するsymlink
+
+target/
+└── link.txt -> target.txt         # target.txtがないので壊れている
+
+# IT-607: 通常ファイル→symlink変換
+source/
+└── file.txt                       # 通常ファイル
+
+target/
+├── target.txt
+└── file.txt -> target.txt         # symlinkに変換
+
+# IT-608: symlink→通常ファイル変換
+source/
+├── target.txt
+└── file.txt -> target.txt         # symlink
+
+target/
+└── file.txt                       # 通常ファイルに変換
+
+# IT-609: symlink変更かつ壊れ
+source/
+├── old_target.txt
+└── link.txt -> old_target.txt     # 動作するsymlink
+
+target/
+└── link.txt -> new_target.txt     # リンク先変更＋存在しない
 ```
 
 ### 4.4 シンボリックリンク詳細出力形式
@@ -168,14 +204,30 @@ Symlink Details
 ================
 Added:
   new_link.txt -> target.txt
-  another.txt -> dest.txt (broken)
+  another.txt -> dest.txt (BROKEN)
 
 Deleted:
   old_link.txt -> removed_target.txt
 
 Changed:
-  changed_link.txt: old_target.txt -> new_target.txt
+  changed_link.txt
+    Before: old_target.txt (file, OK)
+    After:  new_target.txt (file, BROKEN)
+  broken_link.txt
+    Before: target.txt (file, OK)
+    After:  target.txt (file, BROKEN)
 ```
+
+### 4.5 シンボリックリンクステータスタグ
+
+| タグ | 意味 |
+|------|------|
+| `[symlink: added]` | 新規追加されたシンボリックリンク |
+| `[symlink: added, broken]` | 新規追加された壊れたシンボリックリンク |
+| `[symlink: deleted]` | 削除されたシンボリックリンク |
+| `[symlink: changed]` | リンク先が変更されたシンボリックリンク |
+| `[symlink: changed, broken]` | リンク先変更＋壊れたシンボリックリンク |
+| `[symlink: broken]` | 同じリンク先で壊れた状態に変化 |
 
 ---
 
