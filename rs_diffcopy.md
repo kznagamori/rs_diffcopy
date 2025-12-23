@@ -357,13 +357,15 @@ git apply changes.patch
 処理はフェーズ別に進捗表示されます：
 
 ```
-[1/4] Scanning directories...
+[1/5] Scanning directories...
 Found 1234 items.
-[2/4] Comparing: [=============>              ] 45% (555/1234)
+[2/5] Comparing: [=============>              ] 45% (555/1234)
 Compared 1234 items.
-[3/4] Copying files...
+[3/5] Copying files...
 Copied 100 files.
-[4/4] Writing summary...
+[4/5] Generating patches...
+Generated 50 patches.
+[5/5] Writing summary...
 Done.
 ```
 
@@ -374,11 +376,14 @@ Done.
 | Phase 1 | Scanning (ディレクトリ走査) | - |
 | Phase 2 | Comparing (ハッシュ比較) | 並列 |
 | Phase 3 | Copying (ファイルコピー) | 並列 |
-| Phase 4 | Writing summary | - |
+| Phase 4 | Generating patches (パッチ生成) | - |
+| Phase 5 | Writing summary | - |
+
+※ Phase 4 は `--patch` または `--patch-file` 指定時のみ表示
 
 ### 8.2 表示仕様
 
-- 各フェーズ開始時に `[n/4]` 形式でフェーズ番号を表示
+- 各フェーズ開始時に `[n/5]` 形式でフェーズ番号を表示
 - 比較・コピー処理中はプログレスバーで進捗を表示
 - パイプやリダイレクト時はプログレスバーを非表示
 - `--verbose` モードでは追加の詳細情報を表示

@@ -322,13 +322,15 @@ src/main.py: 755 -> 644
 Progress is displayed by phase:
 
 ```
-[1/4] Scanning directories...
+[1/5] Scanning directories...
 Found 1234 items.
-[2/4] Comparing: [=============>              ] 45% (555/1234)
+[2/5] Comparing: [=============>              ] 45% (555/1234)
 Compared 1234 items.
-[3/4] Copying files...
+[3/5] Copying files...
 Copied 100 files.
-[4/4] Writing summary...
+[4/5] Generating patches...
+Generated 50 patches.
+[5/5] Writing summary...
 Done.
 ```
 
@@ -338,7 +340,10 @@ Done.
 | Phase 1 | Scanning | - |
 | Phase 2 | Comparing | Yes |
 | Phase 3 | Copying | Yes |
-| Phase 4 | Summary | - |
+| Phase 4 | Patches | - |
+| Phase 5 | Summary | - |
+
+Note: Phase 4 is only shown when `--patch` or `--patch-file` is specified
 
 ### Exit Codes
 

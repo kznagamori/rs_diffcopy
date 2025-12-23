@@ -513,8 +513,9 @@ fn main() -> Result<()> {
         copy_diff_files(&diff_result, &config.output_dir, config.verbose, config.both_versions)?;
     }
 
-    // Generate patches if requested (after copying, before summary)
+    // Phase 4: Generate patches if requested (after copying, before summary)
     let patch_result = if (config.patch || config.patch_file.is_some()) && diff_result.has_differences() && !config.dry_run {
+        print_phase(4, 5, "Generating patches...");
         Some(generate_patches(
             &diff_result,
             &config.output_dir,
@@ -526,8 +527,8 @@ fn main() -> Result<()> {
         None
     };
 
-    // Phase 4: Generate and output summary
-    print_phase(4, 4, "Writing summary...");
+    // Phase 5: Generate and output summary
+    print_phase(5, 5, "Writing summary...");
 
     let summary_options = SummaryOptions {
         exclude_patterns: config.exclude.clone(),
@@ -685,7 +686,7 @@ fn compare_directories(
     verbose: bool,
     check_permissions: PermissionCheckMode,
 ) -> Result<DiffResult> {
-    const TOTAL_PHASES: usize = 4;
+    const TOTAL_PHASES: usize = 5;
 
     let mut initial_entries = Vec::new();
     let mut source_paths: BTreeSet<PathBuf> = BTreeSet::new();
@@ -1052,7 +1053,7 @@ fn copy_diff_files(diff_result: &DiffResult, output_dir: &Path, verbose: bool, b
     }
 
     // Phase 3: Copying (parallel)
-    print_phase(3, 4, "Copying files...");
+    print_phase(3, 5, "Copying files...");
 
     let progress_counter = AtomicUsize::new(0);
     let errors = Mutex::new(Vec::new());
