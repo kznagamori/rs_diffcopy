@@ -12,6 +12,8 @@
 - フェーズ別進捗表示で処理状況を可視化
 - 追加・変更・削除ファイルをツリー形式で表示
 - シンボリックリンクの詳細な状態表示（追加/削除/変更/壊れたリンク）
+- `git apply`互換のパッチファイル生成
+- Excelレポート出力（Summary/File Tree/Detailsの3シート構成）
 - TOML設定ファイルによる複雑な設定の再利用
 - 日本語パス対応（Windowsコンソールでも文字化けなし）
 - クロスプラットフォーム（Windows / Linux / macOS）
@@ -81,6 +83,7 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-P, --check-permissions <MODE>` | 権限変更をチェック（none/scripts/all） |
 | `-p, --patch` | 変更ファイルごとに個別のパッチファイル(.patch)を生成 |
 | `--patch-file <PATH>` | 全変更を統合したパッチファイルを生成 |
+| `--excel <PATH>` | サマリーをExcelファイル(.xlsx)に出力 |
 | `-h, --help` | ヘルプ表示 |
 | `-V, --version` | バージョン表示 |
 
@@ -123,6 +126,9 @@ rs_diffcopy -S old -T new -O output --patch-file changes.patch
 # 個別と統合の両方を生成
 rs_diffcopy -S old -T new -O output --patch --patch-file all.patch
 
+# Excelレポートを出力
+rs_diffcopy -S old -T new -O output --excel report.xlsx
+
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
 ```
@@ -148,6 +154,7 @@ summary = "./summary.txt"
 check_permissions = "none"  # none / scripts / all
 patch = false               # 個別パッチファイル生成
 patch_file = ""             # 統合パッチファイルパス（空で無効）
+excel = ""                  # Excelレポート出力パス（空で無効）
 
 # 除外パターン（複数指定可）
 exclude = [
@@ -175,6 +182,7 @@ exclude = [
 | `check_permissions` | string | - | 権限チェックモード（none/scripts/all） |
 | `patch` | bool | - | 個別パッチファイル生成 |
 | `patch_file` | string | - | 統合パッチファイルパス |
+| `excel` | string | - | Excelレポート出力パス |
 
 ### 優先順位
 

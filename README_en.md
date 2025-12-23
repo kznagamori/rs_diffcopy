@@ -12,6 +12,8 @@ A CLI tool that compares two directories and extracts only the files with differ
 - Phase-based progress display for visibility into processing status
 - Displays added, modified, and deleted files in tree format
 - Detailed symlink status display (added/deleted/changed/broken)
+- `git apply` compatible patch file generation
+- Excel report output (3-sheet layout: Summary/File Tree/Details)
 - TOML config file support for reusable settings
 - Japanese path support (no garbled characters on Windows console)
 - Cross-platform (Windows / Linux / macOS)
@@ -81,6 +83,7 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-P, --check-permissions <MODE>` | Check permission changes (none/scripts/all) |
 | `-p, --patch` | Generate individual patch files (.patch) for modified files |
 | `--patch-file <PATH>` | Generate combined patch file with all changes |
+| `--excel <PATH>` | Output summary to Excel file (.xlsx) |
 | `-h, --help` | Show help |
 | `-V, --version` | Show version |
 
@@ -123,6 +126,9 @@ rs_diffcopy -S old -T new -O output --patch-file changes.patch
 # Generate both individual and combined patches
 rs_diffcopy -S old -T new -O output --patch --patch-file all.patch
 
+# Output Excel report
+rs_diffcopy -S old -T new -O output --excel report.xlsx
+
 # Use config file
 rs_diffcopy --config ./diffcopy.toml
 ```
@@ -148,6 +154,7 @@ summary = "./summary.txt"
 check_permissions = "none"  # none / scripts / all
 patch = false               # Generate individual patch files
 patch_file = ""             # Combined patch file path (empty to disable)
+excel = ""                  # Excel report output path (empty to disable)
 
 # Exclude patterns (multiple can be specified)
 exclude = [
@@ -175,6 +182,7 @@ exclude = [
 | `check_permissions` | string | - | Permission check mode (none/scripts/all) |
 | `patch` | bool | - | Generate individual patch files |
 | `patch_file` | string | - | Combined patch file path |
+| `excel` | string | - | Excel report output path |
 
 ### Priority
 

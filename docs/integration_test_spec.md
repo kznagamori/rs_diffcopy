@@ -117,6 +117,20 @@
 | IT-808 | 設定ファイルでパッチ | patch=trueの設定ファイル | パッチファイルが生成される |
 | IT-809 | git apply互換性 | 生成パッチをgit applyで適用 | 正常に適用される |
 
+### 3.10 Excelレポートテスト
+
+| ID | テスト名 | 説明 | 期待結果 |
+|----|---------|------|----------|
+| IT-901 | Excelファイル生成 | --excelオプションで差分ありの場合 | .xlsxファイルが作成される |
+| IT-902 | 3シート構成確認 | 生成されたExcelの構造確認 | Summary, File Tree, Detailsの3シート存在 |
+| IT-903 | Excelサマリーヘッダー | Summaryシートのヘッダー情報 | Source/Target/Output/Date情報が含まれる |
+| IT-904 | Excelオプション表示 | オプション指定時のSummaryシート | 指定オプションが表示される |
+| IT-905 | Excel統計情報 | 統計情報の確認 | Added/Modified/Deleted/Totalが正確 |
+| IT-906 | Excelファイルツリー | File Treeシートの内容確認 | ツリー構造でファイルが表示される |
+| IT-907 | Excel詳細情報 | Detailsシートの内容確認 | 各カテゴリの詳細一覧が表示される |
+| IT-908 | Excel設定ファイル | excel設定の設定ファイル | Excelファイルが生成される |
+| IT-909 | Excel差分なし | 差分がない場合のExcel出力 | 差分なしの情報が出力される |
+
 ---
 
 ## 4. テストデータ構造

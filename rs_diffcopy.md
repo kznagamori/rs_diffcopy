@@ -31,6 +31,7 @@
 | 新旧両方コピー | 変更ファイルの新旧両方を `.old`/`.new` 拡張子付きでコピー |
 | 権限チェック | ファイル権限の変更を検出（スクリプト限定/全ファイル） |
 | パッチ生成 | 変更ファイルのunified diff形式パッチを生成（`git apply`互換） |
+| Excelレポート | サマリーをExcelファイル(.xlsx)として出力（3シート構成） |
 | ドライラン | 実際にコピーせず、対象ファイルをプレビュー |
 | 進捗表示 | フェーズ別プログレスバーを表示 |
 | 並列処理 | ファイル比較・コピーを並列実行で高速化 |
@@ -60,6 +61,7 @@ rs_diffcopy [OPTIONS]
   -P, --check-permissions <MODE>   権限変更をチェック（none/scripts/all）
   -p, --patch                      変更ファイルごとに個別パッチファイル(.patch)を生成
       --patch-file <PATH>          全変更を統合したパッチファイルを生成
+      --excel <PATH>               サマリーをExcelファイル(.xlsx)に出力
   -h, --help                       ヘルプ表示
   -V, --version                    バージョン表示
 ```
@@ -103,6 +105,9 @@ rs_diffcopy -S old -T new -O output --patch-file changes.patch
 # 個別と統合の両方を生成
 rs_diffcopy -S old -T new -O output --patch --patch-file all.patch
 
+# Excelレポートを出力
+rs_diffcopy -S old -T new -O output --excel report.xlsx
+
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
 ```
@@ -128,6 +133,7 @@ summary = "./summary.txt"
 check_permissions = "none"  # none / scripts / all
 patch = false               # 個別パッチファイル生成
 patch_file = ""             # 統合パッチファイルパス（空で無効）
+excel = ""                  # Excelレポート出力パス（空で無効）
 
 # 除外パターン（複数指定可）
 exclude = [
@@ -155,6 +161,7 @@ exclude = [
 | `check_permissions` | string | - | `"none"` | 権限チェックモード |
 | `patch` | bool | - | `false` | 個別パッチファイル生成 |
 | `patch_file` | string | - | - | 統合パッチファイルパス |
+| `excel` | string | - | - | Excelレポート出力パス |
 
 #### 優先順位
 
@@ -550,6 +557,29 @@ No differences found.
 ※ 権限変更は File Tree には表示されず、Permission Changes セクションにのみ表示
 ※ バイナリファイルはパッチ生成時にスキップされ、Patch Detailsセクションに記載
 
+### 9.5 Excelレポート形式
+
+`--excel <PATH>` オプションを使用すると、サマリーをExcelファイル(.xlsx)として出力できます。
+
+#### シート構成
+
+| シート名 | 内容 |
+|----------|------|
+| Summary | 基本情報、オプション、統計情報 |
+| File Tree | ツリー形式のファイル一覧（セルでインデント表示） |
+| Details | 追加/変更/削除ファイル、シンボリックリンク、権限変更、パッチの詳細一覧 |
+
+#### 書式設定
+
+- **タイトル**: 青色太字、16pt、中央揃え
+- **セクションヘッダー**: 青背景、白文字、12pt
+- **ステータス色分け**:
+  - 追加（Added）: 緑色 (#008000)
+  - 変更（Modified）: 青色 (#0066CC)
+  - 削除（Deleted）: 赤色 (#CC0000)
+  - シンボリックリンク: 紫色 (#9933FF)
+- **File Tree**: 等幅フォント（Consolas）で表示
+
 ---
 
 ## 10. 終了コード
@@ -583,6 +613,7 @@ No differences found.
 | Windows + パイプ/リダイレクト | UTF-8 |
 | Linux/macOS | UTF-8 |
 | サマリーファイル (`-s`) | UTF-8 |
+| Excelファイル (`--excel`) | UTF-8 |
 
 ### 日本語対応
 
@@ -630,3 +661,4 @@ v1.0は想定ユーザー（初心者・非技術者）に対して以下の点�
 - **再利用性**: TOML設定ファイルで複雑な設定を保存・再利用
 - **クロスプラットフォーム**: Windows/Linux/macOSで同一の動作
 - **パッチ生成**: `git apply`互換のunified diff形式パッチを生成可能
+- **Excelレポート**: 非技術者にも見やすいExcel形式のレポート出力

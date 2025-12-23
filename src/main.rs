@@ -3,6 +3,7 @@ use chrono::Local;
 use clap::{Parser, ValueEnum};
 use glob::Pattern;
 use rayon::prelude::*;
+use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -207,6 +208,10 @@ struct Args {
     /// Generate combined patch file (all patches in one file)
     #[arg(long, value_name = "PATH")]
     patch_file: Option<PathBuf>,
+
+    /// Output summary to Excel file (.xlsx)
+    #[arg(long, value_name = "PATH")]
+    excel: Option<PathBuf>,
 }
 
 /// Configuration file structure (TOML format)
@@ -231,6 +236,7 @@ struct ConfigFile {
     #[serde(default)]
     patch: bool,
     patch_file: Option<String>,
+    excel: Option<String>,
 }
 
 /// Resolved configuration after merging CLI args and config file
@@ -248,6 +254,7 @@ struct ResolvedConfig {
     config_file: Option<PathBuf>,
     patch: bool,
     patch_file: Option<PathBuf>,
+    excel: Option<PathBuf>,
 }
 
 impl ResolvedConfig {
@@ -302,6 +309,10 @@ impl ResolvedConfig {
         let patch_file = args.patch_file
             .or_else(|| config_file.patch_file.map(PathBuf::from));
 
+        // Excel output
+        let excel = args.excel
+            .or_else(|| config_file.excel.map(PathBuf::from));
+
         Ok(Self {
             source_dir,
             target_dir,
@@ -316,6 +327,7 @@ impl ResolvedConfig {
             config_file: args.config,
             patch,
             patch_file,
+            excel,
         })
     }
 }
@@ -540,6 +552,15 @@ fn main() -> Result<()> {
         }
     } else {
         println_to_stdout(&summary);
+    }
+
+    // Output Excel summary if requested
+    if let Some(excel_path) = &config.excel {
+        generate_excel_summary(&diff_result, &summary_options, excel_path)
+            .with_context(|| format!("Failed to create Excel file: {}", excel_path.display()))?;
+        if is_terminal() {
+            println_to_stdout(&format!("Excel summary written to: {}", excel_path.display()));
+        }
     }
 
     if is_terminal() {
@@ -1629,6 +1650,606 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
     }
 
     output
+}
+
+/// Generate Excel summary report
+fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, excel_path: &Path) -> Result<()> {
+    let mut workbook = Workbook::new();
+    let now = Local::now();
+
+    // Define formats
+    let title_format = Format::new()
+        .set_bold()
+        .set_font_size(16)
+        .set_font_color(Color::RGB(0x2E5090))
+        .set_align(FormatAlign::Center);
+
+    let header_format = Format::new()
+        .set_bold()
+        .set_font_size(12)
+        .set_background_color(Color::RGB(0x4472C4))
+        .set_font_color(Color::White)
+        .set_align(FormatAlign::Center)
+        .set_border(FormatBorder::Thin);
+
+    let section_header_format = Format::new()
+        .set_bold()
+        .set_font_size(11)
+        .set_background_color(Color::RGB(0xD9E2F3))
+        .set_font_color(Color::RGB(0x2E5090))
+        .set_border(FormatBorder::Thin);
+
+    let info_label_format = Format::new()
+        .set_bold()
+        .set_align(FormatAlign::Left);
+
+    let info_value_format = Format::new()
+        .set_align(FormatAlign::Left);
+
+    let cell_format = Format::new()
+        .set_border(FormatBorder::Thin)
+        .set_align(FormatAlign::Left);
+
+    let added_format = Format::new()
+        .set_font_color(Color::RGB(0x008000))
+        .set_align(FormatAlign::Left);
+
+    let modified_format = Format::new()
+        .set_font_color(Color::RGB(0x0066CC))
+        .set_align(FormatAlign::Left);
+
+    let deleted_format = Format::new()
+        .set_font_color(Color::RGB(0xCC0000))
+        .set_align(FormatAlign::Left);
+
+    let symlink_format = Format::new()
+        .set_font_color(Color::RGB(0x9933FF))
+        .set_align(FormatAlign::Left);
+
+    let tree_format = Format::new()
+        .set_font_name("Consolas")
+        .set_font_size(10);
+
+    let number_format = Format::new()
+        .set_align(FormatAlign::Right)
+        .set_border(FormatBorder::Thin);
+
+    // ==================== Summary Sheet ====================
+    let worksheet = workbook.add_worksheet();
+    worksheet.set_name("Summary")?;
+
+    // Set column widths
+    worksheet.set_column_width(0, 20)?;
+    worksheet.set_column_width(1, 60)?;
+    worksheet.set_column_width(2, 15)?;
+
+    let mut row: u32 = 0;
+
+    // Title
+    worksheet.merge_range(row, 0, row, 2, "rs_diffcopy Summary Report", &title_format)?;
+    row += 2;
+
+    // Basic information
+    worksheet.write_with_format(row, 0, "Source:", &info_label_format)?;
+    worksheet.write_with_format(row, 1, diff_result.source_dir.display().to_string(), &info_value_format)?;
+    row += 1;
+
+    worksheet.write_with_format(row, 0, "Target:", &info_label_format)?;
+    worksheet.write_with_format(row, 1, diff_result.target_dir.display().to_string(), &info_value_format)?;
+    row += 1;
+
+    worksheet.write_with_format(row, 0, "Output:", &info_label_format)?;
+    worksheet.write_with_format(row, 1, options.output_dir.display().to_string(), &info_value_format)?;
+    row += 1;
+
+    worksheet.write_with_format(row, 0, "Date:", &info_label_format)?;
+    worksheet.write_with_format(row, 1, now.format("%Y-%m-%d %H:%M:%S").to_string(), &info_value_format)?;
+    row += 2;
+
+    // Options section (if any)
+    let mut has_options = false;
+    if options.dry_run || options.both_versions || options.check_permissions != PermissionCheckMode::None
+        || options.config_file.is_some() || !options.exclude_patterns.is_empty()
+        || options.patch || options.patch_file.is_some() {
+        has_options = true;
+    }
+
+    if has_options {
+        worksheet.merge_range(row, 0, row, 2, "Options", &section_header_format)?;
+        row += 1;
+
+        if options.dry_run {
+            worksheet.write_with_format(row, 0, "Mode:", &info_label_format)?;
+            worksheet.write_with_format(row, 1, "Dry-run (no files copied)", &info_value_format)?;
+            row += 1;
+        }
+        if options.both_versions {
+            worksheet.write_with_format(row, 0, "Copy mode:", &info_label_format)?;
+            worksheet.write_with_format(row, 1, "Both versions (.old/.new)", &info_value_format)?;
+            row += 1;
+        }
+        if options.check_permissions != PermissionCheckMode::None {
+            let mode_str = match options.check_permissions {
+                PermissionCheckMode::Scripts => "scripts",
+                PermissionCheckMode::All => "all",
+                PermissionCheckMode::None => "none",
+            };
+            worksheet.write_with_format(row, 0, "Permission check:", &info_label_format)?;
+            worksheet.write_with_format(row, 1, mode_str, &info_value_format)?;
+            row += 1;
+        }
+        if let Some(config_path) = &options.config_file {
+            worksheet.write_with_format(row, 0, "Config file:", &info_label_format)?;
+            worksheet.write_with_format(row, 1, config_path.display().to_string(), &info_value_format)?;
+            row += 1;
+        }
+        if options.patch {
+            worksheet.write_with_format(row, 0, "Patch mode:", &info_label_format)?;
+            worksheet.write_with_format(row, 1, "Individual files (.patch)", &info_value_format)?;
+            row += 1;
+        }
+        if let Some(patch_path) = &options.patch_file {
+            worksheet.write_with_format(row, 0, "Combined patch:", &info_label_format)?;
+            worksheet.write_with_format(row, 1, patch_path.display().to_string(), &info_value_format)?;
+            row += 1;
+        }
+        if !options.exclude_patterns.is_empty() {
+            worksheet.write_with_format(row, 0, "Exclude patterns:", &info_label_format)?;
+            worksheet.write_with_format(row, 1, options.exclude_patterns.join(", "), &info_value_format)?;
+            row += 1;
+        }
+        row += 1;
+    }
+
+    // Statistics section
+    let (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors) =
+        diff_result.count_by_status();
+
+    worksheet.merge_range(row, 0, row, 2, "Statistics", &section_header_format)?;
+    row += 1;
+
+    worksheet.write_with_format(row, 0, "Category", &header_format)?;
+    worksheet.write_with_format(row, 1, "Description", &header_format)?;
+    worksheet.write_with_format(row, 2, "Count", &header_format)?;
+    row += 1;
+
+    if added_files > 0 || added_dirs > 0 {
+        worksheet.write_with_format(row, 0, "Added", &cell_format)?;
+        let desc = if added_dirs > 0 {
+            format!("{} files, {} dirs", added_files, added_dirs)
+        } else {
+            format!("{} files", added_files)
+        };
+        worksheet.write_with_format(row, 1, &desc, &added_format)?;
+        worksheet.write_number_with_format(row, 2, (added_files + added_dirs) as f64, &number_format)?;
+        row += 1;
+    }
+
+    if modified_files > 0 {
+        worksheet.write_with_format(row, 0, "Modified", &cell_format)?;
+        worksheet.write_with_format(row, 1, format!("{} files", modified_files), &modified_format)?;
+        worksheet.write_number_with_format(row, 2, modified_files as f64, &number_format)?;
+        row += 1;
+    }
+
+    if deleted_files > 0 || deleted_dirs > 0 {
+        worksheet.write_with_format(row, 0, "Deleted", &cell_format)?;
+        let desc = if deleted_dirs > 0 {
+            format!("{} files, {} dirs", deleted_files, deleted_dirs)
+        } else {
+            format!("{} files", deleted_files)
+        };
+        worksheet.write_with_format(row, 1, &desc, &deleted_format)?;
+        worksheet.write_number_with_format(row, 2, (deleted_files + deleted_dirs) as f64, &number_format)?;
+        row += 1;
+    }
+
+    if symlinks > 0 {
+        worksheet.write_with_format(row, 0, "Symlinks", &cell_format)?;
+        worksheet.write_with_format(row, 1, format!("{} files", symlinks), &symlink_format)?;
+        worksheet.write_number_with_format(row, 2, symlinks as f64, &number_format)?;
+        row += 1;
+    }
+
+    if permission_changes > 0 {
+        worksheet.write_with_format(row, 0, "Permissions", &cell_format)?;
+        worksheet.write_with_format(row, 1, format!("{} files", permission_changes), &info_value_format)?;
+        worksheet.write_number_with_format(row, 2, permission_changes as f64, &number_format)?;
+        row += 1;
+    }
+
+    if errors > 0 {
+        worksheet.write_with_format(row, 0, "Errors", &cell_format)?;
+        worksheet.write_with_format(row, 1, format!("{} files", errors), &deleted_format)?;
+        worksheet.write_number_with_format(row, 2, errors as f64, &number_format)?;
+        row += 1;
+    }
+
+    let total = added_files + added_dirs + modified_files + deleted_files + deleted_dirs + symlinks + permission_changes + errors;
+    let total_row_format = Format::new()
+        .set_bold()
+        .set_border(FormatBorder::Thin)
+        .set_background_color(Color::RGB(0xF2F2F2));
+    worksheet.write_with_format(row, 0, "Total", &total_row_format)?;
+    worksheet.write_with_format(row, 1, "", &total_row_format)?;
+    worksheet.write_number_with_format(row, 2, total as f64, &total_row_format)?;
+
+    // ==================== File Tree Sheet ====================
+    let tree_sheet = workbook.add_worksheet();
+    tree_sheet.set_name("File Tree")?;
+
+    // Set column widths for tree display
+    for col in 0..10 {
+        tree_sheet.set_column_width(col, 4)?;
+    }
+    tree_sheet.set_column_width(10, 40)?;  // File name column
+    tree_sheet.set_column_width(11, 15)?;  // Status column
+
+    let mut tree_row: u32 = 0;
+    tree_sheet.write_with_format(tree_row, 0, "File Tree", &title_format)?;
+    tree_row += 2;
+
+    // Write tree header
+    tree_sheet.merge_range(tree_row, 0, tree_row, 10, "Path", &header_format)?;
+    tree_sheet.write_with_format(tree_row, 11, "Status", &header_format)?;
+    tree_row += 1;
+
+    // Build tree and write to Excel
+    write_excel_tree(&diff_result.entries, tree_sheet, &mut tree_row, &tree_format, &added_format, &modified_format, &deleted_format, &symlink_format)?;
+
+    // ==================== Details Sheet ====================
+    let details_sheet = workbook.add_worksheet();
+    details_sheet.set_name("Details")?;
+
+    details_sheet.set_column_width(0, 15)?;
+    details_sheet.set_column_width(1, 60)?;
+    details_sheet.set_column_width(2, 30)?;
+
+    let mut details_row: u32 = 0;
+    details_sheet.write_with_format(details_row, 0, "Change Details", &title_format)?;
+    details_row += 2;
+
+    // Added files
+    let added_entries: Vec<_> = diff_result.entries.iter()
+        .filter(|e| matches!(e.status, FileStatus::Added))
+        .collect();
+
+    if !added_entries.is_empty() {
+        details_sheet.merge_range(details_row, 0, details_row, 2, "Added Files", &section_header_format)?;
+        details_row += 1;
+
+        details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "Notes", &header_format)?;
+        details_row += 1;
+
+        for entry in &added_entries {
+            let type_str = if entry.is_dir { "Directory" } else { "File" };
+            details_sheet.write_with_format(details_row, 0, type_str, &cell_format)?;
+            details_sheet.write_with_format(details_row, 1, entry.relative_path.display().to_string(), &added_format)?;
+            details_sheet.write_with_format(details_row, 2, "", &cell_format)?;
+            details_row += 1;
+        }
+        details_row += 1;
+    }
+
+    // Modified files
+    let modified_entries: Vec<_> = diff_result.entries.iter()
+        .filter(|e| matches!(e.status, FileStatus::Modified))
+        .collect();
+
+    if !modified_entries.is_empty() {
+        details_sheet.merge_range(details_row, 0, details_row, 2, "Modified Files", &section_header_format)?;
+        details_row += 1;
+
+        details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "Notes", &header_format)?;
+        details_row += 1;
+
+        for entry in &modified_entries {
+            details_sheet.write_with_format(details_row, 0, "File", &cell_format)?;
+            details_sheet.write_with_format(details_row, 1, entry.relative_path.display().to_string(), &modified_format)?;
+            details_sheet.write_with_format(details_row, 2, "", &cell_format)?;
+            details_row += 1;
+        }
+        details_row += 1;
+    }
+
+    // Deleted files
+    let deleted_entries: Vec<_> = diff_result.entries.iter()
+        .filter(|e| matches!(e.status, FileStatus::Deleted))
+        .collect();
+
+    if !deleted_entries.is_empty() {
+        details_sheet.merge_range(details_row, 0, details_row, 2, "Deleted Files", &section_header_format)?;
+        details_row += 1;
+
+        details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "Notes", &header_format)?;
+        details_row += 1;
+
+        for entry in &deleted_entries {
+            let type_str = if entry.is_dir { "Directory" } else { "File" };
+            details_sheet.write_with_format(details_row, 0, type_str, &cell_format)?;
+            details_sheet.write_with_format(details_row, 1, entry.relative_path.display().to_string(), &deleted_format)?;
+            details_sheet.write_with_format(details_row, 2, "", &cell_format)?;
+            details_row += 1;
+        }
+        details_row += 1;
+    }
+
+    // Symlink details
+    let symlink_entries: Vec<_> = diff_result.entries.iter()
+        .filter(|e| matches!(e.status, FileStatus::Symlink { .. }))
+        .collect();
+
+    if !symlink_entries.is_empty() {
+        details_sheet.merge_range(details_row, 0, details_row, 2, "Symlink Details", &section_header_format)?;
+        details_row += 1;
+
+        details_sheet.write_with_format(details_row, 0, "Change", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "Target", &header_format)?;
+        details_row += 1;
+
+        for entry in &symlink_entries {
+            if let FileStatus::Symlink { change_type, current, previous } = &entry.status {
+                let change_str = match change_type {
+                    SymlinkChangeType::Added => "Added",
+                    SymlinkChangeType::Deleted => "Deleted",
+                    SymlinkChangeType::Changed => "Changed",
+                };
+                let target_str = match (current, previous) {
+                    (Some(info), _) => {
+                        let broken = if !info.exists { " (BROKEN)" } else { "" };
+                        format!("{}{}", info.target.display(), broken)
+                    }
+                    (None, Some(info)) => info.target.display().to_string(),
+                    _ => String::new(),
+                };
+                details_sheet.write_with_format(details_row, 0, change_str, &cell_format)?;
+                details_sheet.write_with_format(details_row, 1, entry.relative_path.display().to_string(), &symlink_format)?;
+                details_sheet.write_with_format(details_row, 2, target_str, &cell_format)?;
+                details_row += 1;
+            }
+        }
+        details_row += 1;
+    }
+
+    // Permission changes
+    if !diff_result.permission_changes.is_empty() {
+        details_sheet.merge_range(details_row, 0, details_row, 2, "Permission Changes", &section_header_format)?;
+        details_row += 1;
+
+        details_sheet.write_with_format(details_row, 0, "Old", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "New", &header_format)?;
+        details_row += 1;
+
+        for change in &diff_result.permission_changes {
+            details_sheet.write_with_format(details_row, 0, &change.old_mode, &cell_format)?;
+            details_sheet.write_with_format(details_row, 1, change.relative_path.display().to_string(), &info_value_format)?;
+            details_sheet.write_with_format(details_row, 2, &change.new_mode, &cell_format)?;
+            details_row += 1;
+        }
+    }
+
+    // Patch details if available
+    if let Some(patch_result) = &options.patch_result {
+        if !patch_result.patches.is_empty() {
+            details_sheet.merge_range(details_row, 0, details_row, 2, "Patch Details", &section_header_format)?;
+            details_row += 1;
+
+            details_sheet.write_with_format(details_row, 0, "Status", &header_format)?;
+            details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
+            details_sheet.write_with_format(details_row, 2, "Notes", &header_format)?;
+            details_row += 1;
+
+            for patch in &patch_result.patches {
+                let status = if patch.is_binary { "Skipped" } else { "Generated" };
+                let notes = if patch.is_binary { "Binary file" } else { "" };
+                let status_format = if patch.is_binary { &deleted_format } else { &added_format };
+                details_sheet.write_with_format(details_row, 0, status, &cell_format)?;
+                details_sheet.write_with_format(details_row, 1, patch.relative_path.display().to_string(), status_format)?;
+                details_sheet.write_with_format(details_row, 2, notes, &cell_format)?;
+                details_row += 1;
+            }
+        }
+    }
+
+    workbook.save(excel_path)?;
+
+    Ok(())
+}
+
+/// Write file tree to Excel sheet with indentation using cells
+fn write_excel_tree(
+    entries: &[DiffEntry],
+    sheet: &mut rust_xlsxwriter::Worksheet,
+    row: &mut u32,
+    tree_format: &Format,
+    added_format: &Format,
+    modified_format: &Format,
+    deleted_format: &Format,
+    symlink_format: &Format,
+) -> Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    // Build tree structure
+    let mut tree: BTreeMap<PathBuf, Vec<&DiffEntry>> = BTreeMap::new();
+    for entry in entries {
+        let parent = entry.relative_path.parent().unwrap_or(Path::new("")).to_path_buf();
+        tree.entry(parent).or_default().push(entry);
+    }
+
+    // Get all unique directory paths
+    let mut all_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    for entry in entries {
+        let mut current = entry.relative_path.parent();
+        while let Some(dir) = current {
+            if !dir.as_os_str().is_empty() {
+                all_dirs.insert(dir.to_path_buf());
+            }
+            current = dir.parent();
+        }
+    }
+
+    // Write root
+    sheet.write_with_format(*row, 0, ".", tree_format)?;
+    *row += 1;
+
+    // Get root level items
+    let root_entries = tree.get(&PathBuf::new()).cloned().unwrap_or_default();
+    let root_dirs: Vec<_> = all_dirs.iter()
+        .filter(|d| d.parent().is_none() || d.parent() == Some(Path::new("")))
+        .collect();
+
+    let mut root_items: Vec<(PathBuf, Option<&DiffEntry>)> = Vec::new();
+    for dir in &root_dirs {
+        root_items.push(((*dir).clone(), None));
+    }
+    for entry in &root_entries {
+        if !entry.is_dir || !all_dirs.contains(&entry.relative_path) {
+            root_items.push((entry.relative_path.clone(), Some(entry)));
+        }
+    }
+    root_items.sort_by(|a, b| a.0.cmp(&b.0));
+
+    write_excel_tree_items(entries, &all_dirs, &root_items, sheet, row, 0, tree_format, added_format, modified_format, deleted_format, symlink_format)?;
+
+    Ok(())
+}
+
+/// Write tree items recursively
+fn write_excel_tree_items(
+    entries: &[DiffEntry],
+    all_dirs: &BTreeSet<PathBuf>,
+    items: &[(PathBuf, Option<&DiffEntry>)],
+    sheet: &mut rust_xlsxwriter::Worksheet,
+    row: &mut u32,
+    depth: u16,
+    tree_format: &Format,
+    added_format: &Format,
+    modified_format: &Format,
+    deleted_format: &Format,
+    symlink_format: &Format,
+) -> Result<()> {
+    for (i, (path, entry_opt)) in items.iter().enumerate() {
+        let is_last = i == items.len() - 1;
+        let prefix = if is_last { "└─" } else { "├─" };
+
+        // Write tree connector
+        if depth > 0 {
+            sheet.write_with_format(*row, depth - 1, prefix, tree_format)?;
+        } else {
+            sheet.write_with_format(*row, 0, prefix, tree_format)?;
+        }
+
+        // Get the name and status
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let col = if depth > 0 { depth } else { 1 };
+
+        if let Some(entry) = entry_opt {
+            // It's a file
+            let (display_name, status_format) = get_entry_display(entry, &name, added_format, modified_format, deleted_format, symlink_format);
+            sheet.write_with_format(*row, col, &display_name, status_format)?;
+            sheet.write_with_format(*row, 11, get_status_string(&entry.status), status_format)?;
+        } else {
+            // It's a directory
+            let dir_entry = entries.iter().find(|e| e.relative_path == *path && e.is_dir);
+            let dir_name = format!("{}/", name);
+            if let Some(entry) = dir_entry {
+                let status_format = match &entry.status {
+                    FileStatus::Added => added_format,
+                    FileStatus::Deleted => deleted_format,
+                    _ => tree_format,
+                };
+                sheet.write_with_format(*row, col, &dir_name, status_format)?;
+                sheet.write_with_format(*row, 11, get_status_string(&entry.status), status_format)?;
+            } else {
+                sheet.write_with_format(*row, col, &dir_name, tree_format)?;
+            }
+
+            *row += 1;
+
+            // Write children
+            let mut child_items: Vec<(PathBuf, Option<&DiffEntry>)> = Vec::new();
+            for dir in all_dirs {
+                if dir.parent() == Some(path.as_path()) {
+                    child_items.push((dir.clone(), None));
+                }
+            }
+            for entry in entries {
+                if entry.relative_path.parent() == Some(path.as_path()) {
+                    if !entry.is_dir || !all_dirs.contains(&entry.relative_path) {
+                        child_items.push((entry.relative_path.clone(), Some(entry)));
+                    }
+                }
+            }
+            child_items.sort_by(|a, b| a.0.cmp(&b.0));
+
+            if !child_items.is_empty() {
+                write_excel_tree_items(entries, all_dirs, &child_items, sheet, row, depth + 1, tree_format, added_format, modified_format, deleted_format, symlink_format)?;
+            }
+            continue;
+        }
+
+        *row += 1;
+    }
+
+    Ok(())
+}
+
+/// Get display name and format for entry
+fn get_entry_display<'a>(
+    entry: &DiffEntry,
+    name: &str,
+    added_format: &'a Format,
+    modified_format: &'a Format,
+    deleted_format: &'a Format,
+    symlink_format: &'a Format,
+) -> (String, &'a Format) {
+    match &entry.status {
+        FileStatus::Added => (name.to_string(), added_format),
+        FileStatus::Modified => (name.to_string(), modified_format),
+        FileStatus::Deleted => (name.to_string(), deleted_format),
+        FileStatus::Symlink { current, previous, .. } => {
+            let target = match (current, previous) {
+                (Some(info), _) => format!(" -> {}", info.target.display()),
+                (None, Some(info)) => format!(" -> {}", info.target.display()),
+                _ => String::new(),
+            };
+            (format!("{}{}", name, target), symlink_format)
+        }
+        FileStatus::PermissionDenied { .. } => (name.to_string(), deleted_format),
+    }
+}
+
+/// Get status string for display
+fn get_status_string(status: &FileStatus) -> &'static str {
+    match status {
+        FileStatus::Added => "[added]",
+        FileStatus::Modified => "[modified]",
+        FileStatus::Deleted => "[deleted]",
+        FileStatus::Symlink { change_type, current, .. } => {
+            match change_type {
+                SymlinkChangeType::Added => {
+                    if current.as_ref().map(|i| !i.exists).unwrap_or(false) {
+                        "[symlink: added, broken]"
+                    } else {
+                        "[symlink: added]"
+                    }
+                }
+                SymlinkChangeType::Deleted => "[symlink: deleted]",
+                SymlinkChangeType::Changed => "[symlink: changed]",
+            }
+        }
+        FileStatus::PermissionDenied { .. } => "[permission denied]",
+    }
 }
 
 fn generate_tree(entries: &[DiffEntry]) -> String {

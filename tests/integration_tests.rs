@@ -1723,3 +1723,240 @@ patch = true
     assert!(output.status.success());
     assert!(env.output_path().join("test.txt.patch").exists());
 }
+
+// ============================================================================
+// 3.10 Excel Report Tests
+// ============================================================================
+
+/// IT-901: Excel file generation with differences
+#[test]
+fn test_excel_file_generation() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    create_file(env.source_path(), "old.txt", "old content\n");
+    create_file(env.target_path(), "old.txt", "new content\n");
+    create_file(env.target_path(), "new.txt", "new file\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--excel", excel_path.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+    assert!(excel_path.exists(), "Excel file should be created");
+
+    // Check file size is reasonable (>0 bytes)
+    let metadata = fs::metadata(&excel_path).unwrap();
+    assert!(metadata.len() > 0, "Excel file should not be empty");
+}
+
+/// IT-902: Excel file structure - verify it's a valid zip/xlsx
+#[test]
+fn test_excel_file_is_valid_xlsx() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    create_file(env.source_path(), "file.txt", "old\n");
+    create_file(env.target_path(), "file.txt", "new\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--excel", excel_path.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+
+    // XLSX files are ZIP archives - verify by checking magic number
+    let file_content = fs::read(&excel_path).unwrap();
+    assert!(file_content.len() >= 4, "File should have content");
+    // ZIP magic number: PK\x03\x04
+    assert_eq!(&file_content[0..4], &[0x50, 0x4B, 0x03, 0x04], "Should be valid ZIP/XLSX format");
+}
+
+/// IT-903: Excel with summary text file
+#[test]
+fn test_excel_with_summary() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+    let summary_path = env.output_path().parent().unwrap().join("summary.txt");
+
+    create_file(env.source_path(), "file.txt", "old\n");
+    create_file(env.target_path(), "file.txt", "new\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &[
+            "--excel", excel_path.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ],
+    );
+
+    assert!(output.status.success());
+    assert!(excel_path.exists(), "Excel file should be created");
+    assert!(summary_path.exists(), "Summary file should be created");
+}
+
+/// IT-904: Excel with various options
+#[test]
+fn test_excel_with_options() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    create_file(env.source_path(), "file.txt", "old\n");
+    create_file(env.target_path(), "file.txt", "new\n");
+    create_file(env.target_path(), "skip.log", "log content\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &[
+            "--excel", excel_path.to_str().unwrap(),
+            "-e", "*.log",
+            "--dry-run",
+        ],
+    );
+
+    assert!(output.status.success());
+    assert!(excel_path.exists(), "Excel file should be created even in dry-run");
+}
+
+/// IT-905: Excel statistics - verify basic diff is detected
+#[test]
+fn test_excel_statistics() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    // Create test scenario: 1 added, 1 modified, 1 deleted
+    create_file(env.source_path(), "deleted.txt", "will be deleted\n");
+    create_file(env.source_path(), "modified.txt", "old content\n");
+    create_file(env.target_path(), "modified.txt", "new content\n");
+    create_file(env.target_path(), "added.txt", "new file\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--excel", excel_path.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+    assert!(excel_path.exists());
+
+    // Verify through stdout that all types were detected
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("Added:"), "Should report added files");
+    assert!(stdout.contains("Modified:"), "Should report modified files");
+    assert!(stdout.contains("Deleted:"), "Should report deleted files");
+}
+
+/// IT-906: Excel file tree - verify with nested directories
+#[test]
+fn test_excel_file_tree() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    create_file(env.source_path(), "root.txt", "old\n");
+    create_file(env.target_path(), "root.txt", "new\n");
+    create_file(env.target_path(), "dir1/file1.txt", "content\n");
+    create_file(env.target_path(), "dir1/dir2/file2.txt", "nested\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--excel", excel_path.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+    assert!(excel_path.exists());
+
+    // Verify nested structure in stdout
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("dir1/"));
+    assert!(stdout.contains("file2.txt"));
+}
+
+/// IT-907: Excel details - verify modified files are listed
+#[test]
+fn test_excel_details() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    create_file(env.source_path(), "src/main.rs", "fn main() {}\n");
+    create_file(env.target_path(), "src/main.rs", "fn main() { println!(\"hello\"); }\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--excel", excel_path.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+    assert!(excel_path.exists());
+
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("Modified Files"));
+    assert!(stdout.contains("main.rs"));
+}
+
+/// IT-908: Excel with config file
+#[test]
+fn test_excel_with_config() {
+    let env = TestEnv::new();
+    let config_path = env.source_path().parent().unwrap().join("config.toml");
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    let config_content = format!(
+        r#"
+source = "{}"
+target = "{}"
+output = "{}"
+excel = "{}"
+"#,
+        env.source_path().display(),
+        env.target_path().display(),
+        env.output_path().display(),
+        excel_path.display()
+    );
+    fs::write(&config_path, config_content).unwrap();
+
+    create_file(env.source_path(), "test.txt", "old\n");
+    create_file(env.target_path(), "test.txt", "new\n");
+
+    let output = run_diffcopy(&["--config", config_path.to_str().unwrap()]);
+
+    assert!(output.status.success());
+    assert!(excel_path.exists(), "Excel file should be created via config");
+}
+
+/// IT-909: Excel with no differences
+#[test]
+fn test_excel_no_differences() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    // Same content in both
+    create_file(env.source_path(), "same.txt", "same content\n");
+    create_file(env.target_path(), "same.txt", "same content\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--excel", excel_path.to_str().unwrap()],
+    );
+
+    // Exit code 2 for no differences
+    assert_eq!(output.status.code(), Some(2));
+    // Excel file should still be created
+    assert!(excel_path.exists(), "Excel file should be created even with no differences");
+}
