@@ -384,11 +384,22 @@ fn test_exclude_path_component() {
     assert!(!env.output_path().join("src/__pycache__").exists());
     assert!(!env.output_path().join("lib/__pycache__").exists());
 
-    // __pycache__ should not appear in output as deleted
+    // __pycache__ should appear in Exclude patterns section
     assert!(
-        !stdout.contains("__pycache__"),
-        "__pycache__ should be excluded from output but got:\n{}",
-        stdout
+        stdout.contains("Exclude patterns:"),
+        "Exclude patterns section should be present"
+    );
+    assert!(
+        stdout.contains("- __pycache__"),
+        "Exclude pattern should be listed in summary"
+    );
+
+    // __pycache__ should NOT appear in File Tree section (properly excluded)
+    let file_tree_section = stdout.split("File Tree").nth(1).unwrap_or("");
+    assert!(
+        !file_tree_section.contains("__pycache__"),
+        "__pycache__ should not appear in File Tree but got:\n{}",
+        file_tree_section
     );
 }
 

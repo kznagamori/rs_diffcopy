@@ -234,6 +234,7 @@ struct ResolvedConfig {
     both_versions: bool,
     summary: Option<PathBuf>,
     check_permissions: PermissionCheckMode,
+    config_file: Option<PathBuf>,
 }
 
 impl ResolvedConfig {
@@ -294,6 +295,7 @@ impl ResolvedConfig {
             both_versions,
             summary,
             check_permissions,
+            config_file: args.config,
         })
     }
 }
@@ -347,6 +349,16 @@ struct DiffResult {
     permission_changes: Vec<PermissionChange>,
     source_dir: PathBuf,
     target_dir: PathBuf,
+}
+
+/// Options to include in the summary output
+struct SummaryOptions {
+    exclude_patterns: Vec<String>,
+    dry_run: bool,
+    both_versions: bool,
+    check_permissions: PermissionCheckMode,
+    config_file: Option<PathBuf>,
+    output_dir: PathBuf,
 }
 
 impl DiffResult {
@@ -453,7 +465,15 @@ fn main() -> Result<()> {
     // Phase 4: Generate and output summary
     print_phase(4, 4, "Writing summary...");
 
-    let summary = generate_summary(&diff_result);
+    let summary_options = SummaryOptions {
+        exclude_patterns: config.exclude.clone(),
+        dry_run: config.dry_run,
+        both_versions: config.both_versions,
+        check_permissions: config.check_permissions,
+        config_file: config.config_file.clone(),
+        output_dir: config.output_dir.clone(),
+    };
+    let summary = generate_summary(&diff_result, &summary_options);
 
     // Output summary
     if let Some(summary_path) = &config.summary {
@@ -1011,7 +1031,7 @@ fn add_extension(path: &Path, ext: &str) -> PathBuf {
     PathBuf::from(new_path)
 }
 
-fn generate_summary(diff_result: &DiffResult) -> String {
+fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> String {
     let mut output = String::new();
     let now = Local::now();
 
@@ -1019,8 +1039,48 @@ fn generate_summary(diff_result: &DiffResult) -> String {
     output.push_str("================\n");
     output.push_str(&format!("Source: {}\n", diff_result.source_dir.display()));
     output.push_str(&format!("Target: {}\n", diff_result.target_dir.display()));
+    output.push_str(&format!("Output: {}\n", options.output_dir.display()));
     output.push_str(&format!("Date: {}\n", now.format("%Y-%m-%d %H:%M:%S")));
     output.push('\n');
+
+    // Options section
+    let mut has_options = false;
+    let mut options_output = String::new();
+
+    if options.dry_run {
+        options_output.push_str("  Mode: Dry-run (no files copied)\n");
+        has_options = true;
+    }
+    if options.both_versions {
+        options_output.push_str("  Copy mode: Both versions (.old/.new)\n");
+        has_options = true;
+    }
+    if options.check_permissions != PermissionCheckMode::None {
+        let mode_str = match options.check_permissions {
+            PermissionCheckMode::Scripts => "scripts",
+            PermissionCheckMode::All => "all",
+            PermissionCheckMode::None => "none",
+        };
+        options_output.push_str(&format!("  Permission check: {}\n", mode_str));
+        has_options = true;
+    }
+    if let Some(config_path) = &options.config_file {
+        options_output.push_str(&format!("  Config file: {}\n", config_path.display()));
+        has_options = true;
+    }
+    if !options.exclude_patterns.is_empty() {
+        options_output.push_str("  Exclude patterns:\n");
+        for pattern in &options.exclude_patterns {
+            options_output.push_str(&format!("    - {}\n", pattern));
+        }
+        has_options = true;
+    }
+
+    if has_options {
+        output.push_str("Options:\n");
+        output.push_str(&options_output);
+        output.push('\n');
+    }
 
     if !diff_result.has_differences() {
         output.push_str("No differences found.\n");
@@ -1819,6 +1879,17 @@ mod tests {
 
     // ==================== generate_summary tests ====================
 
+    fn default_summary_options() -> SummaryOptions {
+        SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+        }
+    }
+
     #[test]
     fn test_generate_summary_no_differences() {
         let result = DiffResult {
@@ -1828,11 +1899,12 @@ mod tests {
             target_dir: PathBuf::from("/target"),
         };
 
-        let summary = generate_summary(&result);
+        let summary = generate_summary(&result, &default_summary_options());
 
         assert!(summary.contains("No differences found."));
         assert!(summary.contains("Source: /source"));
         assert!(summary.contains("Target: /target"));
+        assert!(summary.contains("Output: /output"));
     }
 
     #[test]
@@ -1855,13 +1927,49 @@ mod tests {
             target_dir: PathBuf::from("/target"),
         };
 
-        let summary = generate_summary(&result);
+        let summary = generate_summary(&result, &default_summary_options());
 
         assert!(summary.contains("Added:"));
         assert!(summary.contains("Modified:"));
         assert!(summary.contains("File Tree"));
         assert!(summary.contains("[added]"));
         assert!(summary.contains("[modified]"));
+    }
+
+    #[test]
+    fn test_generate_summary_with_options() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("file.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec!["*.log".to_string(), "__pycache__".to_string()],
+            dry_run: true,
+            both_versions: true,
+            check_permissions: PermissionCheckMode::Scripts,
+            config_file: Some(PathBuf::from("config.toml")),
+            output_dir: PathBuf::from("/output"),
+        };
+
+        let summary = generate_summary(&result, &options);
+
+        assert!(summary.contains("Options:"));
+        assert!(summary.contains("Dry-run"));
+        assert!(summary.contains("Both versions"));
+        assert!(summary.contains("Permission check: scripts"));
+        assert!(summary.contains("Config file: config.toml"));
+        assert!(summary.contains("Exclude patterns:"));
+        assert!(summary.contains("*.log"));
+        assert!(summary.contains("__pycache__"));
     }
 
     // ==================== copy_diff_files tests ====================

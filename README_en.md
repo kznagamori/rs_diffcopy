@@ -174,7 +174,18 @@ rs_diffcopy Summary
 ================
 Source: /path/to/source
 Target: /path/to/target
+Output: /path/to/output
 Date: 2025-12-18 10:30:00
+
+Options:
+  Mode: Dry-run (no files copied)
+  Copy mode: Both versions (.old/.new)
+  Permission check: scripts
+  Config file: diffcopy.toml
+  Exclude patterns:
+    - *.log
+    - __pycache__
+    - node_modules
 
 Added:      5 files, 1 dir
 Modified:   8 files
@@ -194,6 +205,8 @@ File Tree
 ├── config.toml [modified]
 └── legacy.rs [deleted]
 ```
+
+**Note:** The Options section is only displayed when options are specified.
 
 ### Status Tags
 

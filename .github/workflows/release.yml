@@ -46,7 +46,6 @@ jobs:
         shell: bash
         run: |
           echo "PROJECT_NAME=$(sed -n 's/^name = \"\(.*\)\"/\1/p' Cargo.toml | head -n1)" >> $GITHUB_ENV
-          # Use input tag for workflow_dispatch, otherwise use ref_name
           if [ -n "${{ inputs.tag }}" ]; then
             echo "RELEASE_TAG=${{ inputs.tag }}" >> $GITHUB_ENV
           else
@@ -81,11 +80,40 @@ jobs:
         run: |
           mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}${{ matrix.extension }} target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}${{ matrix.extension }}
 
-      - name: Release
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}${{ matrix.extension }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract release tag
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "RELEASE_TAG=${{ inputs.tag }}" >> $GITHUB_ENV
+          else
+            echo "RELEASE_TAG=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: ls -R artifacts
+
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          files: |
-            target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}${{ matrix.extension }}
+          files: artifacts/*/*
