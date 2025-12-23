@@ -1136,6 +1136,87 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
     output.push_str(&generate_tree(&diff_result.entries));
     output.push('\n');
 
+    // Added Details
+    let added_entries: Vec<_> = diff_result
+        .entries
+        .iter()
+        .filter(|e| matches!(e.status, FileStatus::Added))
+        .collect();
+
+    if !added_entries.is_empty() {
+        output.push_str("================\n");
+        output.push_str("Added Files\n");
+        output.push_str("================\n");
+
+        let added_dirs: Vec<_> = added_entries.iter().filter(|e| e.is_dir).collect();
+        let added_files: Vec<_> = added_entries.iter().filter(|e| !e.is_dir).collect();
+
+        if !added_dirs.is_empty() {
+            output.push_str("Directories:\n");
+            for entry in added_dirs {
+                output.push_str(&format!("  {}/\n", entry.relative_path.display()));
+            }
+            output.push('\n');
+        }
+
+        if !added_files.is_empty() {
+            output.push_str("Files:\n");
+            for entry in added_files {
+                output.push_str(&format!("  {}\n", entry.relative_path.display()));
+            }
+            output.push('\n');
+        }
+    }
+
+    // Modified Details
+    let modified_entries: Vec<_> = diff_result
+        .entries
+        .iter()
+        .filter(|e| matches!(e.status, FileStatus::Modified))
+        .collect();
+
+    if !modified_entries.is_empty() {
+        output.push_str("================\n");
+        output.push_str("Modified Files\n");
+        output.push_str("================\n");
+        for entry in modified_entries {
+            output.push_str(&format!("  {}\n", entry.relative_path.display()));
+        }
+        output.push('\n');
+    }
+
+    // Deleted Details
+    let deleted_entries: Vec<_> = diff_result
+        .entries
+        .iter()
+        .filter(|e| matches!(e.status, FileStatus::Deleted))
+        .collect();
+
+    if !deleted_entries.is_empty() {
+        output.push_str("================\n");
+        output.push_str("Deleted Files\n");
+        output.push_str("================\n");
+
+        let deleted_dirs: Vec<_> = deleted_entries.iter().filter(|e| e.is_dir).collect();
+        let deleted_files: Vec<_> = deleted_entries.iter().filter(|e| !e.is_dir).collect();
+
+        if !deleted_dirs.is_empty() {
+            output.push_str("Directories:\n");
+            for entry in deleted_dirs {
+                output.push_str(&format!("  {}/\n", entry.relative_path.display()));
+            }
+            output.push('\n');
+        }
+
+        if !deleted_files.is_empty() {
+            output.push_str("Files:\n");
+            for entry in deleted_files {
+                output.push_str(&format!("  {}\n", entry.relative_path.display()));
+            }
+            output.push('\n');
+        }
+    }
+
     // Symlink Details
     let symlink_entries: Vec<_> = diff_result
         .entries
@@ -1934,6 +2015,38 @@ mod tests {
         assert!(summary.contains("File Tree"));
         assert!(summary.contains("[added]"));
         assert!(summary.contains("[modified]"));
+        // Check for detailed sections
+        assert!(summary.contains("Added Files"));
+        assert!(summary.contains("Modified Files"));
+    }
+
+    #[test]
+    fn test_generate_summary_with_deleted() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("old_dir"),
+                    is_dir: true,
+                    status: FileStatus::Deleted,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("old_file.txt"),
+                    is_dir: false,
+                    status: FileStatus::Deleted,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+        };
+
+        let summary = generate_summary(&result, &default_summary_options());
+
+        assert!(summary.contains("Deleted Files"));
+        assert!(summary.contains("Directories:"));
+        assert!(summary.contains("old_dir/"));
+        assert!(summary.contains("Files:"));
+        assert!(summary.contains("old_file.txt"));
     }
 
     #[test]

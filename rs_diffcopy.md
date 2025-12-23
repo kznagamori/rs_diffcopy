@@ -144,6 +144,42 @@ exclude = [
 
 コマンドライン引数と設定ファイルの両方が指定された場合、**コマンドライン引数が優先**されます。
 
+### 4.4 除外パターン
+
+#### パターン形式
+
+除外パターンはglob形式で指定します。
+
+| パターン | マッチ対象 |
+|----------|-----------|
+| `*.log` | 全ての `.log` ファイル |
+| `node_modules` | `node_modules` ディレクトリとその中身 |
+| `__pycache__` | `__pycache__` ディレクトリとその中身 |
+| `.git/**` | `.git` ディレクトリ配下全て |
+| `build/*.tmp` | `build` 直下の `.tmp` ファイル |
+
+#### パスコンポーネントマッチング
+
+除外パターンは**パス全体**だけでなく、**パスの各コンポーネント（ディレクトリ名・ファイル名）**にもマッチします。
+
+```bash
+# "__pycache__" パターンは以下全てにマッチ
+rs_diffcopy -S old -T new -O output -e "__pycache__"
+
+# マッチするパス:
+#   __pycache__
+#   src/__pycache__
+#   src/__pycache__/module.pyc
+#   lib/utils/__pycache__/helper.pyc
+```
+
+| パターン | マッチするパス例 |
+|----------|-----------------|
+| `__pycache__` | `__pycache__`, `src/__pycache__`, `src/__pycache__/file.pyc` |
+| `node_modules` | `node_modules`, `project/node_modules/pkg` |
+| `.git` | `.git`, `.git/config`, `submodule/.git/HEAD` |
+| `*.log` | `debug.log`, `logs/app.log` |
+
 ---
 
 ## 5. 差異判定
@@ -287,7 +323,18 @@ rs_diffcopy Summary
 ================
 Source: /path/to/source
 Target: /path/to/target
+Output: /path/to/output
 Date: 2025-12-18 10:30:00
+
+Options:
+  Mode: Dry-run (no files copied)
+  Copy mode: Both versions (.old/.new)
+  Permission check: scripts
+  Config file: diffcopy.toml
+  Exclude patterns:
+    - *.log
+    - __pycache__
+    - node_modules
 
 Added:       5 files, 1 dir
 Modified:    8 files
@@ -312,8 +359,33 @@ File Tree
 ├── broken_link -> /nonexistent [symlink: added, broken]
 ├── old_link -> /old/path [symlink: deleted]
 ├── changed_link -> /new/path [symlink: changed]
+├── became_broken -> /path [symlink: broken]
 ├── secret.key [permission denied]
 └── legacy/ [deleted]
+
+================
+Added Files
+================
+Directories:
+  docs/
+
+Files:
+  src/new_feature.rs
+
+================
+Modified Files
+================
+  src/main.rs
+  config.toml
+
+================
+Deleted Files
+================
+Directories:
+  legacy/
+
+Files:
+  src/old_module.rs
 
 ================
 Symlink Details
@@ -334,6 +406,10 @@ Changed:
     Before: /old/path (file, OK)
     After:  /new/path (file, OK)
 
+  became_broken
+    Before: /path (file, OK)
+    After:  /path (file, BROKEN)
+
 ================
 Permission Changes
 ================
@@ -353,12 +429,28 @@ rs_diffcopy Summary
 ================
 Source: /path/to/source
 Target: /path/to/target
+Output: /path/to/output
 Date: 2025-12-18 10:30:00
 
 No differences found.
 ```
 
-### 9.3 ステータスタグ一覧
+### 9.3 サマリーセクション一覧
+
+| セクション | 表示条件 | 内容 |
+|------------|----------|------|
+| ヘッダー | 常に表示 | Source, Target, Output, Date |
+| Options | オプション指定時 | 使用したオプションの一覧 |
+| 統計情報 | 常に表示 | Added, Modified, Deleted等の件数 |
+| File Tree | 差分あり時 | ツリー形式の差分一覧 |
+| Added Files | 追加あり時 | 追加されたファイル/ディレクトリ一覧 |
+| Modified Files | 変更あり時 | 変更されたファイル一覧 |
+| Deleted Files | 削除あり時 | 削除されたファイル/ディレクトリ一覧 |
+| Symlink Details | シンボリックリンクあり時 | シンボリックリンクの詳細情報 |
+| Permission Changes | 権限変更あり時 | 権限変更の詳細 |
+| Errors | エラーあり時 | エラー詳細 |
+
+### 9.4 ステータスタグ一覧
 
 | タグ | 意味 |
 |------|------|
@@ -369,6 +461,8 @@ No differences found.
 | `[symlink: added, broken]` | 新規追加された壊れたシンボリックリンク |
 | `[symlink: deleted]` | 削除されたシンボリックリンク |
 | `[symlink: changed]` | リンク先が変更されたシンボリックリンク |
+| `[symlink: changed, broken]` | リンク先が変更され、かつ壊れたシンボリックリンク |
+| `[symlink: broken]` | 同じリンク先で壊れた状態になったシンボリックリンク |
 | `[permission denied]` | 権限エラー（スキップ） |
 
 ※ シンボリックリンクはコピーされず、Symlink Detailsセクションに詳細が表示される

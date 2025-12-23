@@ -591,6 +591,79 @@ fn test_statistics() {
     assert!(stdout.contains("Total:"));
 }
 
+/// IT-405: Options section
+#[test]
+fn test_options_section() {
+    let env = TestEnv::new();
+
+    create_file(env.target_path(), "new.txt", "content");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--dry-run", "-e", "*.log"],
+    );
+
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("Options:"));
+    assert!(stdout.contains("Dry-run"));
+    assert!(stdout.contains("Exclude patterns:"));
+    assert!(stdout.contains("*.log"));
+}
+
+/// IT-406: Added Files section
+#[test]
+fn test_added_files_section() {
+    let env = TestEnv::new();
+
+    create_file(env.target_path(), "new_file.txt", "content");
+    fs::create_dir_all(env.target_path().join("new_dir")).unwrap();
+
+    let output = run_diffcopy_sto(env.source_path(), env.target_path(), env.output_path());
+
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("Added Files"));
+    assert!(stdout.contains("Directories:"));
+    assert!(stdout.contains("new_dir"));
+    assert!(stdout.contains("Files:"));
+    assert!(stdout.contains("new_file.txt"));
+}
+
+/// IT-407: Modified Files section
+#[test]
+fn test_modified_files_section() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "modified.txt", "old content");
+    create_file(env.target_path(), "modified.txt", "new content");
+
+    let output = run_diffcopy_sto(env.source_path(), env.target_path(), env.output_path());
+
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("Modified Files"));
+    assert!(stdout.contains("modified.txt"));
+}
+
+/// IT-408: Deleted Files section
+#[test]
+fn test_deleted_files_section() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "deleted.txt", "old content");
+    fs::create_dir_all(env.source_path().join("deleted_dir")).unwrap();
+    create_file(env.source_path(), "deleted_dir/file.txt", "content");
+
+    let output = run_diffcopy_sto(env.source_path(), env.target_path(), env.output_path());
+
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("Deleted Files"));
+    assert!(stdout.contains("Directories:"));
+    assert!(stdout.contains("deleted_dir"));
+    assert!(stdout.contains("Files:"));
+    assert!(stdout.contains("deleted.txt"));
+}
+
 // ============================================================================
 // 3.6 File Operation Tests
 // ============================================================================

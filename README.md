@@ -204,9 +204,31 @@ File Tree
 ├── docs/ [added]
 ├── config.toml [modified]
 └── legacy.rs [deleted]
+
+================
+Added Files
+================
+Directories:
+  docs/
+
+Files:
+  src/new_feature.rs
+
+================
+Modified Files
+================
+  src/main.rs
+  config.toml
+
+================
+Deleted Files
+================
+Files:
+  src/old_module.rs
+  legacy.rs
 ```
 
-**注意:** Optionsセクションは、オプションが指定されている場合のみ表示されます。
+**注意:** Optionsセクションおよび各詳細セクションは、該当する項目がある場合のみ表示されます。
 
 ### ステータスタグ
 
