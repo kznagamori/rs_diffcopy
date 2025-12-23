@@ -79,6 +79,8 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-n, --dry-run` | Show target files without copying |
 | `-b, --both-versions` | Copy both old and new versions of modified files (.old/.new extensions) |
 | `-P, --check-permissions <MODE>` | Check permission changes (none/scripts/all) |
+| `-p, --patch` | Generate individual patch files (.patch) for modified files |
+| `--patch-file <PATH>` | Generate combined patch file with all changes |
 | `-h, --help` | Show help |
 | `-V, --version` | Show version |
 
@@ -112,6 +114,15 @@ rs_diffcopy -S old -T new -O output -P scripts
 # Check permission changes (all files)
 rs_diffcopy -S old -T new -O output --check-permissions all
 
+# Generate individual patch files (one .patch file per modified file)
+rs_diffcopy -S old -T new -O output --patch
+
+# Generate combined patch file (all changes in one file)
+rs_diffcopy -S old -T new -O output --patch-file changes.patch
+
+# Generate both individual and combined patches
+rs_diffcopy -S old -T new -O output --patch --patch-file all.patch
+
 # Use config file
 rs_diffcopy --config ./diffcopy.toml
 ```
@@ -135,6 +146,8 @@ dry_run = false
 both_versions = false
 summary = "./summary.txt"
 check_permissions = "none"  # none / scripts / all
+patch = false               # Generate individual patch files
+patch_file = ""             # Combined patch file path (empty to disable)
 
 # Exclude patterns (multiple can be specified)
 exclude = [
@@ -160,6 +173,8 @@ exclude = [
 | `both_versions` | bool | - | Copy both versions |
 | `summary` | string | - | Summary output file |
 | `check_permissions` | string | - | Permission check mode (none/scripts/all) |
+| `patch` | bool | - | Generate individual patch files |
+| `patch_file` | string | - | Combined patch file path |
 
 ### Priority
 

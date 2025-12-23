@@ -30,6 +30,7 @@
 | 設定ファイル | TOML形式の設定ファイルで複雑な設定を再利用 |
 | 新旧両方コピー | 変更ファイルの新旧両方を `.old`/`.new` 拡張子付きでコピー |
 | 権限チェック | ファイル権限の変更を検出（スクリプト限定/全ファイル） |
+| パッチ生成 | 変更ファイルのunified diff形式パッチを生成（`git apply`互換） |
 | ドライラン | 実際にコピーせず、対象ファイルをプレビュー |
 | 進捗表示 | フェーズ別プログレスバーを表示 |
 | 並列処理 | ファイル比較・コピーを並列実行で高速化 |
@@ -57,6 +58,8 @@ rs_diffcopy [OPTIONS]
   -n, --dry-run                    実際にコピーせず、対象ファイルを表示
   -b, --both-versions              変更ファイルの新旧両方をコピー（.old/.new拡張子付与）
   -P, --check-permissions <MODE>   権限変更をチェック（none/scripts/all）
+  -p, --patch                      変更ファイルごとに個別パッチファイル(.patch)を生成
+      --patch-file <PATH>          全変更を統合したパッチファイルを生成
   -h, --help                       ヘルプ表示
   -V, --version                    バージョン表示
 ```
@@ -91,6 +94,15 @@ rs_diffcopy -S old -T new -O output -P scripts
 # 権限チェック（すべてのファイル）
 rs_diffcopy -S old -T new -O output --check-permissions all
 
+# 個別パッチファイルを生成（変更ファイルごとに.patchファイル作成）
+rs_diffcopy -S old -T new -O output --patch
+
+# 統合パッチファイルを生成（全変更を1ファイルに）
+rs_diffcopy -S old -T new -O output --patch-file changes.patch
+
+# 個別と統合の両方を生成
+rs_diffcopy -S old -T new -O output --patch --patch-file all.patch
+
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
 ```
@@ -114,6 +126,8 @@ dry_run = false
 both_versions = false
 summary = "./summary.txt"
 check_permissions = "none"  # none / scripts / all
+patch = false               # 個別パッチファイル生成
+patch_file = ""             # 統合パッチファイルパス（空で無効）
 
 # 除外パターン（複数指定可）
 exclude = [
@@ -139,6 +153,8 @@ exclude = [
 | `both_versions` | bool | - | `false` | 新旧両方をコピー |
 | `summary` | string | - | - | サマリー出力先ファイル |
 | `check_permissions` | string | - | `"none"` | 権限チェックモード |
+| `patch` | bool | - | `false` | 個別パッチファイル生成 |
+| `patch_file` | string | - | - | 統合パッチファイルパス |
 
 #### 優先順位
 
@@ -279,6 +295,54 @@ output_dir/
 └── config.toml.new
 ```
 
+### 7.3 --patch モード
+
+```
+output_dir/
+├── src/
+│   ├── main.rs          # 変更ファイル
+│   ├── main.rs.patch    # 個別パッチファイル
+│   └── new_feature.rs   # 新規ファイル（パッチなし）
+├── docs/
+├── config.toml
+└── config.toml.patch
+```
+
+### 7.4 パッチ生成
+
+#### パッチ形式
+
+生成されるパッチは**unified diff形式**で、`git apply`コマンドで適用可能です。
+
+```diff
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,5 +1,5 @@
+ fn main() {
+-    println!("Hello");
++    println!("Hello, World!");
+ }
+```
+
+#### パッチの適用例
+
+```bash
+# 個別パッチの適用
+cd target_directory
+git apply path/to/file.patch
+
+# 統合パッチの適用
+git apply changes.patch
+```
+
+#### バイナリファイル
+
+バイナリファイルはパッチ生成をスキップし、サマリーに `[skip]` として記載されます。
+
+バイナリ判定基準：
+- ファイル先頭8192バイトにNULLバイト（0x00）が含まれる
+- UTF-8としてデコードできない
+
 ---
 
 ## 8. 進捗表示
@@ -330,6 +394,8 @@ Options:
   Mode: Dry-run (no files copied)
   Copy mode: Both versions (.old/.new)
   Permission check: scripts
+  Patch mode: Individual files (.patch)
+  Combined patch file: changes.patch
   Config file: diffcopy.toml
   Exclude patterns:
     - *.log
@@ -420,6 +486,19 @@ src/main.py: 755 -> 644
 Errors
 ================
 secret.key: Permission denied
+
+================
+Patch Details
+================
+Generated: 8 patches, Skipped: 2 (binary)
+
+Generated:
+  src/main.rs.patch
+  config.toml.patch
+
+Skipped (binary):
+  images/logo.png [skip]
+  data/db.bin [skip]
 ```
 
 ### 9.2 差分なしの場合
@@ -449,6 +528,7 @@ No differences found.
 | Symlink Details | シンボリックリンクあり時 | シンボリックリンクの詳細情報 |
 | Permission Changes | 権限変更あり時 | 権限変更の詳細 |
 | Errors | エラーあり時 | エラー詳細 |
+| Patch Details | パッチ生成時 | 生成/スキップされたパッチ一覧 |
 
 ### 9.4 ステータスタグ一覧
 
@@ -464,9 +544,11 @@ No differences found.
 | `[symlink: changed, broken]` | リンク先が変更され、かつ壊れたシンボリックリンク |
 | `[symlink: broken]` | 同じリンク先で壊れた状態になったシンボリックリンク |
 | `[permission denied]` | 権限エラー（スキップ） |
+| `[skip]` | パッチ生成スキップ（バイナリファイル） |
 
 ※ シンボリックリンクはコピーされず、Symlink Detailsセクションに詳細が表示される
 ※ 権限変更は File Tree には表示されず、Permission Changes セクションにのみ表示
+※ バイナリファイルはパッチ生成時にスキップされ、Patch Detailsセクションに記載
 
 ---
 
@@ -536,7 +618,6 @@ No differences found.
 |------|------|
 | ハッシュキャッシュ | 前回の比較結果をキャッシュし、増分比較で高速化 |
 | HTMLレポート | ブラウザで閲覧可能なレポート生成 |
-| 差分パッチ生成 | unified diff形式の出力 |
 | ウォッチモード | ディレクトリの変更を監視して自動実行 |
 
 ### 13.4 v1.0 機能充足度
@@ -548,3 +629,4 @@ v1.0は想定ユーザー（初心者・非技術者）に対して以下の点�
 - **安全な操作**: ドライランモードで事前確認、`--force`なしでは上書きしない
 - **再利用性**: TOML設定ファイルで複雑な設定を保存・再利用
 - **クロスプラットフォーム**: Windows/Linux/macOSで同一の動作
+- **パッチ生成**: `git apply`互換のunified diff形式パッチを生成可能

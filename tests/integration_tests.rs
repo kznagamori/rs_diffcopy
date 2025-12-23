@@ -1510,3 +1510,216 @@ check_permissions = "scripts"
         assert!(stdout.contains("Permissions: 2 files"));
     }
 }
+
+// ============================================================================
+// Patch Generation Tests
+// ============================================================================
+
+/// IT-501: Individual patch file generation
+#[test]
+fn test_patch_individual_files() {
+    let env = TestEnv::new();
+
+    // Create modified file
+    create_file(env.source_path(), "file.txt", "line1\nline2\nline3\n");
+    create_file(env.target_path(), "file.txt", "line1\nmodified\nline3\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--patch"],
+    );
+
+    assert!(output.status.success());
+
+    // Check that .patch file was created
+    assert!(env.output_path().join("file.txt.patch").exists());
+
+    // Check patch content
+    let patch_content = fs::read_to_string(env.output_path().join("file.txt.patch")).unwrap();
+    assert!(patch_content.contains("--- a/file.txt"));
+    assert!(patch_content.contains("+++ b/file.txt"));
+    assert!(patch_content.contains("-line2"));
+    assert!(patch_content.contains("+modified"));
+}
+
+/// IT-502: Combined patch file generation
+#[test]
+fn test_patch_combined_file() {
+    let env = TestEnv::new();
+    let patch_file = env.output_path().parent().unwrap().join("combined.patch");
+
+    // Create multiple modified files
+    create_file(env.source_path(), "file1.txt", "old content 1\n");
+    create_file(env.target_path(), "file1.txt", "new content 1\n");
+    create_file(env.source_path(), "file2.txt", "old content 2\n");
+    create_file(env.target_path(), "file2.txt", "new content 2\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--patch-file", patch_file.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+
+    // Check that combined patch file was created
+    assert!(patch_file.exists());
+
+    // Check patch content contains both files
+    let patch_content = fs::read_to_string(&patch_file).unwrap();
+    assert!(patch_content.contains("--- a/file1.txt"));
+    assert!(patch_content.contains("--- a/file2.txt"));
+}
+
+/// IT-503: Both individual and combined patches
+#[test]
+fn test_patch_both_modes() {
+    let env = TestEnv::new();
+    let patch_file = env.output_path().parent().unwrap().join("all.patch");
+
+    create_file(env.source_path(), "test.txt", "before\n");
+    create_file(env.target_path(), "test.txt", "after\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--patch", "--patch-file", patch_file.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+
+    // Both should exist
+    assert!(env.output_path().join("test.txt.patch").exists());
+    assert!(patch_file.exists());
+}
+
+/// IT-504: Binary file skipped in patch
+#[test]
+fn test_patch_binary_skipped() {
+    let env = TestEnv::new();
+
+    // Create binary files (different content)
+    let binary_data_old: Vec<u8> = vec![0x00, 0x01, 0x02, 0x03];
+    let binary_data_new: Vec<u8> = vec![0x00, 0x01, 0x02, 0xFF];
+    fs::write(env.source_path().join("binary.bin"), &binary_data_old).unwrap();
+    fs::write(env.target_path().join("binary.bin"), &binary_data_new).unwrap();
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--patch"],
+    );
+
+    assert!(output.status.success());
+
+    // No .patch file should be created for binary
+    assert!(!env.output_path().join("binary.bin.patch").exists());
+
+    // Summary should mention skipped
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("[skip]") || stdout.contains("Skipped"));
+}
+
+/// IT-505: Patch with subdirectories
+#[test]
+fn test_patch_with_subdirectories() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "src/main.rs", "fn main() {}\n");
+    create_file(env.target_path(), "src/main.rs", "fn main() { println!(\"hello\"); }\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--patch"],
+    );
+
+    assert!(output.status.success());
+
+    // Patch file should be in same directory structure
+    assert!(env.output_path().join("src/main.rs.patch").exists());
+}
+
+/// IT-506: Patch summary section
+#[test]
+fn test_patch_summary_section() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "text.txt", "old\n");
+    create_file(env.target_path(), "text.txt", "new\n");
+
+    // Create binary file too
+    fs::write(env.source_path().join("bin.dat"), vec![0x00, 0x01]).unwrap();
+    fs::write(env.target_path().join("bin.dat"), vec![0xFF, 0xFE]).unwrap();
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--patch"],
+    );
+
+    assert!(output.status.success());
+    let stdout = stdout_str(&output);
+
+    assert!(stdout.contains("Patch Details"));
+    assert!(stdout.contains("Generated:"));
+    assert!(stdout.contains("Skipped:"));
+}
+
+/// IT-507: Patch options in summary
+#[test]
+fn test_patch_options_in_summary() {
+    let env = TestEnv::new();
+    let patch_file = env.output_path().parent().unwrap().join("out.patch");
+
+    create_file(env.source_path(), "file.txt", "a\n");
+    create_file(env.target_path(), "file.txt", "b\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--patch", "--patch-file", patch_file.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+    let stdout = stdout_str(&output);
+
+    assert!(stdout.contains("Patch mode: Individual files (.patch)"));
+    assert!(stdout.contains("Combined patch file:"));
+}
+
+/// IT-508: Patch with config file
+#[test]
+fn test_patch_with_config() {
+    let env = TestEnv::new();
+    let config_path = env.source_path().parent().unwrap().join("config.toml");
+
+    let config_content = format!(
+        r#"
+source = "{}"
+target = "{}"
+output = "{}"
+patch = true
+"#,
+        env.source_path().display(),
+        env.target_path().display(),
+        env.output_path().display()
+    );
+    fs::write(&config_path, config_content).unwrap();
+
+    create_file(env.source_path(), "test.txt", "old\n");
+    create_file(env.target_path(), "test.txt", "new\n");
+
+    let output = run_diffcopy(&["--config", config_path.to_str().unwrap()]);
+
+    assert!(output.status.success());
+    assert!(env.output_path().join("test.txt.patch").exists());
+}

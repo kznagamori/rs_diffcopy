@@ -79,6 +79,8 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-n, --dry-run` | 実際にコピーせず対象ファイルを表示 |
 | `-b, --both-versions` | 変更ファイルの新旧両方をコピー（.old/.new拡張子付与） |
 | `-P, --check-permissions <MODE>` | 権限変更をチェック（none/scripts/all） |
+| `-p, --patch` | 変更ファイルごとに個別のパッチファイル(.patch)を生成 |
+| `--patch-file <PATH>` | 全変更を統合したパッチファイルを生成 |
 | `-h, --help` | ヘルプ表示 |
 | `-V, --version` | バージョン表示 |
 
@@ -112,6 +114,15 @@ rs_diffcopy -S old -T new -O output -P scripts
 # 権限変更をチェック（すべてのファイル）
 rs_diffcopy -S old -T new -O output --check-permissions all
 
+# 個別のパッチファイルを生成（変更ファイルごとに.patchファイル作成）
+rs_diffcopy -S old -T new -O output --patch
+
+# 統合パッチファイルを生成（全変更を1ファイルに）
+rs_diffcopy -S old -T new -O output --patch-file changes.patch
+
+# 個別と統合の両方を生成
+rs_diffcopy -S old -T new -O output --patch --patch-file all.patch
+
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
 ```
@@ -135,6 +146,8 @@ dry_run = false
 both_versions = false
 summary = "./summary.txt"
 check_permissions = "none"  # none / scripts / all
+patch = false               # 個別パッチファイル生成
+patch_file = ""             # 統合パッチファイルパス（空で無効）
 
 # 除外パターン（複数指定可）
 exclude = [
@@ -160,6 +173,8 @@ exclude = [
 | `both_versions` | bool | - | 新旧両方をコピー |
 | `summary` | string | - | サマリー出力先ファイル |
 | `check_permissions` | string | - | 権限チェックモード（none/scripts/all） |
+| `patch` | bool | - | 個別パッチファイル生成 |
+| `patch_file` | string | - | 統合パッチファイルパス |
 
 ### 優先順位
 

@@ -199,6 +199,14 @@ struct Args {
     /// Check file permissions/attributes for changes (none/scripts/all)
     #[arg(short = 'P', long, value_enum, default_value = "none")]
     check_permissions: PermissionCheckMode,
+
+    /// Generate individual patch files for modified files (output alongside copied files)
+    #[arg(short = 'p', long)]
+    patch: bool,
+
+    /// Generate combined patch file (all patches in one file)
+    #[arg(long, value_name = "PATH")]
+    patch_file: Option<PathBuf>,
 }
 
 /// Configuration file structure (TOML format)
@@ -220,6 +228,9 @@ struct ConfigFile {
     summary: Option<String>,
     #[serde(default)]
     check_permissions: PermissionCheckMode,
+    #[serde(default)]
+    patch: bool,
+    patch_file: Option<String>,
 }
 
 /// Resolved configuration after merging CLI args and config file
@@ -235,6 +246,8 @@ struct ResolvedConfig {
     summary: Option<PathBuf>,
     check_permissions: PermissionCheckMode,
     config_file: Option<PathBuf>,
+    patch: bool,
+    patch_file: Option<PathBuf>,
 }
 
 impl ResolvedConfig {
@@ -284,6 +297,11 @@ impl ResolvedConfig {
             config_file.check_permissions
         };
 
+        // Patch options
+        let patch = args.patch || config_file.patch;
+        let patch_file = args.patch_file
+            .or_else(|| config_file.patch_file.map(PathBuf::from));
+
         Ok(Self {
             source_dir,
             target_dir,
@@ -296,6 +314,8 @@ impl ResolvedConfig {
             summary,
             check_permissions,
             config_file: args.config,
+            patch,
+            patch_file,
         })
     }
 }
@@ -351,6 +371,22 @@ struct DiffResult {
     target_dir: PathBuf,
 }
 
+/// Patch generation result for a single file
+#[derive(Debug, Clone)]
+struct PatchInfo {
+    relative_path: PathBuf,
+    is_binary: bool,
+    patch_generated: bool,
+}
+
+/// Patch generation result
+#[derive(Debug, Default)]
+struct PatchResult {
+    patches: Vec<PatchInfo>,
+    total_generated: usize,
+    total_skipped: usize,
+}
+
 /// Options to include in the summary output
 struct SummaryOptions {
     exclude_patterns: Vec<String>,
@@ -359,6 +395,9 @@ struct SummaryOptions {
     check_permissions: PermissionCheckMode,
     config_file: Option<PathBuf>,
     output_dir: PathBuf,
+    patch: bool,
+    patch_file: Option<PathBuf>,
+    patch_result: Option<PatchResult>,
 }
 
 impl DiffResult {
@@ -462,6 +501,19 @@ fn main() -> Result<()> {
         copy_diff_files(&diff_result, &config.output_dir, config.verbose, config.both_versions)?;
     }
 
+    // Generate patches if requested (after copying, before summary)
+    let patch_result = if (config.patch || config.patch_file.is_some()) && diff_result.has_differences() && !config.dry_run {
+        Some(generate_patches(
+            &diff_result,
+            &config.output_dir,
+            config.patch,
+            config.patch_file.as_deref(),
+            config.verbose,
+        )?)
+    } else {
+        None
+    };
+
     // Phase 4: Generate and output summary
     print_phase(4, 4, "Writing summary...");
 
@@ -472,6 +524,9 @@ fn main() -> Result<()> {
         check_permissions: config.check_permissions,
         config_file: config.config_file.clone(),
         output_dir: config.output_dir.clone(),
+        patch: config.patch,
+        patch_file: config.patch_file.clone(),
+        patch_result,
     };
     let summary = generate_summary(&diff_result, &summary_options);
 
@@ -1031,6 +1086,201 @@ fn add_extension(path: &Path, ext: &str) -> PathBuf {
     PathBuf::from(new_path)
 }
 
+/// Check if a file is binary by reading first bytes and checking for null bytes or invalid UTF-8
+fn is_binary_file(path: &Path) -> bool {
+    const SAMPLE_SIZE: usize = 8192;
+
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    let mut reader = BufReader::new(file);
+    let mut buffer = vec![0u8; SAMPLE_SIZE];
+
+    let bytes_read = match reader.read(&mut buffer) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+
+    if bytes_read == 0 {
+        return false; // Empty file is not binary
+    }
+
+    let sample = &buffer[..bytes_read];
+
+    // Check for null bytes (common in binary files)
+    if sample.contains(&0) {
+        return true;
+    }
+
+    // Check if it's valid UTF-8
+    std::str::from_utf8(sample).is_err()
+}
+
+/// Generate unified diff for a single modified file
+fn generate_unified_diff(
+    source_path: &Path,
+    target_path: &Path,
+    relative_path: &Path,
+) -> Option<String> {
+    use similar::{ChangeTag, TextDiff};
+
+    // Read both files as strings
+    let old_content = match fs::read_to_string(source_path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    let new_content = match fs::read_to_string(target_path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    // Generate unified diff
+    let diff = TextDiff::from_lines(&old_content, &new_content);
+
+    let mut output = String::new();
+    let old_path = format!("a/{}", relative_path.display());
+    let new_path = format!("b/{}", relative_path.display());
+
+    output.push_str(&format!("--- {}\n", old_path));
+    output.push_str(&format!("+++ {}\n", new_path));
+
+    // Generate hunks
+    for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
+        output.push_str(&format!("{}", hunk.header()));
+        for change in hunk.iter_changes() {
+            let sign = match change.tag() {
+                ChangeTag::Delete => "-",
+                ChangeTag::Insert => "+",
+                ChangeTag::Equal => " ",
+            };
+            // Handle lines that don't end with newline
+            if change.missing_newline() {
+                output.push_str(&format!("{}{}\n\\ No newline at end of file\n", sign, change.value().trim_end_matches('\n')));
+            } else {
+                output.push_str(&format!("{}{}", sign, change.value()));
+            }
+        }
+    }
+
+    if output.lines().count() <= 2 {
+        // Only header, no changes
+        return None;
+    }
+
+    Some(output)
+}
+
+/// Generate patches for modified files
+fn generate_patches(
+    diff_result: &DiffResult,
+    output_dir: &Path,
+    individual_patches: bool,
+    combined_patch_path: Option<&Path>,
+    verbose: bool,
+) -> Result<PatchResult> {
+    let mut result = PatchResult::default();
+    let mut combined_output = String::new();
+
+    // Get modified entries
+    let modified_entries: Vec<_> = diff_result
+        .entries
+        .iter()
+        .filter(|e| matches!(e.status, FileStatus::Modified) && !e.is_dir)
+        .collect();
+
+    if modified_entries.is_empty() {
+        return Ok(result);
+    }
+
+    if is_terminal() && verbose {
+        println_to_stdout("Generating patches...");
+    }
+
+    for entry in &modified_entries {
+        let source_path = diff_result.source_dir.join(&entry.relative_path);
+        let target_path = diff_result.target_dir.join(&entry.relative_path);
+
+        let is_binary = is_binary_file(&source_path) || is_binary_file(&target_path);
+
+        if is_binary {
+            result.patches.push(PatchInfo {
+                relative_path: entry.relative_path.clone(),
+                is_binary: true,
+                patch_generated: false,
+            });
+            result.total_skipped += 1;
+
+            if combined_patch_path.is_some() {
+                combined_output.push_str(&format!(
+                    "Binary files a/{} and b/{} differ\n",
+                    entry.relative_path.display(),
+                    entry.relative_path.display()
+                ));
+            }
+            continue;
+        }
+
+        // Generate diff
+        if let Some(diff_content) = generate_unified_diff(&source_path, &target_path, &entry.relative_path) {
+            result.patches.push(PatchInfo {
+                relative_path: entry.relative_path.clone(),
+                is_binary: false,
+                patch_generated: true,
+            });
+            result.total_generated += 1;
+
+            // Write individual patch file
+            if individual_patches {
+                let patch_path = output_dir.join(add_extension(&entry.relative_path, "patch"));
+                if let Some(parent) = patch_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&patch_path, &diff_content)?;
+
+                if verbose && is_terminal() {
+                    println_to_stdout(&format!("  Generated: {}", patch_path.display()));
+                }
+            }
+
+            // Append to combined output
+            if combined_patch_path.is_some() {
+                combined_output.push_str(&diff_content);
+                combined_output.push('\n');
+            }
+        } else {
+            // Diff generation failed or no actual changes
+            result.patches.push(PatchInfo {
+                relative_path: entry.relative_path.clone(),
+                is_binary: false,
+                patch_generated: false,
+            });
+        }
+    }
+
+    // Write combined patch file
+    if let Some(path) = combined_patch_path {
+        if !combined_output.is_empty() {
+            fs::write(path, &combined_output)?;
+            if verbose && is_terminal() {
+                println_to_stdout(&format!("Combined patch written to: {}", path.display()));
+            }
+        }
+    }
+
+    if is_terminal() {
+        println_to_stdout(&format!(
+            "Patches: {} generated, {} skipped (binary)",
+            result.total_generated,
+            result.total_skipped
+        ));
+    }
+
+    Ok(result)
+}
+
 fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> String {
     let mut output = String::new();
     let now = Local::now();
@@ -1073,6 +1323,14 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
         for pattern in &options.exclude_patterns {
             options_output.push_str(&format!("    - {}\n", pattern));
         }
+        has_options = true;
+    }
+    if options.patch {
+        options_output.push_str("  Patch mode: Individual files (.patch)\n");
+        has_options = true;
+    }
+    if let Some(patch_path) = &options.patch_file {
+        options_output.push_str(&format!("  Combined patch file: {}\n", patch_path.display()));
         has_options = true;
     }
 
@@ -1328,6 +1586,44 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
         for entry in error_entries {
             if let FileStatus::PermissionDenied { error } = &entry.status {
                 output.push_str(&format!("{}: {}\n", entry.relative_path.display(), error));
+            }
+        }
+    }
+
+    // Patch Details
+    if let Some(patch_result) = &options.patch_result {
+        if !patch_result.patches.is_empty() {
+            output.push_str("================\n");
+            output.push_str("Patch Details\n");
+            output.push_str("================\n");
+
+            let generated: Vec<_> = patch_result.patches.iter().filter(|p| p.patch_generated).collect();
+            let skipped: Vec<_> = patch_result.patches.iter().filter(|p| p.is_binary).collect();
+
+            output.push_str(&format!(
+                "Generated: {} patches, Skipped: {} (binary)\n\n",
+                patch_result.total_generated,
+                patch_result.total_skipped
+            ));
+
+            if !generated.is_empty() {
+                output.push_str("Generated:\n");
+                for patch in generated {
+                    if options.patch {
+                        output.push_str(&format!("  {}.patch\n", patch.relative_path.display()));
+                    } else {
+                        output.push_str(&format!("  {}\n", patch.relative_path.display()));
+                    }
+                }
+                output.push('\n');
+            }
+
+            if !skipped.is_empty() {
+                output.push_str("Skipped (binary):\n");
+                for patch in skipped {
+                    output.push_str(&format!("  {} [skip]\n", patch.relative_path.display()));
+                }
+                output.push('\n');
             }
         }
     }
@@ -1968,6 +2264,9 @@ mod tests {
             check_permissions: PermissionCheckMode::None,
             config_file: None,
             output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
         }
     }
 
@@ -2071,6 +2370,9 @@ mod tests {
             check_permissions: PermissionCheckMode::Scripts,
             config_file: Some(PathBuf::from("config.toml")),
             output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
         };
 
         let summary = generate_summary(&result, &options);
@@ -2434,5 +2736,167 @@ mod tests {
         };
 
         assert!(result.has_differences());
+    }
+
+    // ==================== is_binary_file tests ====================
+
+    #[test]
+    fn test_is_binary_file_text() {
+        let temp = create_temp_dir();
+        let file = create_file(temp.path(), "text.txt", "Hello, world!\nThis is text.\n");
+        assert!(!is_binary_file(&file));
+    }
+
+    #[test]
+    fn test_is_binary_file_binary() {
+        let temp = create_temp_dir();
+        let binary_path = temp.path().join("binary.bin");
+        let binary_data: Vec<u8> = vec![0x00, 0x01, 0x02, 0xFF, 0xFE, 0x00, 0x89, 0x50];
+        fs::write(&binary_path, &binary_data).unwrap();
+        assert!(is_binary_file(&binary_path));
+    }
+
+    #[test]
+    fn test_is_binary_file_empty() {
+        let temp = create_temp_dir();
+        let file = create_file(temp.path(), "empty.txt", "");
+        assert!(!is_binary_file(&file));
+    }
+
+    #[test]
+    fn test_is_binary_file_nonexistent() {
+        let path = PathBuf::from("/nonexistent/file.txt");
+        assert!(!is_binary_file(&path));
+    }
+
+    // ==================== generate_unified_diff tests ====================
+
+    #[test]
+    fn test_generate_unified_diff_basic() {
+        let temp = create_temp_dir();
+        let old_file = create_file(temp.path(), "old.txt", "line1\nline2\nline3\n");
+        let new_file = create_file(temp.path(), "new.txt", "line1\nmodified line2\nline3\n");
+
+        let diff = generate_unified_diff(&old_file, &new_file, Path::new("file.txt"));
+        assert!(diff.is_some());
+
+        let diff_content = diff.unwrap();
+        assert!(diff_content.contains("--- a/file.txt"));
+        assert!(diff_content.contains("+++ b/file.txt"));
+        assert!(diff_content.contains("-line2"));
+        assert!(diff_content.contains("+modified line2"));
+    }
+
+    #[test]
+    fn test_generate_unified_diff_no_changes() {
+        let temp = create_temp_dir();
+        let file1 = create_file(temp.path(), "file1.txt", "same content\n");
+        let file2 = create_file(temp.path(), "file2.txt", "same content\n");
+
+        let diff = generate_unified_diff(&file1, &file2, Path::new("file.txt"));
+        assert!(diff.is_none()); // No changes, so no diff
+    }
+
+    #[test]
+    fn test_generate_unified_diff_new_lines() {
+        let temp = create_temp_dir();
+        let old_file = create_file(temp.path(), "old.txt", "line1\n");
+        let new_file = create_file(temp.path(), "new.txt", "line1\nline2\nline3\n");
+
+        let diff = generate_unified_diff(&old_file, &new_file, Path::new("file.txt"));
+        assert!(diff.is_some());
+
+        let diff_content = diff.unwrap();
+        assert!(diff_content.contains("+line2"));
+        assert!(diff_content.contains("+line3"));
+    }
+
+    // ==================== generate_summary with patch tests ====================
+
+    #[test]
+    fn test_generate_summary_with_patch_options() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("file.txt"),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: true,
+            patch_file: Some(PathBuf::from("all.patch")),
+            patch_result: Some(PatchResult {
+                patches: vec![
+                    PatchInfo {
+                        relative_path: PathBuf::from("file.txt"),
+                        is_binary: false,
+                        patch_generated: true,
+                    },
+                ],
+                total_generated: 1,
+                total_skipped: 0,
+            }),
+        };
+
+        let summary = generate_summary(&result, &options);
+        assert!(summary.contains("Patch mode: Individual files (.patch)"));
+        assert!(summary.contains("Combined patch file: all.patch"));
+        assert!(summary.contains("Patch Details"));
+        assert!(summary.contains("Generated: 1 patches"));
+    }
+
+    #[test]
+    fn test_generate_summary_with_skipped_binary() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("image.png"),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: true,
+            patch_file: None,
+            patch_result: Some(PatchResult {
+                patches: vec![
+                    PatchInfo {
+                        relative_path: PathBuf::from("image.png"),
+                        is_binary: true,
+                        patch_generated: false,
+                    },
+                ],
+                total_generated: 0,
+                total_skipped: 1,
+            }),
+        };
+
+        let summary = generate_summary(&result, &options);
+        assert!(summary.contains("Skipped: 1 (binary)"));
+        assert!(summary.contains("Skipped (binary):"));
+        assert!(summary.contains("image.png [skip]"));
     }
 }
