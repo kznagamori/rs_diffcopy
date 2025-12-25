@@ -83,8 +83,8 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-b, --both-versions` | 変更ファイルの新旧両方をコピー（.old/.new拡張子付与） |
 | `-P, --check-permissions <MODE>` | 権限変更をチェック（none/scripts/all） |
 | `-p, --patch` | 変更ファイルごとに個別のパッチファイル(.patch)を生成 |
-| `--patch-file <PATH>` | 全変更を統合したパッチファイルを生成 |
-| `--excel <PATH>` | サマリーをExcelファイル(.xlsx)に出力 |
+| `-F, --patch-file <PATH>` | 全変更を統合したパッチファイルを生成 |
+| `-E, --excel <PATH>` | サマリーをExcelファイル(.xlsx)に出力 |
 | `-h, --help` | ヘルプ表示 |
 | `-V, --version` | バージョン表示 |
 
@@ -122,13 +122,13 @@ rs_diffcopy -S old -T new -O output --check-permissions all
 rs_diffcopy -S old -T new -O output --patch
 
 # 統合パッチファイルを生成（全変更を1ファイルに）
-rs_diffcopy -S old -T new -O output --patch-file changes.patch
+rs_diffcopy -S old -T new -O output -F changes.patch
 
 # 個別と統合の両方を生成
-rs_diffcopy -S old -T new -O output --patch --patch-file all.patch
+rs_diffcopy -S old -T new -O output -p -F all.patch
 
 # Excelレポートを出力
-rs_diffcopy -S old -T new -O output --excel report.xlsx
+rs_diffcopy -S old -T new -O output -E report.xlsx
 
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml

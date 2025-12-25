@@ -1755,10 +1755,44 @@ patch = true
 }
 
 // ============================================================================
-// 3.10 Excel Report Tests
+// 3.10 Excel Report Tests (using calamine for content verification)
 // ============================================================================
 
-/// IT-901: Excel file generation with differences
+use calamine::{Reader, Xlsx, Data};
+
+/// Helper function to open an Excel file and return a Xlsx reader
+fn open_excel(path: &Path) -> Xlsx<std::io::BufReader<std::fs::File>> {
+    calamine::open_workbook(path).expect("Failed to open Excel file")
+}
+
+/// Helper function to get cell value as string from a worksheet
+fn get_cell_string(range: &calamine::Range<Data>, row: u32, col: u32) -> String {
+    range.get_value((row, col))
+        .map(|v| match v {
+            Data::String(s) => s.clone(),
+            Data::Float(f) => f.to_string(),
+            Data::Int(i) => i.to_string(),
+            Data::Bool(b) => b.to_string(),
+            _ => String::new(),
+        })
+        .unwrap_or_default()
+}
+
+/// Helper function to check if a value exists anywhere in the worksheet
+fn sheet_contains(range: &calamine::Range<Data>, needle: &str) -> bool {
+    for row in range.rows() {
+        for cell in row {
+            if let Data::String(s) = cell {
+                if s.contains(needle) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// IT-901: Excel file generation with differences - verify sheet structure
 #[test]
 fn test_excel_file_generation() {
     let env = TestEnv::new();
@@ -1778,12 +1812,16 @@ fn test_excel_file_generation() {
     assert!(output.status.success());
     assert!(excel_path.exists(), "Excel file should be created");
 
-    // Check file size is reasonable (>0 bytes)
-    let metadata = fs::metadata(&excel_path).unwrap();
-    assert!(metadata.len() > 0, "Excel file should not be empty");
+    // Verify Excel structure using calamine
+    let workbook = open_excel(&excel_path);
+    let sheet_names = workbook.sheet_names();
+
+    assert!(sheet_names.contains(&"Summary".to_string()), "Should have Summary sheet");
+    assert!(sheet_names.contains(&"File Tree".to_string()), "Should have File Tree sheet");
+    assert!(sheet_names.contains(&"Details".to_string()), "Should have Details sheet");
 }
 
-/// IT-902: Excel file structure - verify it's a valid zip/xlsx
+/// IT-902: Excel file structure - verify Summary sheet content
 #[test]
 fn test_excel_file_is_valid_xlsx() {
     let env = TestEnv::new();
@@ -1801,11 +1839,18 @@ fn test_excel_file_is_valid_xlsx() {
 
     assert!(output.status.success());
 
-    // XLSX files are ZIP archives - verify by checking magic number
-    let file_content = fs::read(&excel_path).unwrap();
-    assert!(file_content.len() >= 4, "File should have content");
-    // ZIP magic number: PK\x03\x04
-    assert_eq!(&file_content[0..4], &[0x50, 0x4B, 0x03, 0x04], "Should be valid ZIP/XLSX format");
+    // Verify Summary sheet content using calamine
+    let mut workbook = open_excel(&excel_path);
+    let range = workbook.worksheet_range("Summary").expect("Should have Summary sheet");
+
+    // Check title
+    let title = get_cell_string(&range, 0, 0);
+    assert!(title.contains("rs_diffcopy"), "Title should contain 'rs_diffcopy'");
+
+    // Check that Source, Target labels exist
+    assert!(sheet_contains(&range, "Source:"), "Should have Source label");
+    assert!(sheet_contains(&range, "Target:"), "Should have Target label");
+    assert!(sheet_contains(&range, "Date:"), "Should have Date label");
 }
 
 /// IT-903: Excel with summary text file
@@ -1831,9 +1876,17 @@ fn test_excel_with_summary() {
     assert!(output.status.success());
     assert!(excel_path.exists(), "Excel file should be created");
     assert!(summary_path.exists(), "Summary file should be created");
+
+    // Verify both files have consistent content
+    let mut workbook = open_excel(&excel_path);
+    let range = workbook.worksheet_range("Summary").expect("Should have Summary sheet");
+    assert!(sheet_contains(&range, "Modified"), "Excel should show Modified");
+
+    let summary_content = fs::read_to_string(&summary_path).unwrap();
+    assert!(summary_content.contains("Modified"), "Summary should show Modified");
 }
 
-/// IT-904: Excel with various options
+/// IT-904: Excel with various options - verify options are recorded
 #[test]
 fn test_excel_with_options() {
     let env = TestEnv::new();
@@ -1856,9 +1909,16 @@ fn test_excel_with_options() {
 
     assert!(output.status.success());
     assert!(excel_path.exists(), "Excel file should be created even in dry-run");
+
+    // Verify options are recorded in Summary sheet
+    let mut workbook = open_excel(&excel_path);
+    let range = workbook.worksheet_range("Summary").expect("Should have Summary sheet");
+
+    assert!(sheet_contains(&range, "Dry-run"), "Should show Dry-run option");
+    assert!(sheet_contains(&range, "*.log"), "Should show exclude pattern");
 }
 
-/// IT-905: Excel statistics - verify basic diff is detected
+/// IT-905: Excel statistics - verify statistics in Summary sheet
 #[test]
 fn test_excel_statistics() {
     let env = TestEnv::new();
@@ -1880,14 +1940,17 @@ fn test_excel_statistics() {
     assert!(output.status.success());
     assert!(excel_path.exists());
 
-    // Verify through stdout that all types were detected
-    let stdout = stdout_str(&output);
-    assert!(stdout.contains("Added:"), "Should report added files");
-    assert!(stdout.contains("Modified:"), "Should report modified files");
-    assert!(stdout.contains("Deleted:"), "Should report deleted files");
+    // Verify statistics in Summary sheet
+    let mut workbook = open_excel(&excel_path);
+    let range = workbook.worksheet_range("Summary").expect("Should have Summary sheet");
+
+    assert!(sheet_contains(&range, "Added"), "Should have Added category");
+    assert!(sheet_contains(&range, "Modified"), "Should have Modified category");
+    assert!(sheet_contains(&range, "Deleted"), "Should have Deleted category");
+    assert!(sheet_contains(&range, "Total"), "Should have Total row");
 }
 
-/// IT-906: Excel file tree - verify with nested directories
+/// IT-906: Excel file tree - verify tree structure with nested directories
 #[test]
 fn test_excel_file_tree() {
     let env = TestEnv::new();
@@ -1908,13 +1971,30 @@ fn test_excel_file_tree() {
     assert!(output.status.success());
     assert!(excel_path.exists());
 
-    // Verify nested structure in stdout
-    let stdout = stdout_str(&output);
-    assert!(stdout.contains("dir1/"));
-    assert!(stdout.contains("file2.txt"));
+    // Verify File Tree sheet content
+    let mut workbook = open_excel(&excel_path);
+    let range = workbook.worksheet_range("File Tree").expect("Should have File Tree sheet");
+
+    // Check that tree contains directories and files
+    assert!(sheet_contains(&range, "dir1"), "Should contain dir1");
+    assert!(sheet_contains(&range, "dir2"), "Should contain dir2");
+    assert!(sheet_contains(&range, "file2.txt"), "Should contain file2.txt");
+    assert!(sheet_contains(&range, "root.txt"), "Should contain root.txt");
+
+    // Check tree connectors exist
+    let has_tree_connector = range.rows().any(|row| {
+        row.iter().any(|cell| {
+            if let Data::String(s) = cell {
+                s.contains("├─") || s.contains("└─")
+            } else {
+                false
+            }
+        })
+    });
+    assert!(has_tree_connector, "Should have tree connectors");
 }
 
-/// IT-907: Excel details - verify modified files are listed
+/// IT-907: Excel details - verify Details sheet content
 #[test]
 fn test_excel_details() {
     let env = TestEnv::new();
@@ -1933,9 +2013,12 @@ fn test_excel_details() {
     assert!(output.status.success());
     assert!(excel_path.exists());
 
-    let stdout = stdout_str(&output);
-    assert!(stdout.contains("Modified Files"));
-    assert!(stdout.contains("main.rs"));
+    // Verify Details sheet content
+    let mut workbook = open_excel(&excel_path);
+    let range = workbook.worksheet_range("Details").expect("Should have Details sheet");
+
+    assert!(sheet_contains(&range, "Modified Files"), "Should have Modified Files section");
+    assert!(sheet_contains(&range, "main.rs"), "Should contain main.rs");
 }
 
 /// IT-908: Excel with config file
@@ -1966,6 +2049,11 @@ excel = "{}"
 
     assert!(output.status.success());
     assert!(excel_path.exists(), "Excel file should be created via config");
+
+    // Verify Excel content
+    let mut workbook = open_excel(&excel_path);
+    let range = workbook.worksheet_range("Summary").expect("Should have Summary sheet");
+    assert!(sheet_contains(&range, "Modified"), "Should show Modified");
 }
 
 /// IT-909: Excel with no differences
@@ -1989,4 +2077,111 @@ fn test_excel_no_differences() {
     assert_eq!(output.status.code(), Some(2));
     // Excel file should still be created
     assert!(excel_path.exists(), "Excel file should be created even with no differences");
+
+    // Verify Excel shows no differences message or empty statistics
+    let workbook = open_excel(&excel_path);
+    let sheet_names = workbook.sheet_names();
+    assert!(sheet_names.contains(&"Summary".to_string()), "Should have Summary sheet");
+}
+
+/// IT-910: Excel file tree hierarchy verification
+#[test]
+fn test_excel_file_tree_hierarchy() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    // Create nested structure: downloads/.dummyfile, repos/deby/kas/board/kas.yml
+    create_file(env.source_path(), "downloads/.dummyfile", "dummy\n");
+    create_file(env.target_path(), "repos/deby/kas/board/kas.yml", "config\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--excel", excel_path.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+
+    // Verify File Tree sheet has proper hierarchy
+    let mut workbook = open_excel(&excel_path);
+    let range = workbook.worksheet_range("File Tree").expect("Should have File Tree sheet");
+
+    // Collect all rows to verify hierarchy
+    let mut found_downloads = false;
+    let mut found_dummyfile = false;
+    let mut found_repos = false;
+    let mut found_deby = false;
+    let mut found_kas_yml = false;
+
+    for row in range.rows() {
+        let row_text: String = row.iter()
+            .filter_map(|cell| {
+                if let Data::String(s) = cell {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if row_text.contains("downloads") {
+            found_downloads = true;
+        }
+        if row_text.contains(".dummyfile") {
+            found_dummyfile = true;
+        }
+        if row_text.contains("repos") {
+            found_repos = true;
+        }
+        if row_text.contains("deby") {
+            found_deby = true;
+        }
+        if row_text.contains("kas.yml") {
+            found_kas_yml = true;
+        }
+    }
+
+    assert!(found_downloads, "Should find downloads directory");
+    assert!(found_dummyfile, "Should find .dummyfile");
+    assert!(found_repos, "Should find repos directory");
+    assert!(found_deby, "Should find deby directory");
+    assert!(found_kas_yml, "Should find kas.yml file");
+}
+
+/// IT-911: Excel Details sheet with all change types
+#[test]
+fn test_excel_details_all_types() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    // Create all types of changes
+    create_file(env.source_path(), "deleted.txt", "will be deleted\n");
+    create_file(env.source_path(), "modified.txt", "old\n");
+    create_file(env.target_path(), "modified.txt", "new\n");
+    create_file(env.target_path(), "added.txt", "new file\n");
+    fs::create_dir_all(env.target_path().join("new_dir")).unwrap();
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--excel", excel_path.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+
+    // Verify Details sheet has all sections
+    let mut workbook = open_excel(&excel_path);
+    let range = workbook.worksheet_range("Details").expect("Should have Details sheet");
+
+    assert!(sheet_contains(&range, "Added Files"), "Should have Added Files section");
+    assert!(sheet_contains(&range, "Modified Files"), "Should have Modified Files section");
+    assert!(sheet_contains(&range, "Deleted Files"), "Should have Deleted Files section");
+
+    // Verify specific files are listed
+    assert!(sheet_contains(&range, "added.txt"), "Should list added.txt");
+    assert!(sheet_contains(&range, "modified.txt"), "Should list modified.txt");
+    assert!(sheet_contains(&range, "deleted.txt"), "Should list deleted.txt");
 }

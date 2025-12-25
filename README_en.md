@@ -83,8 +83,8 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-b, --both-versions` | Copy both old and new versions of modified files (.old/.new extensions) |
 | `-P, --check-permissions <MODE>` | Check permission changes (none/scripts/all) |
 | `-p, --patch` | Generate individual patch files (.patch) for modified files |
-| `--patch-file <PATH>` | Generate combined patch file with all changes |
-| `--excel <PATH>` | Output summary to Excel file (.xlsx) |
+| `-F, --patch-file <PATH>` | Generate combined patch file with all changes |
+| `-E, --excel <PATH>` | Output summary to Excel file (.xlsx) |
 | `-h, --help` | Show help |
 | `-V, --version` | Show version |
 
@@ -122,13 +122,13 @@ rs_diffcopy -S old -T new -O output --check-permissions all
 rs_diffcopy -S old -T new -O output --patch
 
 # Generate combined patch file (all changes in one file)
-rs_diffcopy -S old -T new -O output --patch-file changes.patch
+rs_diffcopy -S old -T new -O output -F changes.patch
 
 # Generate both individual and combined patches
-rs_diffcopy -S old -T new -O output --patch --patch-file all.patch
+rs_diffcopy -S old -T new -O output -p -F all.patch
 
 # Output Excel report
-rs_diffcopy -S old -T new -O output --excel report.xlsx
+rs_diffcopy -S old -T new -O output -E report.xlsx
 
 # Use config file
 rs_diffcopy --config ./diffcopy.toml

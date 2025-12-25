@@ -244,11 +244,11 @@ struct Args {
     patch: bool,
 
     /// Generate combined patch file (all patches in one file)
-    #[arg(long, value_name = "PATH")]
+    #[arg(short = 'F', long, value_name = "PATH")]
     patch_file: Option<PathBuf>,
 
     /// Output summary to Excel file (.xlsx)
-    #[arg(long, value_name = "PATH")]
+    #[arg(short = 'E', long, value_name = "PATH")]
     excel: Option<PathBuf>,
 }
 
@@ -2302,21 +2302,20 @@ fn write_excel_tree_items(
         let is_last = i == items.len() - 1;
         let prefix = if is_last { "└─" } else { "├─" };
 
+        // Column for prefix is at depth position, name is at depth + 1
+        let prefix_col = depth;
+        let name_col = depth + 1;
+
         // Write tree connector
-        if depth > 0 {
-            sheet.write_with_format(*row, depth - 1, prefix, tree_format)?;
-        } else {
-            sheet.write_with_format(*row, 0, prefix, tree_format)?;
-        }
+        sheet.write_with_format(*row, prefix_col, prefix, tree_format)?;
 
         // Get the name and status
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let col = if depth > 0 { depth } else { 1 };
 
         if let Some(entry) = entry_opt {
             // It's a file
             let (display_name, status_format) = get_entry_display(entry, &name, added_format, modified_format, deleted_format, symlink_format);
-            sheet.write_with_format(*row, col, &display_name, status_format)?;
+            sheet.write_with_format(*row, name_col, &display_name, status_format)?;
             sheet.write_with_format(*row, 11, get_status_string(&entry.status), status_format)?;
         } else {
             // It's a directory
@@ -2328,10 +2327,10 @@ fn write_excel_tree_items(
                     FileStatus::Deleted => deleted_format,
                     _ => tree_format,
                 };
-                sheet.write_with_format(*row, col, &dir_name, status_format)?;
+                sheet.write_with_format(*row, name_col, &dir_name, status_format)?;
                 sheet.write_with_format(*row, 11, get_status_string(&entry.status), status_format)?;
             } else {
-                sheet.write_with_format(*row, col, &dir_name, tree_format)?;
+                sheet.write_with_format(*row, name_col, &dir_name, tree_format)?;
             }
 
             *row += 1;

@@ -25,6 +25,7 @@ rayon = "1.10"
 
 [dev-dependencies]
 tempfile = "3"
+calamine = "0.26"
 
 [profile.release]
 lto = true
