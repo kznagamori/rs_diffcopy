@@ -63,6 +63,7 @@ rs_diffcopy [OPTIONS]
   -p, --patch                      変更ファイルごとに個別パッチファイル(.patch)を生成
   -F, --patch-file <PATH>          全変更を統合したパッチファイルを生成
   -E, --excel <PATH>               サマリーをExcelファイル(.xlsx)に出力
+  -L, --excel-fold-level <LEVEL>   Excelファイルツリーの折りたたみレベル（指定深さ以上を折りたたみ）
   -h, --help                       ヘルプ表示
   -V, --version                    バージョン表示
 ```
@@ -109,6 +110,9 @@ rs_diffcopy -S old -T new -O output -p -F all.patch
 # Excelレポートを出力
 rs_diffcopy -S old -T new -O output -E report.xlsx
 
+# Excelレポートを出力（深さ2以上のディレクトリを折りたたみ）
+rs_diffcopy -S old -T new -O output -E report.xlsx -L 2
+
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
 ```
@@ -135,6 +139,7 @@ check_permissions = "none"  # none / scripts / all
 patch = false               # 個別パッチファイル生成
 patch_file = ""             # 統合パッチファイルパス（空で無効）
 excel = ""                  # Excelレポート出力パス（空で無効）
+# excel_fold_level = 2      # Excelファイルツリーの折りたたみレベル（省略時は折りたたみなし）
 
 # 除外パターン（複数指定可）
 exclude = [
@@ -163,6 +168,7 @@ exclude = [
 | `patch` | bool | - | `false` | 個別パッチファイル生成 |
 | `patch_file` | string | - | - | 統合パッチファイルパス |
 | `excel` | string | - | - | Excelレポート出力パス |
+| `excel_fold_level` | integer | - | - | Excelファイルツリーの折りたたみレベル（指定深さ以上を折りたたみ） |
 
 #### 優先順位
 
@@ -577,14 +583,15 @@ No differences found.
 
 #### 書式設定
 
-- **タイトル**: 青色太字、16pt、中央揃え
+- **タイトル**: 青色太字、16pt、左揃え
 - **セクションヘッダー**: 青背景、白文字、12pt
 - **ステータス色分け**:
   - 追加（Added）: 緑色 (#008000)
   - 変更（Modified）: 青色 (#0066CC)
   - 削除（Deleted）: 赤色 (#CC0000)
   - シンボリックリンク: 紫色 (#9933FF)
-- **File Tree**: 等幅フォント（Consolas）で表示
+- **File Tree**: 等幅フォント（Consolas）で表示、行の折りたたみに対応（`-L`オプション使用時）
+- **Details**: パスを「Directory」と「File」の2列に分離して表示
 
 ---
 

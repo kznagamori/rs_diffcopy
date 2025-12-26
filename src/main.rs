@@ -250,6 +250,10 @@ struct Args {
     /// Output summary to Excel file (.xlsx)
     #[arg(short = 'E', long, value_name = "PATH")]
     excel: Option<PathBuf>,
+
+    /// Fold level for Excel file tree (rows deeper than this level will be collapsed)
+    #[arg(short = 'L', long = "excel-fold-level", value_name = "LEVEL")]
+    excel_fold_level: Option<u16>,
 }
 
 /// Configuration file structure (TOML format)
@@ -275,6 +279,7 @@ struct ConfigFile {
     patch: bool,
     patch_file: Option<String>,
     excel: Option<String>,
+    excel_fold_level: Option<u16>,
 }
 
 /// Resolved configuration after merging CLI args and config file
@@ -293,6 +298,7 @@ struct ResolvedConfig {
     patch: bool,
     patch_file: Option<PathBuf>,
     excel: Option<PathBuf>,
+    excel_fold_level: Option<u16>,
 }
 
 impl ResolvedConfig {
@@ -351,6 +357,10 @@ impl ResolvedConfig {
         let excel = args.excel
             .or_else(|| config_file.excel.map(PathBuf::from));
 
+        // Excel fold level (CLI takes precedence)
+        let excel_fold_level = args.excel_fold_level
+            .or(config_file.excel_fold_level);
+
         Ok(Self {
             source_dir,
             target_dir,
@@ -366,6 +376,7 @@ impl ResolvedConfig {
             patch,
             patch_file,
             excel,
+            excel_fold_level,
         })
     }
 }
@@ -448,6 +459,7 @@ struct SummaryOptions {
     patch: bool,
     patch_file: Option<PathBuf>,
     patch_result: Option<PatchResult>,
+    excel_fold_level: Option<u16>,
 }
 
 impl DiffResult {
@@ -588,6 +600,7 @@ fn main() -> Result<()> {
         patch: config.patch,
         patch_file: config.patch_file.clone(),
         patch_result,
+        excel_fold_level: config.excel_fold_level,
     };
     let summary = generate_summary(&diff_result, &summary_options);
 
@@ -1822,7 +1835,7 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
         .set_bold()
         .set_font_size(16)
         .set_font_color(Color::RGB(0x2E5090))
-        .set_align(FormatAlign::Center);
+        .set_align(FormatAlign::Left);
 
     let header_format = Format::new()
         .set_bold()
@@ -2055,19 +2068,31 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
     tree_row += 1;
 
     // Build tree and write to Excel
-    write_excel_tree(&diff_result.entries, tree_sheet, &mut tree_row, &tree_format, &added_format, &modified_format, &deleted_format, &symlink_format)?;
+    write_excel_tree(&diff_result.entries, tree_sheet, &mut tree_row, &tree_format, &added_format, &modified_format, &deleted_format, &symlink_format, options.excel_fold_level)?;
 
     // ==================== Details Sheet ====================
     let details_sheet = workbook.add_worksheet();
     details_sheet.set_name("Details")?;
 
-    details_sheet.set_column_width(0, 15)?;
-    details_sheet.set_column_width(1, 60)?;
-    details_sheet.set_column_width(2, 30)?;
+    details_sheet.set_column_width(0, 12)?;  // Type
+    details_sheet.set_column_width(1, 40)?;  // Directory
+    details_sheet.set_column_width(2, 30)?;  // File
+    details_sheet.set_column_width(3, 30)?;  // Notes
 
     let mut details_row: u32 = 0;
     details_sheet.write_with_format(details_row, 0, "Change Details", &title_format)?;
     details_row += 2;
+
+    // Helper function to split path into directory and file name
+    fn split_path(path: &Path) -> (String, String) {
+        let parent = path.parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let file_name = path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        (parent, file_name)
+    }
 
     // Added files
     let added_entries: Vec<_> = diff_result.entries.iter()
@@ -2075,19 +2100,22 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
         .collect();
 
     if !added_entries.is_empty() {
-        details_sheet.merge_range(details_row, 0, details_row, 2, "Added Files", &section_header_format)?;
+        details_sheet.merge_range(details_row, 0, details_row, 3, "Added Files", &section_header_format)?;
         details_row += 1;
 
         details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "Notes", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+        details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
         details_row += 1;
 
         for entry in &added_entries {
             let type_str = if entry.is_dir { "Directory" } else { "File" };
+            let (dir, file) = split_path(&entry.relative_path);
             details_sheet.write_with_format(details_row, 0, type_str, &cell_format)?;
-            details_sheet.write_with_format(details_row, 1, entry.relative_path.display().to_string(), &added_format)?;
-            details_sheet.write_with_format(details_row, 2, "", &cell_format)?;
+            details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+            details_sheet.write_with_format(details_row, 2, &file, &added_format)?;
+            details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
             details_row += 1;
         }
         details_row += 1;
@@ -2099,18 +2127,21 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
         .collect();
 
     if !modified_entries.is_empty() {
-        details_sheet.merge_range(details_row, 0, details_row, 2, "Modified Files", &section_header_format)?;
+        details_sheet.merge_range(details_row, 0, details_row, 3, "Modified Files", &section_header_format)?;
         details_row += 1;
 
         details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "Notes", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+        details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
         details_row += 1;
 
         for entry in &modified_entries {
+            let (dir, file) = split_path(&entry.relative_path);
             details_sheet.write_with_format(details_row, 0, "File", &cell_format)?;
-            details_sheet.write_with_format(details_row, 1, entry.relative_path.display().to_string(), &modified_format)?;
-            details_sheet.write_with_format(details_row, 2, "", &cell_format)?;
+            details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+            details_sheet.write_with_format(details_row, 2, &file, &modified_format)?;
+            details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
             details_row += 1;
         }
         details_row += 1;
@@ -2122,19 +2153,22 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
         .collect();
 
     if !deleted_entries.is_empty() {
-        details_sheet.merge_range(details_row, 0, details_row, 2, "Deleted Files", &section_header_format)?;
+        details_sheet.merge_range(details_row, 0, details_row, 3, "Deleted Files", &section_header_format)?;
         details_row += 1;
 
         details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "Notes", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+        details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
         details_row += 1;
 
         for entry in &deleted_entries {
             let type_str = if entry.is_dir { "Directory" } else { "File" };
+            let (dir, file) = split_path(&entry.relative_path);
             details_sheet.write_with_format(details_row, 0, type_str, &cell_format)?;
-            details_sheet.write_with_format(details_row, 1, entry.relative_path.display().to_string(), &deleted_format)?;
-            details_sheet.write_with_format(details_row, 2, "", &cell_format)?;
+            details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+            details_sheet.write_with_format(details_row, 2, &file, &deleted_format)?;
+            details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
             details_row += 1;
         }
         details_row += 1;
@@ -2146,12 +2180,13 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
         .collect();
 
     if !symlink_entries.is_empty() {
-        details_sheet.merge_range(details_row, 0, details_row, 2, "Symlink Details", &section_header_format)?;
+        details_sheet.merge_range(details_row, 0, details_row, 3, "Symlink Details", &section_header_format)?;
         details_row += 1;
 
         details_sheet.write_with_format(details_row, 0, "Change", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "Target", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+        details_sheet.write_with_format(details_row, 3, "Target", &header_format)?;
         details_row += 1;
 
         for entry in &symlink_entries {
@@ -2169,9 +2204,11 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
                     (None, Some(info)) => info.target.display().to_string(),
                     _ => String::new(),
                 };
+                let (dir, file) = split_path(&entry.relative_path);
                 details_sheet.write_with_format(details_row, 0, change_str, &cell_format)?;
-                details_sheet.write_with_format(details_row, 1, entry.relative_path.display().to_string(), &symlink_format)?;
-                details_sheet.write_with_format(details_row, 2, target_str, &cell_format)?;
+                details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                details_sheet.write_with_format(details_row, 2, &file, &symlink_format)?;
+                details_sheet.write_with_format(details_row, 3, target_str, &cell_format)?;
                 details_row += 1;
             }
         }
@@ -2180,18 +2217,21 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
 
     // Permission changes
     if !diff_result.permission_changes.is_empty() {
-        details_sheet.merge_range(details_row, 0, details_row, 2, "Permission Changes", &section_header_format)?;
+        details_sheet.merge_range(details_row, 0, details_row, 3, "Permission Changes", &section_header_format)?;
         details_row += 1;
 
         details_sheet.write_with_format(details_row, 0, "Old", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "New", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+        details_sheet.write_with_format(details_row, 3, "New", &header_format)?;
         details_row += 1;
 
         for change in &diff_result.permission_changes {
+            let (dir, file) = split_path(&change.relative_path);
             details_sheet.write_with_format(details_row, 0, &change.old_mode, &cell_format)?;
-            details_sheet.write_with_format(details_row, 1, change.relative_path.display().to_string(), &info_value_format)?;
-            details_sheet.write_with_format(details_row, 2, &change.new_mode, &cell_format)?;
+            details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+            details_sheet.write_with_format(details_row, 2, &file, &info_value_format)?;
+            details_sheet.write_with_format(details_row, 3, &change.new_mode, &cell_format)?;
             details_row += 1;
         }
     }
@@ -2199,21 +2239,24 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
     // Patch details if available
     if let Some(patch_result) = &options.patch_result {
         if !patch_result.patches.is_empty() {
-            details_sheet.merge_range(details_row, 0, details_row, 2, "Patch Details", &section_header_format)?;
+            details_sheet.merge_range(details_row, 0, details_row, 3, "Patch Details", &section_header_format)?;
             details_row += 1;
 
             details_sheet.write_with_format(details_row, 0, "Status", &header_format)?;
-            details_sheet.write_with_format(details_row, 1, "Path", &header_format)?;
-            details_sheet.write_with_format(details_row, 2, "Notes", &header_format)?;
+            details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+            details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+            details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
             details_row += 1;
 
             for patch in &patch_result.patches {
                 let status = if patch.is_binary { "Skipped" } else { "Generated" };
                 let notes = if patch.is_binary { "Binary file" } else { "" };
                 let status_format = if patch.is_binary { &deleted_format } else { &added_format };
+                let (dir, file) = split_path(&patch.relative_path);
                 details_sheet.write_with_format(details_row, 0, status, &cell_format)?;
-                details_sheet.write_with_format(details_row, 1, patch.relative_path.display().to_string(), status_format)?;
-                details_sheet.write_with_format(details_row, 2, notes, &cell_format)?;
+                details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                details_sheet.write_with_format(details_row, 2, &file, status_format)?;
+                details_sheet.write_with_format(details_row, 3, notes, &cell_format)?;
                 details_row += 1;
             }
         }
@@ -2234,6 +2277,7 @@ fn write_excel_tree(
     modified_format: &Format,
     deleted_format: &Format,
     symlink_format: &Format,
+    fold_level: Option<u16>,
 ) -> Result<()> {
     if entries.is_empty() {
         return Ok(());
@@ -2279,7 +2323,7 @@ fn write_excel_tree(
     }
     root_items.sort_by(|a, b| a.0.cmp(&b.0));
 
-    write_excel_tree_items(entries, &all_dirs, &root_items, sheet, row, 0, tree_format, added_format, modified_format, deleted_format, symlink_format)?;
+    write_excel_tree_items(entries, &all_dirs, &root_items, sheet, row, 0, tree_format, added_format, modified_format, deleted_format, symlink_format, fold_level)?;
 
     Ok(())
 }
@@ -2297,6 +2341,7 @@ fn write_excel_tree_items(
     modified_format: &Format,
     deleted_format: &Format,
     symlink_format: &Format,
+    fold_level: Option<u16>,
 ) -> Result<()> {
     for (i, (path, entry_opt)) in items.iter().enumerate() {
         let is_last = i == items.len() - 1;
@@ -2352,7 +2397,19 @@ fn write_excel_tree_items(
             child_items.sort_by(|a, b| a.0.cmp(&b.0));
 
             if !child_items.is_empty() {
-                write_excel_tree_items(entries, all_dirs, &child_items, sheet, row, depth + 1, tree_format, added_format, modified_format, deleted_format, symlink_format)?;
+                // Record start row for children
+                let children_start_row = *row;
+
+                write_excel_tree_items(entries, all_dirs, &child_items, sheet, row, depth + 1, tree_format, added_format, modified_format, deleted_format, symlink_format, fold_level)?;
+
+                // Apply row grouping if fold_level is specified and depth >= fold_level
+                // This groups the children of this directory
+                if let Some(level) = fold_level {
+                    if depth + 1 >= level && *row > children_start_row {
+                        // Group and collapse the children rows
+                        sheet.group_rows_collapsed(children_start_row, *row - 1)?;
+                    }
+                }
             }
             continue;
         }
@@ -3127,6 +3184,7 @@ mod tests {
             patch: false,
             patch_file: None,
             patch_result: None,
+            excel_fold_level: None,
         }
     }
 
@@ -3233,6 +3291,7 @@ mod tests {
             patch: false,
             patch_file: None,
             patch_result: None,
+            excel_fold_level: None,
         };
 
         let summary = generate_summary(&result, &options);
@@ -3708,6 +3767,7 @@ mod tests {
                 total_generated: 1,
                 total_skipped: 0,
             }),
+            excel_fold_level: None,
         };
 
         let summary = generate_summary(&result, &options);
@@ -3752,6 +3812,7 @@ mod tests {
                 total_generated: 0,
                 total_skipped: 1,
             }),
+            excel_fold_level: None,
         };
 
         let summary = generate_summary(&result, &options);

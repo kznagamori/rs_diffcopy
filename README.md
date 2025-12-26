@@ -85,6 +85,7 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-p, --patch` | 変更ファイルごとに個別のパッチファイル(.patch)を生成 |
 | `-F, --patch-file <PATH>` | 全変更を統合したパッチファイルを生成 |
 | `-E, --excel <PATH>` | サマリーをExcelファイル(.xlsx)に出力 |
+| `-L, --excel-fold-level <LEVEL>` | Excelファイルツリーの折りたたみレベル |
 | `-h, --help` | ヘルプ表示 |
 | `-V, --version` | バージョン表示 |
 
@@ -130,6 +131,9 @@ rs_diffcopy -S old -T new -O output -p -F all.patch
 # Excelレポートを出力
 rs_diffcopy -S old -T new -O output -E report.xlsx
 
+# Excelレポートを出力（深さ2以上を折りたたみ）
+rs_diffcopy -S old -T new -O output -E report.xlsx -L 2
+
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
 ```
@@ -156,6 +160,7 @@ check_permissions = "none"  # none / scripts / all
 patch = false               # 個別パッチファイル生成
 patch_file = ""             # 統合パッチファイルパス（空で無効）
 excel = ""                  # Excelレポート出力パス（空で無効）
+# excel_fold_level = 2      # Excelファイルツリーの折りたたみレベル（省略時は折りたたみなし）
 
 # 除外パターン（複数指定可）
 exclude = [
@@ -184,6 +189,7 @@ exclude = [
 | `patch` | bool | - | 個別パッチファイル生成 |
 | `patch_file` | string | - | 統合パッチファイルパス |
 | `excel` | string | - | Excelレポート出力パス |
+| `excel_fold_level` | integer | - | Excelファイルツリーの折りたたみレベル |
 
 ### 優先順位
 

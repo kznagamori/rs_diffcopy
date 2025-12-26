@@ -2025,8 +2025,14 @@ fn test_excel_details() {
 #[test]
 fn test_excel_with_config() {
     let env = TestEnv::new();
-    let config_path = env.source_path().parent().unwrap().join("config.toml");
+    let config_path = env.source_path().join("config.toml");
     let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    // Use forward slashes for TOML compatibility on all platforms
+    let source_str = env.source_path().display().to_string().replace("\\", "/");
+    let target_str = env.target_path().display().to_string().replace("\\", "/");
+    let output_str = env.output_path().display().to_string().replace("\\", "/");
+    let excel_str = excel_path.display().to_string().replace("\\", "/");
 
     let config_content = format!(
         r#"
@@ -2035,10 +2041,10 @@ target = "{}"
 output = "{}"
 excel = "{}"
 "#,
-        env.source_path().display(),
-        env.target_path().display(),
-        env.output_path().display(),
-        excel_path.display()
+        source_str,
+        target_str,
+        output_str,
+        excel_str
     );
     fs::write(&config_path, config_content).unwrap();
 
@@ -2184,4 +2190,99 @@ fn test_excel_details_all_types() {
     assert!(sheet_contains(&range, "added.txt"), "Should list added.txt");
     assert!(sheet_contains(&range, "modified.txt"), "Should list modified.txt");
     assert!(sheet_contains(&range, "deleted.txt"), "Should list deleted.txt");
+}
+
+/// IT-912: Excel fold level option
+#[test]
+fn test_excel_fold_level() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    // Create nested directory structure
+    create_file(env.target_path(), "level1/level2/level3/deep.txt", "deep file\n");
+    create_file(env.target_path(), "level1/shallow.txt", "shallow file\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--excel", excel_path.to_str().unwrap(), "-L", "2"],
+    );
+
+    assert!(output.status.success());
+    assert!(excel_path.exists());
+
+    // Verify Excel was created and has File Tree sheet
+    let mut workbook = open_excel(&excel_path);
+    let range = workbook.worksheet_range("File Tree").expect("Should have File Tree sheet");
+    assert!(sheet_contains(&range, "level1"), "Should contain level1 directory");
+}
+
+/// IT-913: Excel fold level with config file
+#[test]
+fn test_excel_fold_level_with_config() {
+    let env = TestEnv::new();
+    let config_path = env.source_path().join("config.toml");
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    // Use forward slashes for TOML compatibility on all platforms
+    let source_str = env.source_path().display().to_string().replace("\\", "/");
+    let target_str = env.target_path().display().to_string().replace("\\", "/");
+    let output_str = env.output_path().display().to_string().replace("\\", "/");
+    let excel_str = excel_path.display().to_string().replace("\\", "/");
+
+    let config_content = format!(
+        r#"
+source = "{}"
+target = "{}"
+output = "{}"
+excel = "{}"
+excel_fold_level = 1
+"#,
+        source_str,
+        target_str,
+        output_str,
+        excel_str
+    );
+    fs::write(&config_path, config_content).unwrap();
+
+    create_file(env.target_path(), "dir1/dir2/file.txt", "content\n");
+
+    let output = run_diffcopy(&["--config", config_path.to_str().unwrap()]);
+
+    assert!(output.status.success());
+    assert!(excel_path.exists(), "Excel file should be created via config with fold_level");
+}
+
+/// IT-914: Excel Details sheet column structure (Directory and File separated)
+#[test]
+fn test_excel_details_columns() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    // Create file with directory path
+    create_file(env.target_path(), "src/components/Button.tsx", "export const Button = () => {};\n");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--excel", excel_path.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+    assert!(excel_path.exists());
+
+    // Verify Details sheet has separated Directory and File columns
+    let mut workbook = open_excel(&excel_path);
+    let range = workbook.worksheet_range("Details").expect("Should have Details sheet");
+
+    // Check column headers
+    assert!(sheet_contains(&range, "Directory"), "Should have Directory column");
+    assert!(sheet_contains(&range, "File"), "Should have File column header");
+
+    // Check that file name is separated from directory
+    assert!(sheet_contains(&range, "Button.tsx"), "Should contain file name");
+    assert!(sheet_contains(&range, "src/components") || sheet_contains(&range, "src\\components"),
+            "Should contain directory path");
 }
