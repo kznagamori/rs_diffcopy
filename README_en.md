@@ -85,6 +85,8 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-p, --patch` | Generate individual patch files (.patch) for modified files |
 | `-F, --patch-file <PATH>` | Generate combined patch file with all changes |
 | `-E, --excel <PATH>` | Output summary to Excel file (.xlsx) |
+| `-L, --excel-fold-level <LEVEL>` | Excel file tree fold level |
+| `-u, --show-unchanged` | Show unchanged files in summary details |
 | `-h, --help` | Show help |
 | `-V, --version` | Show version |
 
@@ -130,6 +132,12 @@ rs_diffcopy -S old -T new -O output -p -F all.patch
 # Output Excel report
 rs_diffcopy -S old -T new -O output -E report.xlsx
 
+# Output Excel report (fold levels 2 and deeper)
+rs_diffcopy -S old -T new -O output -E report.xlsx -L 2
+
+# Show unchanged files in summary details
+rs_diffcopy -S old -T new -O output --show-unchanged
+
 # Use config file
 rs_diffcopy --config ./diffcopy.toml
 ```
@@ -156,6 +164,8 @@ check_permissions = "none"  # none / scripts / all
 patch = false               # Generate individual patch files
 patch_file = ""             # Combined patch file path (empty to disable)
 excel = ""                  # Excel report output path (empty to disable)
+# excel_fold_level = 2      # Excel file tree fold level (no folding if omitted)
+show_unchanged = false      # Show unchanged files in summary details
 
 # Exclude patterns (multiple can be specified)
 exclude = [
@@ -184,6 +194,8 @@ exclude = [
 | `patch` | bool | - | Generate individual patch files |
 | `patch_file` | string | - | Combined patch file path |
 | `excel` | string | - | Excel report output path |
+| `excel_fold_level` | integer | - | Excel file tree fold level |
+| `show_unchanged` | bool | - | Show unchanged files in summary details |
 
 ### Priority
 
@@ -214,8 +226,9 @@ Options:
 Added:      5 files, 1 dir
 Modified:   8 files
 Deleted:    2 files, 1 dir
+Unchanged:  50 files
 --------------------------
-Total:     16 items
+Total:     66 items
 
 ================
 File Tree
@@ -261,6 +274,7 @@ Files:
 | `[added]` | Newly added |
 | `[modified]` | Content changed |
 | `[deleted]` | Deleted (not copied) |
+| `[unchanged]` | Unchanged (shown with `--show-unchanged`) |
 | `[symlink: added]` | Newly added symbolic link |
 | `[symlink: added, broken]` | Broken symbolic link |
 | `[symlink: deleted]` | Deleted symbolic link |

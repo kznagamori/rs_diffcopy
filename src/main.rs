@@ -254,6 +254,10 @@ struct Args {
     /// Fold level for Excel file tree (rows deeper than this level will be collapsed)
     #[arg(short = 'L', long = "excel-fold-level", value_name = "LEVEL")]
     excel_fold_level: Option<u16>,
+
+    /// Show unchanged files in summary output
+    #[arg(short = 'u', long)]
+    show_unchanged: bool,
 }
 
 /// Configuration file structure (TOML format)
@@ -280,6 +284,8 @@ struct ConfigFile {
     patch_file: Option<String>,
     excel: Option<String>,
     excel_fold_level: Option<u16>,
+    #[serde(default)]
+    show_unchanged: bool,
 }
 
 /// Resolved configuration after merging CLI args and config file
@@ -299,6 +305,7 @@ struct ResolvedConfig {
     patch_file: Option<PathBuf>,
     excel: Option<PathBuf>,
     excel_fold_level: Option<u16>,
+    show_unchanged: bool,
 }
 
 impl ResolvedConfig {
@@ -361,6 +368,9 @@ impl ResolvedConfig {
         let excel_fold_level = args.excel_fold_level
             .or(config_file.excel_fold_level);
 
+        // Show unchanged files
+        let show_unchanged = args.show_unchanged || config_file.show_unchanged;
+
         Ok(Self {
             source_dir,
             target_dir,
@@ -377,6 +387,7 @@ impl ResolvedConfig {
             patch_file,
             excel,
             excel_fold_level,
+            show_unchanged,
         })
     }
 }
@@ -402,6 +413,7 @@ enum FileStatus {
     Added,
     Modified,
     Deleted,
+    Unchanged,
     Symlink {
         change_type: SymlinkChangeType,
         current: Option<SymlinkInfo>,  // None if deleted
@@ -430,6 +442,12 @@ struct DiffResult {
     permission_changes: Vec<PermissionChange>,
     source_dir: PathBuf,
     target_dir: PathBuf,
+    /// Total files/dirs in source (excluding excluded patterns)
+    source_count: usize,
+    /// Total files/dirs in target (excluding excluded patterns)
+    target_count: usize,
+    /// Files/dirs that exist in both source and target
+    common_count: usize,
 }
 
 /// Patch generation result for a single file
@@ -460,14 +478,17 @@ struct SummaryOptions {
     patch_file: Option<PathBuf>,
     patch_result: Option<PatchResult>,
     excel_fold_level: Option<u16>,
+    show_unchanged: bool,
 }
 
 impl DiffResult {
     fn has_differences(&self) -> bool {
-        !self.entries.is_empty() || !self.permission_changes.is_empty()
+        // Unchanged entries don't count as differences
+        let has_real_changes = self.entries.iter().any(|e| !matches!(e.status, FileStatus::Unchanged));
+        has_real_changes || !self.permission_changes.is_empty()
     }
 
-    fn count_by_status(&self) -> (usize, usize, usize, usize, usize, usize, usize, usize) {
+    fn count_by_status(&self) -> (usize, usize, usize, usize, usize, usize, usize, usize, usize) {
         let mut added_files = 0;
         let mut added_dirs = 0;
         let mut modified_files = 0;
@@ -475,6 +496,7 @@ impl DiffResult {
         let mut deleted_dirs = 0;
         let mut symlinks = 0;
         let mut errors = 0;
+        let mut unchanged_files = 0;
 
         for entry in &self.entries {
             match &entry.status {
@@ -493,6 +515,7 @@ impl DiffResult {
                         deleted_files += 1;
                     }
                 }
+                FileStatus::Unchanged => unchanged_files += 1,
                 FileStatus::Symlink { .. } => symlinks += 1,
                 FileStatus::PermissionDenied { .. } => errors += 1,
             }
@@ -500,7 +523,29 @@ impl DiffResult {
 
         let permission_changes = self.permission_changes.len();
 
-        (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors)
+        (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors, unchanged_files)
+    }
+
+    /// Calculate unchanged file count (files in both source and target with no changes)
+    /// This works regardless of show_unchanged option
+    fn unchanged_count(&self) -> usize {
+        // Count symlinks that were changed (not added or deleted)
+        let symlink_changed = self.entries.iter()
+            .filter(|e| matches!(&e.status, FileStatus::Symlink { change_type: SymlinkChangeType::Changed, .. }))
+            .count();
+
+        // Count modified files
+        let modified = self.entries.iter()
+            .filter(|e| matches!(e.status, FileStatus::Modified))
+            .count();
+
+        // Unchanged = common files - modified - symlink_changed - permission_changes
+        self.common_count.saturating_sub(modified + symlink_changed + self.permission_changes.len())
+    }
+
+    /// Calculate total unique paths (source ∪ target)
+    fn total_unique_paths(&self) -> usize {
+        self.source_count + self.target_count - self.common_count
     }
 }
 
@@ -566,6 +611,7 @@ fn main() -> Result<()> {
         &exclude_patterns,
         config.verbose,
         config.check_permissions,
+        config.show_unchanged,
     )?;
 
     // Copy files (if not dry-run and has differences)
@@ -601,6 +647,7 @@ fn main() -> Result<()> {
         patch_file: config.patch_file.clone(),
         patch_result,
         excel_fold_level: config.excel_fold_level,
+        show_unchanged: config.show_unchanged,
     };
     let summary = generate_summary(&diff_result, &summary_options);
 
@@ -644,6 +691,7 @@ fn compare_single_file(
     target_dir: &Path,
     source_paths: &BTreeSet<PathBuf>,
     check_permissions: PermissionCheckMode,
+    show_unchanged: bool,
 ) -> (Option<DiffEntry>, Option<PermissionChange>) {
     let target_path = target_dir.join(rel_path);
     let source_path = source_dir.join(rel_path);
@@ -724,6 +772,14 @@ fn compare_single_file(
                         return (None, Some(change));
                     }
                 }
+                // If show_unchanged is enabled, return unchanged entry
+                if show_unchanged {
+                    return (Some(DiffEntry {
+                        relative_path: rel_path.clone(),
+                        is_dir: false,
+                        status: FileStatus::Unchanged,
+                    }), None);
+                }
             }
             Err(err) => {
                 return (Some(DiffEntry {
@@ -746,6 +802,7 @@ fn compare_directories(
     exclude_patterns: &[Pattern],
     verbose: bool,
     check_permissions: PermissionCheckMode,
+    show_unchanged: bool,
 ) -> Result<DiffResult> {
     const TOTAL_PHASES: usize = 5;
 
@@ -830,6 +887,7 @@ fn compare_directories(
                 target_dir,
                 &source_paths,
                 check_permissions,
+                show_unchanged,
             );
 
             let count = progress_counter_ref.fetch_add(1, Ordering::Relaxed) + 1;
@@ -916,11 +974,19 @@ fn compare_directories(
     // Sort permission changes by path
     permission_changes.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
+    // Calculate counts for statistics
+    let source_count = source_paths.len();
+    let target_count = target_paths.len();
+    let common_count = source_paths.intersection(&target_paths).count();
+
     Ok(DiffResult {
         entries,
         permission_changes,
         source_dir: source_dir.to_path_buf(),
         target_dir: target_dir.to_path_buf(),
+        source_count,
+        target_count,
+        common_count,
     })
 }
 
@@ -1527,6 +1593,10 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
         options_output.push_str(&format!("  Combined patch file: {}\n", patch_path.display()));
         has_options = true;
     }
+    if options.show_unchanged {
+        options_output.push_str("  Show unchanged: Yes\n");
+        has_options = true;
+    }
 
     if has_options {
         output.push_str("Options:\n");
@@ -1539,8 +1609,11 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
         return output;
     }
 
-    let (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors) =
+    let (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors, _) =
         diff_result.count_by_status();
+
+    // Calculate unchanged count (always shown, regardless of show_unchanged option)
+    let unchanged_files = diff_result.unchanged_count();
 
     // Statistics
     if added_files > 0 || added_dirs > 0 {
@@ -1575,8 +1648,11 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
     if errors > 0 {
         output.push_str(&format!("Errors:     {} files\n", errors));
     }
+    // Always show unchanged count
+    output.push_str(&format!("Unchanged:  {} files\n", unchanged_files));
 
-    let total = added_files + added_dirs + modified_files + deleted_files + deleted_dirs + symlinks + permission_changes + errors;
+    // Total = unique paths in source ∪ target
+    let total = diff_result.total_unique_paths();
     output.push_str("--------------------------\n");
     output.push_str(&format!("Total:     {} items\n", total));
     output.push('\n');
@@ -1667,6 +1743,23 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
             }
             output.push('\n');
         }
+    }
+
+    // Unchanged Details
+    let unchanged_entries: Vec<_> = diff_result
+        .entries
+        .iter()
+        .filter(|e| matches!(e.status, FileStatus::Unchanged))
+        .collect();
+
+    if !unchanged_entries.is_empty() {
+        output.push_str("================\n");
+        output.push_str("Unchanged Files\n");
+        output.push_str("================\n");
+        for entry in unchanged_entries {
+            output.push_str(&format!("  {}\n", entry.relative_path.display()));
+        }
+        output.push('\n');
     }
 
     // Symlink Details
@@ -1975,8 +2068,9 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
     }
 
     // Statistics section
-    let (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors) =
+    let (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors, _) =
         diff_result.count_by_status();
+    let unchanged_files = diff_result.unchanged_count();
 
     worksheet.merge_range(row, 0, row, 2, "Statistics", &section_header_format)?;
     row += 1;
@@ -2038,7 +2132,19 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
         row += 1;
     }
 
-    let total = added_files + added_dirs + modified_files + deleted_files + deleted_dirs + symlinks + permission_changes + errors;
+    // Always show unchanged count
+    {
+        let unchanged_format = Format::new()
+            .set_font_color(Color::RGB(0x808080))
+            .set_align(FormatAlign::Left);
+        worksheet.write_with_format(row, 0, "Unchanged", &cell_format)?;
+        worksheet.write_with_format(row, 1, format!("{} files", unchanged_files), &unchanged_format)?;
+        worksheet.write_number_with_format(row, 2, unchanged_files as f64, &number_format)?;
+        row += 1;
+    }
+
+    // Total = unique paths in source ∪ target
+    let total = diff_result.total_unique_paths();
     let total_row_format = Format::new()
         .set_bold()
         .set_border(FormatBorder::Thin)
@@ -2068,7 +2174,11 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
     tree_row += 1;
 
     // Build tree and write to Excel
-    write_excel_tree(&diff_result.entries, tree_sheet, &mut tree_row, &tree_format, &added_format, &modified_format, &deleted_format, &symlink_format, options.excel_fold_level)?;
+    let unchanged_format_tree = Format::new()
+        .set_font_color(Color::RGB(0x808080))
+        .set_font_name("Consolas")
+        .set_font_size(10);
+    write_excel_tree(&diff_result.entries, tree_sheet, &mut tree_row, &tree_format, &added_format, &modified_format, &deleted_format, &symlink_format, &unchanged_format_tree, options.excel_fold_level)?;
 
     // ==================== Details Sheet ====================
     let details_sheet = workbook.add_worksheet();
@@ -2168,6 +2278,36 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
             details_sheet.write_with_format(details_row, 0, type_str, &cell_format)?;
             details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
             details_sheet.write_with_format(details_row, 2, &file, &deleted_format)?;
+            details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
+            details_row += 1;
+        }
+        details_row += 1;
+    }
+
+    // Unchanged files
+    let unchanged_entries: Vec<_> = diff_result.entries.iter()
+        .filter(|e| matches!(e.status, FileStatus::Unchanged))
+        .collect();
+
+    if !unchanged_entries.is_empty() {
+        let unchanged_format = Format::new()
+            .set_font_color(Color::RGB(0x808080))
+            .set_align(FormatAlign::Left);
+
+        details_sheet.merge_range(details_row, 0, details_row, 3, "Unchanged Files", &section_header_format)?;
+        details_row += 1;
+
+        details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+        details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
+        details_row += 1;
+
+        for entry in &unchanged_entries {
+            let (dir, file) = split_path(&entry.relative_path);
+            details_sheet.write_with_format(details_row, 0, "File", &cell_format)?;
+            details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+            details_sheet.write_with_format(details_row, 2, &file, &unchanged_format)?;
             details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
             details_row += 1;
         }
@@ -2277,6 +2417,7 @@ fn write_excel_tree(
     modified_format: &Format,
     deleted_format: &Format,
     symlink_format: &Format,
+    unchanged_format: &Format,
     fold_level: Option<u16>,
 ) -> Result<()> {
     if entries.is_empty() {
@@ -2323,7 +2464,7 @@ fn write_excel_tree(
     }
     root_items.sort_by(|a, b| a.0.cmp(&b.0));
 
-    write_excel_tree_items(entries, &all_dirs, &root_items, sheet, row, 0, tree_format, added_format, modified_format, deleted_format, symlink_format, fold_level)?;
+    write_excel_tree_items(entries, &all_dirs, &root_items, sheet, row, 0, tree_format, added_format, modified_format, deleted_format, symlink_format, unchanged_format, fold_level)?;
 
     Ok(())
 }
@@ -2341,6 +2482,7 @@ fn write_excel_tree_items(
     modified_format: &Format,
     deleted_format: &Format,
     symlink_format: &Format,
+    unchanged_format: &Format,
     fold_level: Option<u16>,
 ) -> Result<()> {
     for (i, (path, entry_opt)) in items.iter().enumerate() {
@@ -2359,7 +2501,7 @@ fn write_excel_tree_items(
 
         if let Some(entry) = entry_opt {
             // It's a file
-            let (display_name, status_format) = get_entry_display(entry, &name, added_format, modified_format, deleted_format, symlink_format);
+            let (display_name, status_format) = get_entry_display(entry, &name, added_format, modified_format, deleted_format, symlink_format, unchanged_format);
             sheet.write_with_format(*row, name_col, &display_name, status_format)?;
             sheet.write_with_format(*row, 11, get_status_string(&entry.status), status_format)?;
         } else {
@@ -2400,7 +2542,7 @@ fn write_excel_tree_items(
                 // Record start row for children
                 let children_start_row = *row;
 
-                write_excel_tree_items(entries, all_dirs, &child_items, sheet, row, depth + 1, tree_format, added_format, modified_format, deleted_format, symlink_format, fold_level)?;
+                write_excel_tree_items(entries, all_dirs, &child_items, sheet, row, depth + 1, tree_format, added_format, modified_format, deleted_format, symlink_format, unchanged_format, fold_level)?;
 
                 // Apply row grouping if fold_level is specified and depth >= fold_level
                 // This groups the children of this directory
@@ -2428,11 +2570,13 @@ fn get_entry_display<'a>(
     modified_format: &'a Format,
     deleted_format: &'a Format,
     symlink_format: &'a Format,
+    unchanged_format: &'a Format,
 ) -> (String, &'a Format) {
     match &entry.status {
         FileStatus::Added => (name.to_string(), added_format),
         FileStatus::Modified => (name.to_string(), modified_format),
         FileStatus::Deleted => (name.to_string(), deleted_format),
+        FileStatus::Unchanged => (name.to_string(), unchanged_format),
         FileStatus::Symlink { current, previous, .. } => {
             let target = match (current, previous) {
                 (Some(info), _) => format!(" -> {}", info.target.display()),
@@ -2451,6 +2595,7 @@ fn get_status_string(status: &FileStatus) -> &'static str {
         FileStatus::Added => "[added]",
         FileStatus::Modified => "[modified]",
         FileStatus::Deleted => "[deleted]",
+        FileStatus::Unchanged => "[unchanged]",
         FileStatus::Symlink { change_type, current, .. } => {
             match change_type {
                 SymlinkChangeType::Added => {
@@ -2646,6 +2791,7 @@ fn format_status_tag(status: &FileStatus) -> String {
         FileStatus::Added => "[added]".to_string(),
         FileStatus::Modified => "[modified]".to_string(),
         FileStatus::Deleted => "[deleted]".to_string(),
+        FileStatus::Unchanged => "[unchanged]".to_string(),
         FileStatus::Symlink { change_type, current, previous } => {
             match change_type {
                 SymlinkChangeType::Added => {
@@ -2926,7 +3072,7 @@ mod tests {
 
         create_file(target.path(), "new_file.txt", "New content");
 
-        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None, false).unwrap();
 
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].status, FileStatus::Added);
@@ -2940,7 +3086,7 @@ mod tests {
 
         create_file(source.path(), "old_file.txt", "Old content");
 
-        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None, false).unwrap();
 
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].status, FileStatus::Deleted);
@@ -2955,7 +3101,7 @@ mod tests {
         create_file(source.path(), "file.txt", "Original content");
         create_file(target.path(), "file.txt", "Modified content");
 
-        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None, false).unwrap();
 
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].status, FileStatus::Modified);
@@ -2970,7 +3116,7 @@ mod tests {
         create_file(source.path(), "file.txt", "Same content");
         create_file(target.path(), "file.txt", "Same content");
 
-        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None, false).unwrap();
 
         assert!(result.entries.is_empty());
     }
@@ -2984,7 +3130,7 @@ mod tests {
         create_file(target.path(), "src/main.rs", "fn main() { println!(\"Hello\"); }");
         create_file(target.path(), "src/lib.rs", "pub fn hello() {}");
 
-        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None, false).unwrap();
 
         assert_eq!(result.entries.len(), 2);
 
@@ -3002,7 +3148,7 @@ mod tests {
         create_file(target.path(), "debug.log", "log content");
 
         let patterns = vec![Pattern::new("*.log").unwrap()];
-        let result = compare_directories(source.path(), target.path(), &patterns, false, PermissionCheckMode::None).unwrap();
+        let result = compare_directories(source.path(), target.path(), &patterns, false, PermissionCheckMode::None, false).unwrap();
 
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].relative_path, PathBuf::from("main.rs"));
@@ -3015,7 +3161,7 @@ mod tests {
 
         fs::create_dir(target.path().join("new_dir")).unwrap();
 
-        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None, false).unwrap();
 
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].status, FileStatus::Added);
@@ -3035,6 +3181,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: PathBuf::from("/source"),
             target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         assert!(result.has_differences());
@@ -3047,6 +3196,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: PathBuf::from("/source"),
             target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         assert!(!result.has_differences());
@@ -3085,9 +3237,12 @@ mod tests {
             permission_changes: vec![],
             source_dir: PathBuf::from("/source"),
             target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
-        let (added_files, added_dirs, modified, deleted_files, deleted_dirs, symlinks, perm_changes, errors) =
+        let (added_files, added_dirs, modified, deleted_files, deleted_dirs, symlinks, perm_changes, errors, unchanged) =
             result.count_by_status();
 
         assert_eq!(added_files, 2);
@@ -3185,6 +3340,7 @@ mod tests {
             patch_file: None,
             patch_result: None,
             excel_fold_level: None,
+            show_unchanged: false,
         }
     }
 
@@ -3195,6 +3351,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: PathBuf::from("/source"),
             target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         let summary = generate_summary(&result, &default_summary_options());
@@ -3223,6 +3382,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: PathBuf::from("/source"),
             target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         let summary = generate_summary(&result, &default_summary_options());
@@ -3255,6 +3417,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: PathBuf::from("/source"),
             target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         let summary = generate_summary(&result, &default_summary_options());
@@ -3279,6 +3444,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: PathBuf::from("/source"),
             target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         let options = SummaryOptions {
@@ -3292,6 +3460,7 @@ mod tests {
             patch_file: None,
             patch_result: None,
             excel_fold_level: None,
+            show_unchanged: false,
         };
 
         let summary = generate_summary(&result, &options);
@@ -3333,6 +3502,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: source.path().to_path_buf(),
             target_dir: target.path().to_path_buf(),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         copy_diff_files(&diff_result, output.path(), false, false).unwrap();
@@ -3362,6 +3534,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: source.path().to_path_buf(),
             target_dir: target.path().to_path_buf(),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         copy_diff_files(&diff_result, output.path(), false, false).unwrap();
@@ -3386,6 +3561,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: source.path().to_path_buf(),
             target_dir: target.path().to_path_buf(),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         copy_diff_files(&diff_result, output.path(), false, false).unwrap();
@@ -3413,6 +3591,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: source.path().to_path_buf(),
             target_dir: target.path().to_path_buf(),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         copy_diff_files(&diff_result, output.path(), false, true).unwrap();
@@ -3445,6 +3626,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: source.path().to_path_buf(),
             target_dir: target.path().to_path_buf(),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         copy_diff_files(&diff_result, output.path(), false, true).unwrap();
@@ -3605,7 +3789,7 @@ mod tests {
         fs::set_permissions(&target_file, perms_new).unwrap();
 
         // With permission check enabled for scripts
-        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::Scripts).unwrap();
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::Scripts, false).unwrap();
 
         assert!(result.entries.is_empty()); // Content is same, so no file entries
         assert_eq!(result.permission_changes.len(), 1);
@@ -3635,7 +3819,7 @@ mod tests {
         fs::set_permissions(&target_file, perms_new).unwrap();
 
         // With permission check disabled (default)
-        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None).unwrap();
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None, false).unwrap();
 
         assert!(result.entries.is_empty());
         assert!(result.permission_changes.is_empty());
@@ -3652,6 +3836,9 @@ mod tests {
             }],
             source_dir: PathBuf::from("/source"),
             target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         assert!(result.has_differences());
@@ -3745,6 +3932,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: PathBuf::from("/source"),
             target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         let options = SummaryOptions {
@@ -3768,6 +3958,7 @@ mod tests {
                 total_skipped: 0,
             }),
             excel_fold_level: None,
+            show_unchanged: false,
         };
 
         let summary = generate_summary(&result, &options);
@@ -3790,6 +3981,9 @@ mod tests {
             permission_changes: vec![],
             source_dir: PathBuf::from("/source"),
             target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
         };
 
         let options = SummaryOptions {
@@ -3813,11 +4007,196 @@ mod tests {
                 total_skipped: 1,
             }),
             excel_fold_level: None,
+            show_unchanged: false,
         };
 
         let summary = generate_summary(&result, &options);
         assert!(summary.contains("Skipped: 1 (binary)"));
         assert!(summary.contains("Skipped (binary):"));
         assert!(summary.contains("image.png [skip]"));
+    }
+
+    // ==================== show_unchanged tests ====================
+
+    #[test]
+    fn test_compare_directories_unchanged_file_with_show_unchanged() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+
+        create_file(source.path(), "file.txt", "Same content");
+        create_file(target.path(), "file.txt", "Same content");
+
+        // With show_unchanged = true, unchanged files should be included
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None, true).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, FileStatus::Unchanged);
+        assert_eq!(result.entries[0].relative_path, PathBuf::from("file.txt"));
+    }
+
+    #[test]
+    fn test_compare_directories_mixed_with_show_unchanged() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+
+        create_file(source.path(), "same.txt", "Same content");
+        create_file(target.path(), "same.txt", "Same content");
+        create_file(source.path(), "modified.txt", "Old content");
+        create_file(target.path(), "modified.txt", "New content");
+        create_file(target.path(), "added.txt", "Added content");
+        create_file(source.path(), "deleted.txt", "Deleted content");
+
+        let result = compare_directories(source.path(), target.path(), &[], false, PermissionCheckMode::None, true).unwrap();
+
+        assert_eq!(result.entries.len(), 4);
+
+        let statuses: std::collections::HashMap<_, _> = result.entries.iter()
+            .map(|e| (e.relative_path.to_string_lossy().to_string(), &e.status))
+            .collect();
+
+        assert_eq!(statuses.get("same.txt"), Some(&&FileStatus::Unchanged));
+        assert_eq!(statuses.get("modified.txt"), Some(&&FileStatus::Modified));
+        assert_eq!(statuses.get("added.txt"), Some(&&FileStatus::Added));
+        assert_eq!(statuses.get("deleted.txt"), Some(&&FileStatus::Deleted));
+    }
+
+    #[test]
+    fn test_diff_result_unchanged_count() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("modified.txt"),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 5,
+            target_count: 5,
+            common_count: 4,
+        };
+
+        // common_count=4, modified=1, so unchanged = 4 - 1 = 3
+        assert_eq!(result.unchanged_count(), 3);
+    }
+
+    #[test]
+    fn test_diff_result_total_unique_paths() {
+        let result = DiffResult {
+            entries: vec![],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 10,
+            target_count: 12,
+            common_count: 8,
+        };
+
+        // total = source + target - common = 10 + 12 - 8 = 14
+        assert_eq!(result.total_unique_paths(), 14);
+    }
+
+    #[test]
+    fn test_diff_result_has_differences_ignores_unchanged() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("unchanged.txt"),
+                    is_dir: false,
+                    status: FileStatus::Unchanged,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 1,
+            target_count: 1,
+            common_count: 1,
+        };
+
+        // Unchanged entries should not be counted as differences
+        assert!(!result.has_differences());
+    }
+
+    #[test]
+    fn test_generate_summary_with_show_unchanged() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("unchanged.txt"),
+                    is_dir: false,
+                    status: FileStatus::Unchanged,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("modified.txt"),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 2,
+            target_count: 2,
+            common_count: 2,
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
+            excel_fold_level: None,
+            show_unchanged: true,
+        };
+
+        let summary = generate_summary(&result, &options);
+        assert!(summary.contains("Show unchanged: Yes"));
+        assert!(summary.contains("Unchanged Files"));
+        assert!(summary.contains("unchanged.txt"));
+    }
+
+    #[test]
+    fn test_generate_summary_always_shows_unchanged_count() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("modified.txt"),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 3,
+            target_count: 3,
+            common_count: 2,
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+        };
+
+        let summary = generate_summary(&result, &options);
+        // Even with show_unchanged=false, the unchanged count should be displayed in statistics
+        assert!(summary.contains("Unchanged:"));
     }
 }

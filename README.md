@@ -86,6 +86,7 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-F, --patch-file <PATH>` | 全変更を統合したパッチファイルを生成 |
 | `-E, --excel <PATH>` | サマリーをExcelファイル(.xlsx)に出力 |
 | `-L, --excel-fold-level <LEVEL>` | Excelファイルツリーの折りたたみレベル |
+| `-u, --show-unchanged` | 変更がないファイルをサマリー詳細に表示 |
 | `-h, --help` | ヘルプ表示 |
 | `-V, --version` | バージョン表示 |
 
@@ -134,6 +135,9 @@ rs_diffcopy -S old -T new -O output -E report.xlsx
 # Excelレポートを出力（深さ2以上を折りたたみ）
 rs_diffcopy -S old -T new -O output -E report.xlsx -L 2
 
+# 変更がないファイルもサマリー詳細に表示
+rs_diffcopy -S old -T new -O output --show-unchanged
+
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
 ```
@@ -161,6 +165,7 @@ patch = false               # 個別パッチファイル生成
 patch_file = ""             # 統合パッチファイルパス（空で無効）
 excel = ""                  # Excelレポート出力パス（空で無効）
 # excel_fold_level = 2      # Excelファイルツリーの折りたたみレベル（省略時は折りたたみなし）
+show_unchanged = false      # 変更がないファイルをサマリー詳細に表示
 
 # 除外パターン（複数指定可）
 exclude = [
@@ -190,6 +195,7 @@ exclude = [
 | `patch_file` | string | - | 統合パッチファイルパス |
 | `excel` | string | - | Excelレポート出力パス |
 | `excel_fold_level` | integer | - | Excelファイルツリーの折りたたみレベル |
+| `show_unchanged` | bool | - | 変更がないファイルをサマリー詳細に表示 |
 
 ### 優先順位
 
@@ -220,8 +226,9 @@ Options:
 Added:      5 files, 1 dir
 Modified:   8 files
 Deleted:    2 files, 1 dir
+Unchanged:  50 files
 --------------------------
-Total:     16 items
+Total:     66 items
 
 ================
 File Tree
@@ -267,6 +274,7 @@ Files:
 | `[added]` | 新規追加 |
 | `[modified]` | 変更あり |
 | `[deleted]` | 削除（コピーされない） |
+| `[unchanged]` | 変更なし（`--show-unchanged`時に表示） |
 | `[symlink: added]` | 新規追加されたシンボリックリンク |
 | `[symlink: added, broken]` | 壊れたシンボリックリンク |
 | `[symlink: deleted]` | 削除されたシンボリックリンク |

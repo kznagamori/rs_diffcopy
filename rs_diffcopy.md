@@ -32,6 +32,7 @@
 | 権限チェック | ファイル権限の変更を検出（スクリプト限定/全ファイル） |
 | パッチ生成 | 変更ファイルのunified diff形式パッチを生成（`git apply`互換） |
 | Excelレポート | サマリーをExcelファイル(.xlsx)として出力（3シート構成） |
+| 変更なしファイル表示 | 変更がないファイルをサマリー詳細に表示可能 |
 | ドライラン | 実際にコピーせず、対象ファイルをプレビュー |
 | 進捗表示 | フェーズ別プログレスバーを表示 |
 | 並列処理 | ファイル比較・コピーを並列実行で高速化 |
@@ -64,6 +65,7 @@ rs_diffcopy [OPTIONS]
   -F, --patch-file <PATH>          全変更を統合したパッチファイルを生成
   -E, --excel <PATH>               サマリーをExcelファイル(.xlsx)に出力
   -L, --excel-fold-level <LEVEL>   Excelファイルツリーの折りたたみレベル（指定深さ以上を折りたたみ）
+  -u, --show-unchanged             変更がないファイルをサマリー詳細に表示
   -h, --help                       ヘルプ表示
   -V, --version                    バージョン表示
 ```
@@ -113,6 +115,9 @@ rs_diffcopy -S old -T new -O output -E report.xlsx
 # Excelレポートを出力（深さ2以上のディレクトリを折りたたみ）
 rs_diffcopy -S old -T new -O output -E report.xlsx -L 2
 
+# 変更がないファイルもサマリー詳細に表示
+rs_diffcopy -S old -T new -O output --show-unchanged
+
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
 ```
@@ -140,6 +145,7 @@ patch = false               # 個別パッチファイル生成
 patch_file = ""             # 統合パッチファイルパス（空で無効）
 excel = ""                  # Excelレポート出力パス（空で無効）
 # excel_fold_level = 2      # Excelファイルツリーの折りたたみレベル（省略時は折りたたみなし）
+show_unchanged = false      # 変更がないファイルをサマリー詳細に表示
 
 # 除外パターン（複数指定可）
 exclude = [
@@ -169,6 +175,7 @@ exclude = [
 | `patch_file` | string | - | - | 統合パッチファイルパス |
 | `excel` | string | - | - | Excelレポート出力パス |
 | `excel_fold_level` | integer | - | - | Excelファイルツリーの折りたたみレベル（指定深さ以上を折りたたみ） |
+| `show_unchanged` | bool | - | `false` | 変更がないファイルをサマリー詳細に表示 |
 
 #### 優先順位
 
@@ -427,8 +434,9 @@ Deleted:     2 files, 1 dir
 Symlinks:    3 files
 Permissions: 2 files
 Errors:      1 file
+Unchanged:   50 files
 --------------------------
-Total:      22 items
+Total:      70 items
 
 ================
 File Tree
@@ -539,23 +547,40 @@ No differences found.
 |------------|----------|------|
 | ヘッダー | 常に表示 | Source, Target, Output, Date |
 | Options | オプション指定時 | 使用したオプションの一覧 |
-| 統計情報 | 常に表示 | Added, Modified, Deleted等の件数 |
+| 統計情報 | 常に表示 | Added, Modified, Deleted, Unchanged等の件数とTotal |
 | File Tree | 差分あり時 | ツリー形式の差分一覧 |
 | Added Files | 追加あり時 | 追加されたファイル/ディレクトリ一覧 |
 | Modified Files | 変更あり時 | 変更されたファイル一覧 |
 | Deleted Files | 削除あり時 | 削除されたファイル/ディレクトリ一覧 |
+| Unchanged Files | `--show-unchanged`指定時 | 変更がないファイル一覧 |
 | Symlink Details | シンボリックリンクあり時 | シンボリックリンクの詳細情報 |
 | Permission Changes | 権限変更あり時 | 権限変更の詳細 |
 | Errors | エラーあり時 | エラー詳細 |
 | Patch Details | パッチ生成時 | 生成/スキップされたパッチ一覧 |
 
-### 9.4 ステータスタグ一覧
+### 9.4 統計情報の計算
+
+| 項目 | 説明 |
+|------|------|
+| Added | targetにのみ存在するファイル/ディレクトリ数 |
+| Modified | 両方に存在し、内容が変更されたファイル数 |
+| Deleted | sourceにのみ存在するファイル/ディレクトリ数 |
+| Symlinks | 追加/削除/変更されたシンボリックリンク数 |
+| Permissions | 権限のみ変更されたファイル数 |
+| Errors | 権限エラー等でスキップされたファイル数 |
+| Unchanged | 両方に存在し、変更がないファイル数（常に表示） |
+| **Total** | sourceとtargetの全ユニークパス数（source ∪ target） |
+
+**注意**: Totalは `source側のファイル数 + target側のファイル数 - 両方に存在するファイル数` で計算されます。
+
+### 9.5 ステータスタグ一覧
 
 | タグ | 意味 |
 |------|------|
 | `[added]` | 新規追加 |
 | `[modified]` | 内容変更あり |
 | `[deleted]` | 削除（コピーされない） |
+| `[unchanged]` | 変更なし（`--show-unchanged`時に表示） |
 | `[symlink: added]` | 新規追加されたシンボリックリンク |
 | `[symlink: added, broken]` | 新規追加された壊れたシンボリックリンク |
 | `[symlink: deleted]` | 削除されたシンボリックリンク |
@@ -569,7 +594,7 @@ No differences found.
 ※ 権限変更は File Tree には表示されず、Permission Changes セクションにのみ表示
 ※ バイナリファイルはパッチ生成時にスキップされ、Patch Detailsセクションに記載
 
-### 9.5 Excelレポート形式
+### 9.6 Excelレポート形式
 
 `--excel <PATH>` オプションを使用すると、サマリーをExcelファイル(.xlsx)として出力できます。
 
@@ -590,6 +615,7 @@ No differences found.
   - 変更（Modified）: 青色 (#0066CC)
   - 削除（Deleted）: 赤色 (#CC0000)
   - シンボリックリンク: 紫色 (#9933FF)
+  - 変更なし（Unchanged）: グレー (#808080)
 - **File Tree**: 等幅フォント（Consolas）で表示、行の折りたたみに対応（`-L`オプション使用時）
 - **Details**: パスを「Directory」と「File」の2列に分離して表示
 

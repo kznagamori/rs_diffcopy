@@ -2286,3 +2286,196 @@ fn test_excel_details_columns() {
     assert!(sheet_contains(&range, "src/components") || sheet_contains(&range, "src\\components"),
             "Should contain directory path");
 }
+
+// ==================== show_unchanged tests ====================
+
+/// IT-1001: --show-unchanged option shows unchanged files in summary
+#[test]
+fn test_show_unchanged_option() {
+    let env = TestEnv::new();
+
+    // Create same file in both source and target
+    create_file(env.source_path(), "same.txt", "Same content");
+    create_file(env.target_path(), "same.txt", "Same content");
+    // Create a modified file to have some differences
+    create_file(env.source_path(), "modified.txt", "Old");
+    create_file(env.target_path(), "modified.txt", "New");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--show-unchanged"],
+    );
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[unchanged]"), "Should show [unchanged] tag");
+    assert!(stdout.contains("same.txt"), "Should show unchanged file name");
+    assert!(stdout.contains("Unchanged Files"), "Should have Unchanged Files section");
+}
+
+/// IT-1002: -u short option for show-unchanged
+#[test]
+fn test_show_unchanged_short_option() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "same.txt", "Same content");
+    create_file(env.target_path(), "same.txt", "Same content");
+    create_file(env.target_path(), "added.txt", "Added");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["-u"],
+    );
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[unchanged]"), "Should show [unchanged] tag with -u option");
+}
+
+/// IT-1003: show_unchanged in config file
+#[test]
+fn test_show_unchanged_config() {
+    let env = TestEnv::new();
+    let config_path = env.output_path().parent().unwrap().join("config.toml");
+
+    let source_str = env.source_path().to_str().unwrap().replace('\\', "/");
+    let target_str = env.target_path().to_str().unwrap().replace('\\', "/");
+    let output_str = env.output_path().to_str().unwrap().replace('\\', "/");
+
+    let config_content = format!(
+        r#"
+source = "{}"
+target = "{}"
+output = "{}"
+show_unchanged = true
+"#,
+        source_str, target_str, output_str
+    );
+    fs::write(&config_path, config_content).unwrap();
+
+    create_file(env.source_path(), "same.txt", "Same content");
+    create_file(env.target_path(), "same.txt", "Same content");
+    create_file(env.target_path(), "added.txt", "Added");
+
+    let output = run_diffcopy(&["--config", config_path.to_str().unwrap()]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[unchanged]"), "Should show [unchanged] with config file");
+    assert!(stdout.contains("Show unchanged: Yes"), "Options should show 'Show unchanged: Yes'");
+}
+
+/// IT-1004: Unchanged count always shown in statistics
+#[test]
+fn test_unchanged_count_always_shown() {
+    let env = TestEnv::new();
+
+    // Create same file in both source and target
+    create_file(env.source_path(), "same.txt", "Same content");
+    create_file(env.target_path(), "same.txt", "Same content");
+    // Create a modified file to have some differences
+    create_file(env.source_path(), "modified.txt", "Old");
+    create_file(env.target_path(), "modified.txt", "New");
+
+    // Without --show-unchanged, unchanged count should still be in statistics
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &[],
+    );
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Unchanged:"), "Should always show Unchanged count in statistics");
+    assert!(stdout.contains("1 files"), "Should show 1 unchanged file");
+}
+
+/// IT-1005: Total uses unique path count formula
+#[test]
+fn test_total_unique_paths() {
+    let env = TestEnv::new();
+
+    // source: 3 files (same.txt, source_only.txt, modified.txt)
+    // target: 3 files (same.txt, target_only.txt, modified.txt)
+    // common: 2 (same.txt, modified.txt)
+    // Total unique = 3 + 3 - 2 = 4
+    create_file(env.source_path(), "same.txt", "Same content");
+    create_file(env.target_path(), "same.txt", "Same content");
+    create_file(env.source_path(), "source_only.txt", "Source only");
+    create_file(env.target_path(), "target_only.txt", "Target only");
+    create_file(env.source_path(), "modified.txt", "Old");
+    create_file(env.target_path(), "modified.txt", "New");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &[],
+    );
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Total should be 4 (3 + 3 - 2)
+    assert!(stdout.contains("Total:"), "Should have Total line");
+    assert!(stdout.contains("4 items"), "Total should be 4 items (unique paths)");
+}
+
+/// IT-1006: Without --show-unchanged, unchanged files not in details
+#[test]
+fn test_unchanged_not_in_details_without_option() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "same.txt", "Same content");
+    create_file(env.target_path(), "same.txt", "Same content");
+    create_file(env.target_path(), "added.txt", "Added");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &[],
+    );
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Without --show-unchanged, [unchanged] tag should not appear
+    assert!(!stdout.contains("[unchanged]"), "Should not show [unchanged] tag without option");
+    // But unchanged count should still be in statistics
+    assert!(stdout.contains("Unchanged:"), "Unchanged count should still be shown");
+}
+
+/// IT-1007: --show-unchanged with Excel output
+#[test]
+fn test_show_unchanged_with_excel() {
+    let env = TestEnv::new();
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    create_file(env.source_path(), "same.txt", "Same content");
+    create_file(env.target_path(), "same.txt", "Same content");
+    create_file(env.target_path(), "added.txt", "Added");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--show-unchanged", "--excel", excel_path.to_str().unwrap()],
+    );
+
+    assert!(output.status.success());
+    assert!(excel_path.exists());
+
+    let mut workbook = open_excel(&excel_path);
+
+    // Check Summary sheet has Unchanged
+    let summary_range = workbook.worksheet_range("Summary").expect("Should have Summary sheet");
+    assert!(sheet_contains(&summary_range, "Unchanged"), "Summary should contain Unchanged");
+
+    // Check Details sheet has unchanged entry (section header is "Unchanged Files")
+    let details_range = workbook.worksheet_range("Details").expect("Should have Details sheet");
+    assert!(sheet_contains(&details_range, "Unchanged Files"), "Details should contain Unchanged Files section");
+}
