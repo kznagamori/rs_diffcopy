@@ -258,6 +258,10 @@ struct Args {
     /// Show unchanged files in summary output
     #[arg(short = 'u', long)]
     show_unchanged: bool,
+
+    /// Save current options to a config file (TOML format)
+    #[arg(short = 'C', long, value_name = "PATH")]
+    save_config: Option<PathBuf>,
 }
 
 /// Configuration file structure (TOML format)
@@ -306,6 +310,7 @@ struct ResolvedConfig {
     excel: Option<PathBuf>,
     excel_fold_level: Option<u16>,
     show_unchanged: bool,
+    save_config: Option<PathBuf>,
 }
 
 impl ResolvedConfig {
@@ -388,7 +393,113 @@ impl ResolvedConfig {
             excel,
             excel_fold_level,
             show_unchanged,
+            save_config: args.save_config,
         })
+    }
+
+    /// Generate TOML config file content
+    fn generate_config_content(&self) -> String {
+        let mut content = String::new();
+
+        // Header comment
+        content.push_str("# rs_diffcopy 設定ファイル\n");
+        content.push_str("# このファイルは --save-config オプションにより自動生成されました\n");
+        content.push_str("# 設定を変更して再利用することができます\n");
+        content.push_str("\n");
+
+        // Required settings
+        content.push_str("# 必須設定\n");
+        content.push_str(&format!(
+            "source = \"{}\"  # 比較元ディレクトリ（変更する場合はパスを修正してください）\n",
+            self.source_dir.display()
+        ));
+        content.push_str(&format!(
+            "target = \"{}\"  # 比較先ディレクトリ（変更する場合はパスを修正してください）\n",
+            self.target_dir.display()
+        ));
+        content.push_str(&format!(
+            "output = \"{}\"  # 出力ディレクトリ（変更する場合はパスを修正してください）\n",
+            self.output_dir.display()
+        ));
+        content.push_str("\n");
+
+        // Optional settings
+        content.push_str("# オプション設定\n");
+        content.push_str(&format!("force = {}\n", self.force));
+        content.push_str(&format!("verbose = {}\n", self.verbose));
+
+        // dry_run is always commented out
+        content.push_str("# 注: dry_run はこの設定ファイルでは無効になっています\n");
+        content.push_str("# 必要に応じてコメントを外してください\n");
+        content.push_str(&format!("# dry_run = {}\n", self.dry_run));
+
+        content.push_str(&format!("both_versions = {}\n", self.both_versions));
+
+        // Summary file
+        if let Some(ref summary_path) = self.summary {
+            content.push_str(&format!("summary = \"{}\"\n", summary_path.display()));
+        } else {
+            content.push_str("# summary = \"./summary.txt\"  # サマリー出力ファイル\n");
+        }
+
+        // Permission check mode
+        let check_perm_str = match self.check_permissions {
+            PermissionCheckMode::None => "none",
+            PermissionCheckMode::Scripts => "scripts",
+            PermissionCheckMode::All => "all",
+        };
+        content.push_str(&format!("check_permissions = \"{}\"  # none / scripts / all\n", check_perm_str));
+
+        // Patch options
+        content.push_str(&format!("patch = {}  # 個別パッチファイル生成\n", self.patch));
+        if let Some(ref patch_file) = self.patch_file {
+            content.push_str(&format!("patch_file = \"{}\"  # 統合パッチファイル\n", patch_file.display()));
+        } else {
+            content.push_str("# patch_file = \"\"  # 統合パッチファイル（空欄で無効）\n");
+        }
+
+        // Excel output
+        if let Some(ref excel_path) = self.excel {
+            content.push_str(&format!("excel = \"{}\"\n", excel_path.display()));
+        } else {
+            content.push_str("# excel = \"\"  # Excel出力ファイル（空欄で無効）\n");
+        }
+        if let Some(level) = self.excel_fold_level {
+            content.push_str(&format!("excel_fold_level = {}  # Excelファイルツリーの折りたたみレベル\n", level));
+        } else {
+            content.push_str("# excel_fold_level = 2  # Excelファイルツリーの折りたたみレベル（省略時は折りたたみなし）\n");
+        }
+
+        // Show unchanged
+        content.push_str(&format!("show_unchanged = {}  # 変更なしファイルをサマリーに表示\n", self.show_unchanged));
+        content.push_str("\n");
+
+        // Exclude patterns
+        content.push_str("# 除外パターン（glob形式、複数指定可）\n");
+        if self.exclude.is_empty() {
+            content.push_str("# exclude = [\n");
+            content.push_str("#     \"*.log\",\n");
+            content.push_str("#     \"*.tmp\",\n");
+            content.push_str("#     \"node_modules\",\n");
+            content.push_str("#     \".git\",\n");
+            content.push_str("# ]\n");
+        } else {
+            content.push_str("exclude = [\n");
+            for pattern in &self.exclude {
+                content.push_str(&format!("    \"{}\",\n", pattern));
+            }
+            content.push_str("]\n");
+        }
+
+        content
+    }
+
+    /// Save config to file
+    fn save_config_file(&self, path: &Path) -> Result<()> {
+        let content = self.generate_config_content();
+        fs::write(path, &content)
+            .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+        Ok(())
     }
 }
 
@@ -722,6 +833,14 @@ fn main() -> Result<()> {
             .with_context(|| format!("Failed to create Excel file: {}", excel_path.display()))?;
         if is_terminal() {
             println_to_stdout(&format!("Excel summary written to: {}", excel_path.display()));
+        }
+    }
+
+    // Save config file if requested
+    if let Some(save_config_path) = &config.save_config {
+        config.save_config_file(save_config_path)?;
+        if is_terminal() {
+            println_to_stdout(&format!("Config saved to: {}", save_config_path.display()));
         }
     }
 
@@ -4655,5 +4774,151 @@ mod tests {
         assert!(summary.contains("Patch Details"), "Should have Patch Details section");
         assert!(summary.contains("Failed: 1"), "Should show failed count in patch summary");
         assert!(summary.contains("Failed to read source file"), "Should show error message");
+    }
+
+    // ==================== Config Generation Tests ====================
+
+    #[test]
+    fn test_generate_config_content_basic() {
+        let config = ResolvedConfig {
+            source_dir: PathBuf::from("/path/to/source"),
+            target_dir: PathBuf::from("/path/to/target"),
+            output_dir: PathBuf::from("/path/to/output"),
+            exclude: vec![],
+            force: false,
+            verbose: false,
+            dry_run: false,
+            both_versions: false,
+            summary: None,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            patch: false,
+            patch_file: None,
+            excel: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+            save_config: None,
+        };
+
+        let content = config.generate_config_content();
+
+        // Check required settings
+        assert!(content.contains("source = \"/path/to/source\""));
+        assert!(content.contains("target = \"/path/to/target\""));
+        assert!(content.contains("output = \"/path/to/output\""));
+
+        // Check dry_run is commented out
+        assert!(content.contains("# dry_run = false"));
+        assert!(content.contains("# 注: dry_run はこの設定ファイルでは無効になっています"));
+
+        // Check header comments
+        assert!(content.contains("# rs_diffcopy 設定ファイル"));
+        assert!(content.contains("# このファイルは --save-config オプションにより自動生成されました"));
+    }
+
+    #[test]
+    fn test_generate_config_content_with_options() {
+        let config = ResolvedConfig {
+            source_dir: PathBuf::from("./old"),
+            target_dir: PathBuf::from("./new"),
+            output_dir: PathBuf::from("./output"),
+            exclude: vec!["*.log".to_string(), "node_modules".to_string()],
+            force: true,
+            verbose: true,
+            dry_run: true,
+            both_versions: true,
+            summary: Some(PathBuf::from("./summary.txt")),
+            check_permissions: PermissionCheckMode::Scripts,
+            config_file: None,
+            patch: true,
+            patch_file: Some(PathBuf::from("./changes.patch")),
+            excel: Some(PathBuf::from("./report.xlsx")),
+            excel_fold_level: Some(2),
+            show_unchanged: true,
+            save_config: None,
+        };
+
+        let content = config.generate_config_content();
+
+        // Check options are included
+        assert!(content.contains("force = true"));
+        assert!(content.contains("verbose = true"));
+        assert!(content.contains("both_versions = true"));
+        assert!(content.contains("summary = \"./summary.txt\""));
+        assert!(content.contains("check_permissions = \"scripts\""));
+        assert!(content.contains("patch = true"));
+        assert!(content.contains("patch_file = \"./changes.patch\""));
+        assert!(content.contains("excel = \"./report.xlsx\""));
+        assert!(content.contains("excel_fold_level = 2"));
+        assert!(content.contains("show_unchanged = true"));
+
+        // Check exclude patterns
+        assert!(content.contains("exclude = ["));
+        assert!(content.contains("\"*.log\""));
+        assert!(content.contains("\"node_modules\""));
+
+        // dry_run should still be commented out even if true
+        assert!(content.contains("# dry_run = true"));
+    }
+
+    #[test]
+    fn test_generate_config_content_empty_exclude() {
+        let config = ResolvedConfig {
+            source_dir: PathBuf::from("./old"),
+            target_dir: PathBuf::from("./new"),
+            output_dir: PathBuf::from("./output"),
+            exclude: vec![],
+            force: false,
+            verbose: false,
+            dry_run: false,
+            both_versions: false,
+            summary: None,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            patch: false,
+            patch_file: None,
+            excel: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+            save_config: None,
+        };
+
+        let content = config.generate_config_content();
+
+        // When exclude is empty, should show commented sample
+        assert!(content.contains("# exclude = ["));
+        assert!(content.contains("#     \"*.log\""));
+    }
+
+    #[test]
+    fn test_generate_config_content_permission_modes() {
+        // Test "none" mode
+        let config_none = ResolvedConfig {
+            source_dir: PathBuf::from("./old"),
+            target_dir: PathBuf::from("./new"),
+            output_dir: PathBuf::from("./output"),
+            exclude: vec![],
+            force: false,
+            verbose: false,
+            dry_run: false,
+            both_versions: false,
+            summary: None,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            patch: false,
+            patch_file: None,
+            excel: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+            save_config: None,
+        };
+        assert!(config_none.generate_config_content().contains("check_permissions = \"none\""));
+
+        // Test "all" mode
+        let config_all = ResolvedConfig {
+            check_permissions: PermissionCheckMode::All,
+            ..config_none
+        };
+        assert!(config_all.generate_config_content().contains("check_permissions = \"all\""));
     }
 }

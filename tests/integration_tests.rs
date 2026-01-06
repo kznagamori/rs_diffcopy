@@ -2548,3 +2548,197 @@ mod special_file_tests {
             "Should show special files in statistics");
     }
 }
+
+// ==================== Save Config Tests ====================
+
+/// IT-1201: Basic --save-config functionality
+#[test]
+fn test_save_config_basic() {
+    let env = TestEnv::new();
+
+    // Create test files
+    create_file(env.source_path(), "file.txt", "old content");
+    create_file(env.target_path(), "file.txt", "new content");
+
+    // Create a config file path
+    let config_path = env.output_path().parent().unwrap().join("saved_config.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rs_diffcopy"))
+        .args([
+            "-S", env.source_path().to_str().unwrap(),
+            "-T", env.target_path().to_str().unwrap(),
+            "-O", env.output_path().to_str().unwrap(),
+            "--save-config", config_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    // Should succeed
+    assert!(output.status.success(), "Command should succeed");
+
+    // Config file should be created
+    assert!(config_path.exists(), "Config file should be created");
+
+    // Read and verify config file content
+    let config_content = fs::read_to_string(&config_path).unwrap();
+    assert!(config_content.contains("source = "), "Should contain source");
+    assert!(config_content.contains("target = "), "Should contain target");
+    assert!(config_content.contains("output = "), "Should contain output");
+    assert!(config_content.contains("# rs_diffcopy"), "Should contain header comment");
+}
+
+/// IT-1202: --save-config with -C short option
+#[test]
+fn test_save_config_short_option() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "file.txt", "content");
+    create_file(env.target_path(), "file.txt", "content");
+
+    let config_path = env.output_path().parent().unwrap().join("short_config.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rs_diffcopy"))
+        .args([
+            "-S", env.source_path().to_str().unwrap(),
+            "-T", env.target_path().to_str().unwrap(),
+            "-O", env.output_path().to_str().unwrap(),
+            "-C", config_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    // Should succeed (exit code 2 = no differences)
+    assert!(output.status.code() == Some(0) || output.status.code() == Some(2));
+
+    // Config file should be created
+    assert!(config_path.exists(), "Config file should be created with -C option");
+}
+
+/// IT-1203: --save-config with exclude patterns
+#[test]
+fn test_save_config_with_exclude() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "file.txt", "content");
+    create_file(env.target_path(), "file.txt", "new content");
+
+    let config_path = env.output_path().parent().unwrap().join("exclude_config.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rs_diffcopy"))
+        .args([
+            "-S", env.source_path().to_str().unwrap(),
+            "-T", env.target_path().to_str().unwrap(),
+            "-O", env.output_path().to_str().unwrap(),
+            "-e", "*.log",
+            "-e", "node_modules",
+            "-C", config_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    assert!(output.status.success());
+
+    let config_content = fs::read_to_string(&config_path).unwrap();
+    assert!(config_content.contains("exclude = ["), "Should contain exclude array");
+    assert!(config_content.contains("\"*.log\""), "Should contain *.log pattern");
+    assert!(config_content.contains("\"node_modules\""), "Should contain node_modules pattern");
+}
+
+/// IT-1204: --save-config dry_run is commented out
+#[test]
+fn test_save_config_dry_run_commented() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "file.txt", "content");
+    create_file(env.target_path(), "file.txt", "new content");
+
+    let config_path = env.output_path().parent().unwrap().join("dryrun_config.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rs_diffcopy"))
+        .args([
+            "-S", env.source_path().to_str().unwrap(),
+            "-T", env.target_path().to_str().unwrap(),
+            "-O", env.output_path().to_str().unwrap(),
+            "--dry-run",
+            "-C", config_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    assert!(output.status.success());
+
+    let config_content = fs::read_to_string(&config_path).unwrap();
+    // dry_run should be commented out
+    assert!(config_content.contains("# dry_run = true"), "dry_run should be commented out");
+    assert!(config_content.contains("# 注: dry_run"), "Should have Japanese comment about dry_run");
+}
+
+/// IT-1205: Use saved config file
+#[test]
+fn test_use_saved_config() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "file.txt", "old");
+    create_file(env.target_path(), "file.txt", "new");
+
+    let config_path = env.output_path().parent().unwrap().join("reuse_config.toml");
+
+    // First, save the config
+    let output1 = Command::new(env!("CARGO_BIN_EXE_rs_diffcopy"))
+        .args([
+            "-S", env.source_path().to_str().unwrap(),
+            "-T", env.target_path().to_str().unwrap(),
+            "-O", env.output_path().to_str().unwrap(),
+            "-C", config_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(output1.status.success());
+
+    // Clean up output directory
+    fs::remove_dir_all(env.output_path()).ok();
+
+    // Now use the saved config
+    let output2 = Command::new(env!("CARGO_BIN_EXE_rs_diffcopy"))
+        .args([
+            "--config", config_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    assert!(output2.status.success(), "Should be able to use saved config");
+    assert!(env.output_path().exists(), "Output should be created using saved config");
+}
+
+/// IT-1206: --save-config with various options
+#[test]
+fn test_save_config_with_options() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "file.txt", "old");
+    create_file(env.target_path(), "file.txt", "new");
+
+    let config_path = env.output_path().parent().unwrap().join("options_config.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rs_diffcopy"))
+        .args([
+            "-S", env.source_path().to_str().unwrap(),
+            "-T", env.target_path().to_str().unwrap(),
+            "-O", env.output_path().to_str().unwrap(),
+            "--verbose",
+            "--both-versions",
+            "-P", "scripts",
+            "--show-unchanged",
+            "-C", config_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    assert!(output.status.success());
+
+    let config_content = fs::read_to_string(&config_path).unwrap();
+    assert!(config_content.contains("verbose = true"), "Should contain verbose = true");
+    assert!(config_content.contains("both_versions = true"), "Should contain both_versions = true");
+    assert!(config_content.contains("check_permissions = \"scripts\""), "Should contain check_permissions");
+    assert!(config_content.contains("show_unchanged = true"), "Should contain show_unchanged = true");
+}

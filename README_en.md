@@ -88,6 +88,7 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-E, --excel <PATH>` | Output summary to Excel file (.xlsx) |
 | `-L, --excel-fold-level <LEVEL>` | Excel file tree fold level |
 | `-u, --show-unchanged` | Show unchanged files in summary details |
+| `-C, --save-config <PATH>` | Save current options to a config file (TOML format) |
 | `-h, --help` | Show help |
 | `-V, --version` | Show version |
 
@@ -138,6 +139,9 @@ rs_diffcopy -S old -T new -O output -E report.xlsx -L 2
 
 # Show unchanged files in summary details
 rs_diffcopy -S old -T new -O output --show-unchanged
+
+# Save current options to config file (diff operation is also executed)
+rs_diffcopy -S old -T new -O output -e "*.log" --save-config diffcopy.toml
 
 # Use config file
 rs_diffcopy --config ./diffcopy.toml
@@ -201,6 +205,89 @@ exclude = [
 ### Priority
 
 When both command-line arguments and config file are specified, **command-line arguments take precedence**.
+
+### Saving Config File (--save-config)
+
+Use the `-C, --save-config <PATH>` option to save current command-line options to a config file.
+
+```bash
+# Run diff and save options to config file
+rs_diffcopy -S old -T new -O output -e "*.log" -C diffcopy.toml
+
+# Use saved config for subsequent runs
+rs_diffcopy --config diffcopy.toml
+```
+
+**Features:**
+- Saves config file after executing diff operation
+- Includes helpful Japanese comments
+- `dry_run` is always commented out (to prevent accidental activation)
+- Unspecified options are included as commented samples
+
+## Exclude Patterns (Glob Format)
+
+The `-e`/`--exclude` option accepts glob-format patterns.
+
+### Basic Patterns
+
+| Pattern | Description | Match Examples |
+|---------|-------------|----------------|
+| `*.log` | Files with `.log` extension | `debug.log`, `src/app.log` |
+| `*.tmp` | Files with `.tmp` extension | `cache.tmp`, `data/temp.tmp` |
+| `test.*` | Files starting with `test.` | `test.txt`, `test.json` |
+
+### Excluding Directories
+
+| Pattern | Description | Match Examples |
+|---------|-------------|----------------|
+| `tmp` | Directory/file named `tmp` (at any level) | `tmp`, `src/tmp`, `src/tmp/file.txt` |
+| `test/tmp` | Only `test/tmp` itself (contents not excluded) | `test/tmp` |
+| `test/tmp/**` | All files under `test/tmp` | `test/tmp/a.txt`, `test/tmp/sub/b.txt` |
+
+### Path Component Matching
+
+**Important**: Simple patterns (without `/`) match against each path component (directory name/file name).
+
+```bash
+# "tmp" matches all of the following
+rs_diffcopy -S old -T new -O output -e "tmp"
+# Matches: tmp, src/tmp, src/tmp/file.txt, lib/tmp/data
+
+# "test/tmp" matches only test/tmp (contents not excluded)
+rs_diffcopy -S old -T new -O output -e "test/tmp"
+# Matches: test/tmp
+# Does NOT match: test/tmp/file.txt (not excluded, will be processed)
+
+# "test/tmp/**" matches everything under test/tmp
+rs_diffcopy -S old -T new -O output -e "test/tmp/**"
+# Matches: test/tmp/file.txt, test/tmp/sub/data.txt
+# Does NOT match: test/tmp (directory itself not excluded)
+
+# To exclude both test/tmp and its contents
+rs_diffcopy -S old -T new -O output -e "test/tmp" -e "test/tmp/**"
+```
+
+### Common Pattern Examples
+
+```bash
+# Exclude log files
+-e "*.log"
+
+# Exclude node_modules directory (at any level)
+-e "node_modules"
+
+# Exclude .git directory and its contents
+-e ".git" -e ".git/**"
+
+# Exclude Python cache
+-e "__pycache__" -e "*.pyc"
+
+# Exclude build outputs
+-e "build" -e "dist" -e "target"
+
+# Exclude files under a specific subdirectory
+-e "vendor/cache/**"
+```
 
 ## Output Example
 

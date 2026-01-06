@@ -88,6 +88,7 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-E, --excel <PATH>` | サマリーをExcelファイル(.xlsx)に出力 |
 | `-L, --excel-fold-level <LEVEL>` | Excelファイルツリーの折りたたみレベル |
 | `-u, --show-unchanged` | 変更がないファイルをサマリー詳細に表示 |
+| `-C, --save-config <PATH>` | 現在のオプションを設定ファイル(TOML形式)に保存 |
 | `-h, --help` | ヘルプ表示 |
 | `-V, --version` | バージョン表示 |
 
@@ -138,6 +139,9 @@ rs_diffcopy -S old -T new -O output -E report.xlsx -L 2
 
 # 変更がないファイルもサマリー詳細に表示
 rs_diffcopy -S old -T new -O output --show-unchanged
+
+# 現在のオプションを設定ファイルに保存（差分処理も実行される）
+rs_diffcopy -S old -T new -O output -e "*.log" --save-config diffcopy.toml
 
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
@@ -201,6 +205,89 @@ exclude = [
 ### 優先順位
 
 コマンドライン引数と設定ファイルの両方が指定された場合、**コマンドライン引数が優先**されます。
+
+### 設定ファイルの保存（--save-config）
+
+`-C, --save-config <PATH>` オプションを使用すると、現在のコマンドラインオプションを設定ファイルとして保存できます。
+
+```bash
+# 差分処理を実行し、オプションを設定ファイルに保存
+rs_diffcopy -S old -T new -O output -e "*.log" -C diffcopy.toml
+
+# 次回以降は設定ファイルを使用
+rs_diffcopy --config diffcopy.toml
+```
+
+**特徴：**
+- 差分処理を実行した後、設定ファイルを保存
+- 日本語コメント付きで分かりやすい
+- `dry_run`は常にコメントアウト（誤って有効にならないよう配慮）
+- 未指定オプションはコメントアウトされたサンプルとして記載
+
+## 除外パターン（glob形式）
+
+`-e`/`--exclude`オプションで指定する除外パターンはglob形式です。
+
+### 基本パターン
+
+| パターン | 説明 | マッチ例 |
+|----------|------|---------|
+| `*.log` | 拡張子が`.log`のファイル | `debug.log`, `src/app.log` |
+| `*.tmp` | 拡張子が`.tmp`のファイル | `cache.tmp`, `data/temp.tmp` |
+| `test.*` | `test.`で始まるファイル | `test.txt`, `test.json` |
+
+### ディレクトリの除外
+
+| パターン | 説明 | マッチ例 |
+|----------|------|---------|
+| `tmp` | 名前が`tmp`のディレクトリ/ファイル（どの階層でも） | `tmp`, `src/tmp`, `src/tmp/file.txt` |
+| `test/tmp` | `test/tmp`のみ（中身は除外されない） | `test/tmp` |
+| `test/tmp/**` | `test/tmp`配下の全ファイル | `test/tmp/a.txt`, `test/tmp/sub/b.txt` |
+
+### パスコンポーネントマッチング
+
+**重要**: 単純なパターン（`/`を含まない）は、パスの各コンポーネント（ディレクトリ名・ファイル名）に対してマッチします。
+
+```bash
+# "tmp" は以下すべてにマッチ
+rs_diffcopy -S old -T new -O output -e "tmp"
+# マッチ: tmp, src/tmp, src/tmp/file.txt, lib/tmp/data
+
+# "test/tmp" は test/tmp のみにマッチ（中身は除外されない）
+rs_diffcopy -S old -T new -O output -e "test/tmp"
+# マッチ: test/tmp
+# 非マッチ: test/tmp/file.txt（除外されず処理対象）
+
+# "test/tmp/**" は test/tmp 配下すべてにマッチ
+rs_diffcopy -S old -T new -O output -e "test/tmp/**"
+# マッチ: test/tmp/file.txt, test/tmp/sub/data.txt
+# 非マッチ: test/tmp（ディレクトリ自体は除外されない）
+
+# test/tmp とその中身両方を除外したい場合
+rs_diffcopy -S old -T new -O output -e "test/tmp" -e "test/tmp/**"
+```
+
+### よく使うパターン例
+
+```bash
+# ログファイルを除外
+-e "*.log"
+
+# node_modules ディレクトリを除外（どの階層でも）
+-e "node_modules"
+
+# .git ディレクトリとその中身を除外
+-e ".git" -e ".git/**"
+
+# Python キャッシュを除外
+-e "__pycache__" -e "*.pyc"
+
+# ビルド出力を除外
+-e "build" -e "dist" -e "target"
+
+# 特定のサブディレクトリ配下を除外
+-e "vendor/cache/**"
+```
 
 ## 出力例
 

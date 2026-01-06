@@ -66,6 +66,7 @@ rs_diffcopy [OPTIONS]
   -E, --excel <PATH>               サマリーをExcelファイル(.xlsx)に出力
   -L, --excel-fold-level <LEVEL>   Excelファイルツリーの折りたたみレベル（指定深さ以上を折りたたみ）
   -u, --show-unchanged             変更がないファイルをサマリー詳細に表示
+  -C, --save-config <PATH>         現在のオプションを設定ファイル(TOML形式)に保存
   -h, --help                       ヘルプ表示
   -V, --version                    バージョン表示
 ```
@@ -117,6 +118,9 @@ rs_diffcopy -S old -T new -O output -E report.xlsx -L 2
 
 # 変更がないファイルもサマリー詳細に表示
 rs_diffcopy -S old -T new -O output --show-unchanged
+
+# 現在のオプションを設定ファイルに保存（差分処理も実行される）
+rs_diffcopy -S old -T new -O output -e "*.log" --save-config diffcopy.toml
 
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
@@ -180,6 +184,50 @@ exclude = [
 #### 優先順位
 
 コマンドライン引数と設定ファイルの両方が指定された場合、**コマンドライン引数が優先**されます。
+
+#### 設定ファイルの保存（--save-config）
+
+`-C, --save-config <PATH>` オプションを使用すると、現在のコマンドラインオプションを設定ファイルとして保存できます。
+
+**動作仕様：**
+- 差分処理を実行した後、設定ファイルを保存
+- 保存される設定ファイルには日本語コメントが付与される
+- `dry_run` オプションは常にコメントアウトされた状態で保存（誤って有効にならないよう配慮）
+- 未指定のオプションはコメントアウトされたサンプルとして記載
+
+**生成される設定ファイルの例：**
+
+```toml
+# rs_diffcopy 設定ファイル
+# このファイルは --save-config オプションにより自動生成されました
+# 設定を変更して再利用することができます
+
+# 必須設定
+source = "./old_version"  # 比較元ディレクトリ（変更する場合はパスを修正してください）
+target = "./new_version"  # 比較先ディレクトリ（変更する場合はパスを修正してください）
+output = "./diff_output"  # 出力ディレクトリ（変更する場合はパスを修正してください）
+
+# オプション設定
+force = false
+verbose = false
+# 注: dry_run はこの設定ファイルでは無効になっています
+# 必要に応じてコメントを外してください
+# dry_run = false
+both_versions = false
+# summary = "./summary.txt"  # サマリー出力ファイル
+check_permissions = "none"  # none / scripts / all
+patch = false  # 個別パッチファイル生成
+# patch_file = ""  # 統合パッチファイル（空欄で無効）
+# excel = ""  # Excel出力ファイル（空欄で無効）
+# excel_fold_level = 2  # Excelファイルツリーの折りたたみレベル（省略時は折りたたみなし）
+show_unchanged = false  # 変更なしファイルをサマリーに表示
+
+# 除外パターン（glob形式、複数指定可）
+exclude = [
+    "*.log",
+    "node_modules",
+]
+```
 
 ### 4.4 除外パターン
 
