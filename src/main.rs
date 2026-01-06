@@ -408,6 +408,28 @@ struct SymlinkInfo {
     is_dir: bool,
 }
 
+/// Special file type (socket, fifo, device, etc.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SpecialFileType {
+    Socket,
+    Fifo,
+    BlockDevice,
+    CharDevice,
+    Unknown,
+}
+
+impl std::fmt::Display for SpecialFileType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpecialFileType::Socket => write!(f, "socket"),
+            SpecialFileType::Fifo => write!(f, "fifo"),
+            SpecialFileType::BlockDevice => write!(f, "block device"),
+            SpecialFileType::CharDevice => write!(f, "char device"),
+            SpecialFileType::Unknown => write!(f, "special file"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FileStatus {
     Added,
@@ -418,6 +440,9 @@ enum FileStatus {
         change_type: SymlinkChangeType,
         current: Option<SymlinkInfo>,  // None if deleted
         previous: Option<SymlinkInfo>, // None if added, Some if changed/deleted
+    },
+    SpecialFile {
+        file_type: SpecialFileType,
     },
     PermissionDenied { error: String },
 }
@@ -458,12 +483,34 @@ struct PatchInfo {
     patch_generated: bool,
 }
 
+/// Patch error information
+#[derive(Debug, Clone)]
+struct PatchError {
+    relative_path: PathBuf,
+    error: String,
+}
+
 /// Patch generation result
 #[derive(Debug, Default)]
 struct PatchResult {
     patches: Vec<PatchInfo>,
+    errors: Vec<PatchError>,
     total_generated: usize,
     total_skipped: usize,
+}
+
+/// Copy error information
+#[derive(Debug, Clone)]
+struct CopyError {
+    relative_path: PathBuf,
+    error: String,
+}
+
+/// Copy result
+#[derive(Debug, Default)]
+struct CopyResult {
+    copied_count: usize,
+    errors: Vec<CopyError>,
 }
 
 /// Options to include in the summary output
@@ -477,6 +524,7 @@ struct SummaryOptions {
     patch: bool,
     patch_file: Option<PathBuf>,
     patch_result: Option<PatchResult>,
+    copy_result: Option<CopyResult>,
     excel_fold_level: Option<u16>,
     show_unchanged: bool,
 }
@@ -488,13 +536,14 @@ impl DiffResult {
         has_real_changes || !self.permission_changes.is_empty()
     }
 
-    fn count_by_status(&self) -> (usize, usize, usize, usize, usize, usize, usize, usize, usize) {
+    fn count_by_status(&self) -> (usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) {
         let mut added_files = 0;
         let mut added_dirs = 0;
         let mut modified_files = 0;
         let mut deleted_files = 0;
         let mut deleted_dirs = 0;
         let mut symlinks = 0;
+        let mut special_files = 0;
         let mut errors = 0;
         let mut unchanged_files = 0;
 
@@ -517,13 +566,14 @@ impl DiffResult {
                 }
                 FileStatus::Unchanged => unchanged_files += 1,
                 FileStatus::Symlink { .. } => symlinks += 1,
+                FileStatus::SpecialFile { .. } => special_files += 1,
                 FileStatus::PermissionDenied { .. } => errors += 1,
             }
         }
 
         let permission_changes = self.permission_changes.len();
 
-        (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors, unchanged_files)
+        (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors, unchanged_files, special_files)
     }
 
     /// Calculate unchanged file count (files in both source and target with no changes)
@@ -615,9 +665,11 @@ fn main() -> Result<()> {
     )?;
 
     // Copy files (if not dry-run and has differences)
-    if !config.dry_run && diff_result.has_differences() {
-        copy_diff_files(&diff_result, &config.output_dir, config.verbose, config.both_versions)?;
-    }
+    let copy_result = if !config.dry_run && diff_result.has_differences() {
+        Some(copy_diff_files(&diff_result, &config.output_dir, config.verbose, config.both_versions)?)
+    } else {
+        None
+    };
 
     // Phase 4: Generate patches if requested (after copying, before summary)
     let patch_result = if (config.patch || config.patch_file.is_some()) && diff_result.has_differences() && !config.dry_run {
@@ -646,6 +698,7 @@ fn main() -> Result<()> {
         patch: config.patch,
         patch_file: config.patch_file.clone(),
         patch_result,
+        copy_result,
         excel_fold_level: config.excel_fold_level,
         show_unchanged: config.show_unchanged,
     };
@@ -746,10 +799,27 @@ fn compare_single_file(
         (None, None) => {}
     }
 
+    // Check if special file (socket, fifo, device, etc.) - these cannot be copied
+    if let Some(file_type) = get_special_file_type(&target_path) {
+        return (Some(DiffEntry {
+            relative_path: rel_path.clone(),
+            is_dir: false,
+            status: FileStatus::SpecialFile { file_type },
+        }), None);
+    }
+
     let is_dir = target_path.is_dir();
 
     if !source_paths.contains(rel_path) {
         // Added (only in target)
+        // Check if special file in source that was deleted
+        if let Some(file_type) = get_special_file_type(&source_path) {
+            return (Some(DiffEntry {
+                relative_path: rel_path.clone(),
+                is_dir: false,
+                status: FileStatus::SpecialFile { file_type },
+            }), None);
+        }
         return (Some(DiffEntry {
             relative_path: rel_path.clone(),
             is_dir,
@@ -1138,6 +1208,39 @@ fn get_symlink_info(path: &Path) -> Option<SymlinkInfo> {
     }
 }
 
+/// Check if a file is a special file (socket, fifo, device, etc.)
+/// Returns the special file type if it is, None otherwise
+#[cfg(unix)]
+fn get_special_file_type(path: &Path) -> Option<SpecialFileType> {
+    use std::os::unix::fs::FileTypeExt;
+
+    // Don't follow symlinks - check the file itself
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+
+    let file_type = metadata.file_type();
+
+    if file_type.is_socket() {
+        Some(SpecialFileType::Socket)
+    } else if file_type.is_fifo() {
+        Some(SpecialFileType::Fifo)
+    } else if file_type.is_block_device() {
+        Some(SpecialFileType::BlockDevice)
+    } else if file_type.is_char_device() {
+        Some(SpecialFileType::CharDevice)
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn get_special_file_type(_path: &Path) -> Option<SpecialFileType> {
+    // Windows doesn't have Unix-style special files
+    None
+}
+
 /// Check if a file should have its permissions checked based on mode
 fn should_check_permissions(path: &Path, mode: PermissionCheckMode) -> bool {
     match mode {
@@ -1274,7 +1377,7 @@ fn copy_single_file(
     Ok(())
 }
 
-fn copy_diff_files(diff_result: &DiffResult, output_dir: &Path, verbose: bool, both_versions: bool) -> Result<()> {
+fn copy_diff_files(diff_result: &DiffResult, output_dir: &Path, verbose: bool, both_versions: bool) -> Result<CopyResult> {
     fs::create_dir_all(output_dir)?;
 
     // Filter entries that need to be copied
@@ -1287,13 +1390,14 @@ fn copy_diff_files(diff_result: &DiffResult, output_dir: &Path, verbose: bool, b
     let total_files = entries_to_copy.len();
 
     if total_files == 0 {
-        return Ok(());
+        return Ok(CopyResult::default());
     }
 
     // Phase 3: Copying (parallel)
     print_phase(3, 5, "Copying files...");
 
     let progress_counter = AtomicUsize::new(0);
+    let success_counter = AtomicUsize::new(0);
     let errors = Mutex::new(Vec::new());
 
     entries_to_copy
@@ -1312,7 +1416,12 @@ fn copy_diff_files(diff_result: &DiffResult, output_dir: &Path, verbose: bool, b
                 both_versions,
             ) {
                 let mut errs = errors.lock().unwrap();
-                errs.push(format!("{}: {}", entry.relative_path.display(), e));
+                errs.push(CopyError {
+                    relative_path: entry.relative_path.clone(),
+                    error: e.to_string(),
+                });
+            } else {
+                success_counter.fetch_add(1, Ordering::Relaxed);
             }
 
             if verbose && is_terminal() {
@@ -1322,20 +1431,28 @@ fn copy_diff_files(diff_result: &DiffResult, output_dir: &Path, verbose: bool, b
 
     clear_progress_line();
 
-    // Check for errors
-    let errs = errors.into_inner().unwrap();
-    if !errs.is_empty() {
-        for err in &errs {
-            eprintln!("Error: {}", err);
+    let copy_errors = errors.into_inner().unwrap();
+    let copied_count = success_counter.load(Ordering::Relaxed);
+
+    // Print errors to console but don't exit
+    if !copy_errors.is_empty() {
+        for err in &copy_errors {
+            eprintln!("Copy failed: {}: {}", err.relative_path.display(), err.error);
         }
-        bail!("Failed to copy {} files", errs.len());
     }
 
     if is_terminal() {
-        println_to_stdout(&format!("Copied {} files.", total_files));
+        if copy_errors.is_empty() {
+            println_to_stdout(&format!("Copied {} files.", copied_count));
+        } else {
+            println_to_stdout(&format!("Copied {} files ({} failed).", copied_count, copy_errors.len()));
+        }
     }
 
-    Ok(())
+    Ok(CopyResult {
+        copied_count,
+        errors: copy_errors,
+    })
 }
 
 /// Add an extension suffix to a path (e.g., "file.txt" -> "file.txt.old")
@@ -1485,24 +1602,45 @@ fn generate_patches(
 
         // Generate diff
         if let Some(diff_content) = generate_unified_diff(&source_path, &target_path, &entry.relative_path) {
-            result.patches.push(PatchInfo {
-                relative_path: entry.relative_path.clone(),
-                is_binary: false,
-                patch_generated: true,
-            });
-            result.total_generated += 1;
-
             // Write individual patch file
             if individual_patches {
                 let patch_path = output_dir.join(add_extension(&entry.relative_path, "patch"));
-                if let Some(parent) = patch_path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::write(&patch_path, &diff_content)?;
+                let write_result = (|| -> Result<()> {
+                    if let Some(parent) = patch_path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::write(&patch_path, &diff_content)?;
+                    Ok(())
+                })();
 
-                if verbose && is_terminal() {
-                    println_to_stdout(&format!("  Generated: {}", patch_path.display()));
+                match write_result {
+                    Ok(()) => {
+                        result.patches.push(PatchInfo {
+                            relative_path: entry.relative_path.clone(),
+                            is_binary: false,
+                            patch_generated: true,
+                        });
+                        result.total_generated += 1;
+
+                        if verbose && is_terminal() {
+                            println_to_stdout(&format!("  Generated: {}", patch_path.display()));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Patch failed: {}: {}", entry.relative_path.display(), e);
+                        result.errors.push(PatchError {
+                            relative_path: entry.relative_path.clone(),
+                            error: e.to_string(),
+                        });
+                    }
                 }
+            } else {
+                result.patches.push(PatchInfo {
+                    relative_path: entry.relative_path.clone(),
+                    is_binary: false,
+                    patch_generated: true,
+                });
+                result.total_generated += 1;
             }
 
             // Append to combined output
@@ -1523,19 +1661,33 @@ fn generate_patches(
     // Write combined patch file
     if let Some(path) = combined_patch_path {
         if !combined_output.is_empty() {
-            fs::write(path, &combined_output)?;
-            if verbose && is_terminal() {
+            if let Err(e) = fs::write(path, &combined_output) {
+                eprintln!("Failed to write combined patch file: {}: {}", path.display(), e);
+                result.errors.push(PatchError {
+                    relative_path: path.to_path_buf(),
+                    error: e.to_string(),
+                });
+            } else if verbose && is_terminal() {
                 println_to_stdout(&format!("Combined patch written to: {}", path.display()));
             }
         }
     }
 
     if is_terminal() {
-        println_to_stdout(&format!(
-            "Patches: {} generated, {} skipped (binary)",
-            result.total_generated,
-            result.total_skipped
-        ));
+        if result.errors.is_empty() {
+            println_to_stdout(&format!(
+                "Patches: {} generated, {} skipped (binary)",
+                result.total_generated,
+                result.total_skipped
+            ));
+        } else {
+            println_to_stdout(&format!(
+                "Patches: {} generated, {} skipped (binary), {} failed",
+                result.total_generated,
+                result.total_skipped,
+                result.errors.len()
+            ));
+        }
     }
 
     Ok(result)
@@ -1609,7 +1761,7 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
         return output;
     }
 
-    let (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors, _) =
+    let (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors, _, special_files) =
         diff_result.count_by_status();
 
     // Calculate unchanged count (always shown, regardless of show_unchanged option)
@@ -1641,6 +1793,9 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
     }
     if symlinks > 0 {
         output.push_str(&format!("Symlinks:   {} files\n", symlinks));
+    }
+    if special_files > 0 {
+        output.push_str(&format!("Special:    {} files\n", special_files));
     }
     if permission_changes > 0 {
         output.push_str(&format!("Permissions: {} files\n", permission_changes));
@@ -1843,6 +1998,25 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
         }
     }
 
+    // Special Files (sockets, fifos, devices, etc.)
+    let special_entries: Vec<_> = diff_result
+        .entries
+        .iter()
+        .filter(|e| matches!(e.status, FileStatus::SpecialFile { .. }))
+        .collect();
+
+    if !special_entries.is_empty() {
+        output.push_str("================\n");
+        output.push_str("Special Files (skipped)\n");
+        output.push_str("================\n");
+        for entry in special_entries {
+            if let FileStatus::SpecialFile { file_type } = &entry.status {
+                output.push_str(&format!("{}: {}\n", entry.relative_path.display(), file_type));
+            }
+        }
+        output.push('\n');
+    }
+
     // Permission Changes
     if !diff_result.permission_changes.is_empty() {
         output.push_str("================\n");
@@ -1879,7 +2053,7 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
 
     // Patch Details
     if let Some(patch_result) = &options.patch_result {
-        if !patch_result.patches.is_empty() {
+        if !patch_result.patches.is_empty() || !patch_result.errors.is_empty() {
             output.push_str("================\n");
             output.push_str("Patch Details\n");
             output.push_str("================\n");
@@ -1887,11 +2061,20 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
             let generated: Vec<_> = patch_result.patches.iter().filter(|p| p.patch_generated).collect();
             let skipped: Vec<_> = patch_result.patches.iter().filter(|p| p.is_binary).collect();
 
-            output.push_str(&format!(
-                "Generated: {} patches, Skipped: {} (binary)\n\n",
-                patch_result.total_generated,
-                patch_result.total_skipped
-            ));
+            if patch_result.errors.is_empty() {
+                output.push_str(&format!(
+                    "Generated: {} patches, Skipped: {} (binary)\n\n",
+                    patch_result.total_generated,
+                    patch_result.total_skipped
+                ));
+            } else {
+                output.push_str(&format!(
+                    "Generated: {} patches, Skipped: {} (binary), Failed: {}\n\n",
+                    patch_result.total_generated,
+                    patch_result.total_skipped,
+                    patch_result.errors.len()
+                ));
+            }
 
             if !generated.is_empty() {
                 output.push_str("Generated:\n");
@@ -1912,6 +2095,32 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
                 }
                 output.push('\n');
             }
+
+            if !patch_result.errors.is_empty() {
+                output.push_str("Failed:\n");
+                for err in &patch_result.errors {
+                    output.push_str(&format!("  {}: {}\n", err.relative_path.display(), err.error));
+                }
+                output.push('\n');
+            }
+        }
+    }
+
+    // Copy Failed
+    if let Some(copy_result) = &options.copy_result {
+        if !copy_result.errors.is_empty() {
+            output.push_str("================\n");
+            output.push_str("Copy Failed\n");
+            output.push_str("================\n");
+            output.push_str(&format!(
+                "Failed: {} files (Copied: {} files)\n\n",
+                copy_result.errors.len(),
+                copy_result.copied_count
+            ));
+            for err in &copy_result.errors {
+                output.push_str(&format!("  {}: {}\n", err.relative_path.display(), err.error));
+            }
+            output.push('\n');
         }
     }
 
@@ -2068,7 +2277,7 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
     }
 
     // Statistics section
-    let (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors, _) =
+    let (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors, _, special_files) =
         diff_result.count_by_status();
     let unchanged_files = diff_result.unchanged_count();
 
@@ -2115,6 +2324,16 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
         worksheet.write_with_format(row, 0, "Symlinks", &cell_format)?;
         worksheet.write_with_format(row, 1, format!("{} files", symlinks), &symlink_format)?;
         worksheet.write_number_with_format(row, 2, symlinks as f64, &number_format)?;
+        row += 1;
+    }
+
+    if special_files > 0 {
+        let special_format = Format::new()
+            .set_font_color(Color::RGB(0x666666))
+            .set_align(FormatAlign::Left);
+        worksheet.write_with_format(row, 0, "Special", &cell_format)?;
+        worksheet.write_with_format(row, 1, format!("{} files (sockets, fifos, etc.)", special_files), &special_format)?;
+        worksheet.write_number_with_format(row, 2, special_files as f64, &number_format)?;
         row += 1;
     }
 
@@ -2355,6 +2574,41 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
         details_row += 1;
     }
 
+    // Special files
+    let special_entries: Vec<_> = diff_result
+        .entries
+        .iter()
+        .filter(|e| matches!(e.status, FileStatus::SpecialFile { .. }))
+        .collect();
+
+    if !special_entries.is_empty() {
+        details_sheet.merge_range(details_row, 0, details_row, 3, "Special Files (skipped)", &section_header_format)?;
+        details_row += 1;
+
+        details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
+        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+        details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
+        details_row += 1;
+
+        let special_file_format = Format::new()
+            .set_font_color(Color::RGB(0x666666))
+            .set_align(FormatAlign::Left);
+
+        for entry in special_entries {
+            if let FileStatus::SpecialFile { file_type } = &entry.status {
+                let type_str = file_type.to_string();
+                let (dir, file) = split_path(&entry.relative_path);
+                details_sheet.write_with_format(details_row, 0, &type_str, &cell_format)?;
+                details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                details_sheet.write_with_format(details_row, 2, &file, &special_file_format)?;
+                details_sheet.write_with_format(details_row, 3, "Cannot be copied", &cell_format)?;
+                details_row += 1;
+            }
+        }
+        details_row += 1;
+    }
+
     // Permission changes
     if !diff_result.permission_changes.is_empty() {
         details_sheet.merge_range(details_row, 0, details_row, 3, "Permission Changes", &section_header_format)?;
@@ -2378,7 +2632,7 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
 
     // Patch details if available
     if let Some(patch_result) = &options.patch_result {
-        if !patch_result.patches.is_empty() {
+        if !patch_result.patches.is_empty() || !patch_result.errors.is_empty() {
             details_sheet.merge_range(details_row, 0, details_row, 3, "Patch Details", &section_header_format)?;
             details_row += 1;
 
@@ -2397,6 +2651,47 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
                 details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
                 details_sheet.write_with_format(details_row, 2, &file, status_format)?;
                 details_sheet.write_with_format(details_row, 3, notes, &cell_format)?;
+                details_row += 1;
+            }
+
+            // Patch errors
+            let patch_error_format = Format::new()
+                .set_font_color(Color::RGB(0xCC0000))
+                .set_align(FormatAlign::Left);
+
+            for err in &patch_result.errors {
+                let (dir, file) = split_path(&err.relative_path);
+                details_sheet.write_with_format(details_row, 0, "Failed", &deleted_format)?;
+                details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                details_sheet.write_with_format(details_row, 2, &file, &patch_error_format)?;
+                details_sheet.write_with_format(details_row, 3, &err.error, &cell_format)?;
+                details_row += 1;
+            }
+        }
+    }
+
+    // Copy failed
+    if let Some(copy_result) = &options.copy_result {
+        if !copy_result.errors.is_empty() {
+            details_sheet.merge_range(details_row, 0, details_row, 3, "Copy Failed", &section_header_format)?;
+            details_row += 1;
+
+            details_sheet.write_with_format(details_row, 0, "Status", &header_format)?;
+            details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+            details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+            details_sheet.write_with_format(details_row, 3, "Error", &header_format)?;
+            details_row += 1;
+
+            let error_format = Format::new()
+                .set_font_color(Color::RGB(0xCC0000))
+                .set_align(FormatAlign::Left);
+
+            for err in &copy_result.errors {
+                let (dir, file) = split_path(&err.relative_path);
+                details_sheet.write_with_format(details_row, 0, "Failed", &deleted_format)?;
+                details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                details_sheet.write_with_format(details_row, 2, &file, &error_format)?;
+                details_sheet.write_with_format(details_row, 3, &err.error, &cell_format)?;
                 details_row += 1;
             }
         }
@@ -2585,6 +2880,7 @@ fn get_entry_display<'a>(
             };
             (format!("{}{}", name, target), symlink_format)
         }
+        FileStatus::SpecialFile { .. } => (name.to_string(), unchanged_format),
         FileStatus::PermissionDenied { .. } => (name.to_string(), deleted_format),
     }
 }
@@ -2609,6 +2905,7 @@ fn get_status_string(status: &FileStatus) -> &'static str {
                 SymlinkChangeType::Changed => "[symlink: changed]",
             }
         }
+        FileStatus::SpecialFile { .. } => "[special]",
         FileStatus::PermissionDenied { .. } => "[permission denied]",
     }
 }
@@ -2822,6 +3119,7 @@ fn format_status_tag(status: &FileStatus) -> String {
                 }
             }
         }
+        FileStatus::SpecialFile { file_type } => format!("[special: {}]", file_type),
         FileStatus::PermissionDenied { .. } => "[permission denied]".to_string(),
     }
 }
@@ -3242,7 +3540,7 @@ mod tests {
             common_count: 0,
         };
 
-        let (added_files, added_dirs, modified, deleted_files, deleted_dirs, symlinks, perm_changes, errors, unchanged) =
+        let (added_files, added_dirs, modified, deleted_files, deleted_dirs, symlinks, perm_changes, errors, unchanged, special_files) =
             result.count_by_status();
 
         assert_eq!(added_files, 2);
@@ -3253,6 +3551,8 @@ mod tests {
         assert_eq!(symlinks, 0);
         assert_eq!(perm_changes, 0);
         assert_eq!(errors, 0);
+        assert_eq!(unchanged, 0);
+        assert_eq!(special_files, 0);
     }
 
     // ==================== format_status_tag tests ====================
@@ -3339,6 +3639,7 @@ mod tests {
             patch: false,
             patch_file: None,
             patch_result: None,
+            copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
         }
@@ -3459,6 +3760,7 @@ mod tests {
             patch: false,
             patch_file: None,
             patch_result: None,
+            copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
         };
@@ -3954,9 +4256,11 @@ mod tests {
                         patch_generated: true,
                     },
                 ],
+                errors: vec![],
                 total_generated: 1,
                 total_skipped: 0,
             }),
+            copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
         };
@@ -4003,9 +4307,11 @@ mod tests {
                         patch_generated: false,
                     },
                 ],
+                errors: vec![],
                 total_generated: 0,
                 total_skipped: 1,
             }),
+            copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
         };
@@ -4153,6 +4459,7 @@ mod tests {
             patch: false,
             patch_file: None,
             patch_result: None,
+            copy_result: None,
             excel_fold_level: None,
             show_unchanged: true,
         };
@@ -4191,6 +4498,7 @@ mod tests {
             patch: false,
             patch_file: None,
             patch_result: None,
+            copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
         };
@@ -4198,5 +4506,154 @@ mod tests {
         let summary = generate_summary(&result, &options);
         // Even with show_unchanged=false, the unchanged count should be displayed in statistics
         assert!(summary.contains("Unchanged:"));
+    }
+
+    // ==================== Special File Tests ====================
+
+    #[test]
+    fn test_generate_summary_with_special_files() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("test.socket"),
+                    is_dir: false,
+                    status: FileStatus::SpecialFile {
+                        file_type: SpecialFileType::Socket,
+                    },
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("normal.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 2,
+            common_count: 0,
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
+            copy_result: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+        };
+
+        let summary = generate_summary(&result, &options);
+        assert!(summary.contains("Special:"), "Should show special files count in statistics");
+        assert!(summary.contains("test.socket"), "Should show special file in file tree");
+        assert!(summary.contains("[special: socket]"), "Should show special file status tag");
+        assert!(summary.contains("Special Files (skipped)"), "Should have Special Files section");
+    }
+
+    // ==================== Copy Error Tests ====================
+
+    #[test]
+    fn test_generate_summary_with_copy_errors() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("file.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 1,
+            common_count: 0,
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
+            copy_result: Some(CopyResult {
+                copied_count: 0,
+                errors: vec![
+                    CopyError {
+                        relative_path: PathBuf::from("file.txt"),
+                        error: "No space left on device".to_string(),
+                    },
+                ],
+            }),
+            excel_fold_level: None,
+            show_unchanged: false,
+        };
+
+        let summary = generate_summary(&result, &options);
+        assert!(summary.contains("Copy Failed"), "Should have Copy Failed section");
+        assert!(summary.contains("Failed: 1 files"), "Should show failed count");
+        assert!(summary.contains("No space left on device"), "Should show error message");
+    }
+
+    // ==================== Patch Error Tests ====================
+
+    #[test]
+    fn test_generate_summary_with_patch_errors() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("file.txt"),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 1,
+            target_count: 1,
+            common_count: 1,
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: true,
+            patch_file: None,
+            patch_result: Some(PatchResult {
+                patches: vec![],
+                errors: vec![
+                    PatchError {
+                        relative_path: PathBuf::from("file.txt"),
+                        error: "Failed to read source file".to_string(),
+                    },
+                ],
+                total_generated: 0,
+                total_skipped: 0,
+            }),
+            copy_result: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+        };
+
+        let summary = generate_summary(&result, &options);
+        assert!(summary.contains("Patch Details"), "Should have Patch Details section");
+        assert!(summary.contains("Failed: 1"), "Should show failed count in patch summary");
+        assert!(summary.contains("Failed to read source file"), "Should show error message");
     }
 }

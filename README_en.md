@@ -16,6 +16,7 @@ A CLI tool that compares two directories and extracts only the files with differ
 - Excel report output (3-sheet layout: Summary/File Tree/Details)
 - TOML config file support for reusable settings
 - **Safety features**: Dangerous path protection and deletion confirmation with `--force`
+- **Robust error handling**: Continues processing when special files or copy failures occur, errors recorded in summary
 - Japanese path support (no garbled characters on Windows console)
 - Cross-platform (Windows / Linux / macOS)
 
@@ -279,6 +280,8 @@ Files:
 | `[symlink: added, broken]` | Broken symbolic link |
 | `[symlink: deleted]` | Deleted symbolic link |
 | `[symlink: changed]` | Symbolic link with changed target |
+| `[special: socket]` | Unix socket file (skipped) |
+| `[special: fifo]` | FIFO/named pipe (skipped) |
 | `[permission denied]` | Permission error (skipped) |
 
 ## Specifications
@@ -297,6 +300,12 @@ Files:
 | New directory (including empty) | Create in output |
 | Deleted file/directory | Report in summary only |
 | Symbolic link | Report in summary only |
+| Special file (Unix) | Skip and report in summary |
+| Copy failure | Skip and report in summary, processing continues |
+
+### Special Files (Unix)
+
+On Unix systems, special files such as sockets, FIFOs, and device files are automatically skipped and reported in the summary. This allows safe comparison of directories containing special files, such as Yocto build environments.
 
 ### --both-versions Mode
 
@@ -367,6 +376,17 @@ Note: Phase 4 is only shown when `--patch` or `--patch-file` is specified
 | 0 | Success (with differences) |
 | 1 | Error |
 | 2 | Success (no differences) |
+
+### Error Handling
+
+The following errors do not stop processing; instead, error information is recorded in the summary:
+
+- **Permission errors**: When file read permission is denied
+- **Special files**: When sockets, FIFOs, etc. are detected on Unix systems
+- **Copy failures**: When file copy fails due to disk space or other reasons
+- **Patch generation failures**: When patch generation fails due to file read errors
+
+This allows large directory comparisons to continue even when some files have errors, with error information available in the summary.
 
 ## Character Encoding
 

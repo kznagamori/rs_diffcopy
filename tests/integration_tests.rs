@@ -2479,3 +2479,72 @@ fn test_show_unchanged_with_excel() {
     let details_range = workbook.worksheet_range("Details").expect("Should have Details sheet");
     assert!(sheet_contains(&details_range, "Unchanged Files"), "Details should contain Unchanged Files section");
 }
+
+// ============================================================================
+// Special File Tests (Unix only)
+// ============================================================================
+
+#[cfg(unix)]
+mod special_file_tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// IT-1101: Unix socket file is detected and skipped
+    #[test]
+    fn test_socket_file_detection() {
+        let env = TestEnv::new();
+
+        // Create a Unix socket file in target
+        let socket_path = env.target_path().join("test.socket");
+        let _listener = UnixListener::bind(&socket_path).expect("Failed to create socket");
+
+        // Create a normal file for comparison
+        create_file(env.target_path(), "normal.txt", "content");
+
+        let output = run_diffcopy_sto(
+            env.source_path(),
+            env.target_path(),
+            env.output_path(),
+        );
+
+        // Should succeed (socket is skipped, normal file is copied)
+        assert!(output.status.success());
+        let stdout = stdout_str(&output);
+
+        // Socket should be mentioned in output as special file
+        assert!(stdout.contains("Special Files") || stdout.contains("special: socket"),
+            "Should mention special file in output");
+
+        // Normal file should be copied
+        assert!(env.output_path().join("normal.txt").exists(),
+            "Normal file should be copied");
+
+        // Socket should NOT be in output (since it's skipped)
+        assert!(!env.output_path().join("test.socket").exists(),
+            "Socket should not be copied");
+    }
+
+    /// IT-1102: Socket file in summary statistics
+    #[test]
+    fn test_socket_file_statistics() {
+        let env = TestEnv::new();
+
+        // Create a Unix socket file in target
+        let socket_path = env.target_path().join("my.sock");
+        let _listener = UnixListener::bind(&socket_path).expect("Failed to create socket");
+
+        let output = run_diffcopy_sto(
+            env.source_path(),
+            env.target_path(),
+            env.output_path(),
+        );
+
+        // Should succeed
+        assert!(output.status.success());
+        let stdout = stdout_str(&output);
+
+        // Statistics should show special files count
+        assert!(stdout.contains("Special Files:") || stdout.contains("special"),
+            "Should show special files in statistics");
+    }
+}

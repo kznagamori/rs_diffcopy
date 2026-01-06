@@ -277,8 +277,10 @@ rs_diffcopy -S old -T new -O output -e "__pycache__"
 | 新規ディレクトリ（空含む） | 出力先に作成 |
 | 削除ファイル/ディレクトリ | サマリーに記載のみ（コピーしない） |
 | シンボリックリンク | サマリーに記載のみ（コピーしない） |
+| 特殊ファイル | スキップしてサマリーに記載（ソケット、FIFO、デバイスファイル等） |
 | 権限エラー | スキップしてサマリーに記載 |
 | 権限変更のみ | サマリーに記載のみ（コピーしない） |
+| コピー失敗 | スキップしてサマリーに記載、処理は継続 |
 
 ### 6.2 --both-versions モード
 
@@ -287,6 +289,19 @@ rs_diffcopy -S old -T new -O output -e "__pycache__"
 | 新規ファイル | 出力先にコピー（拡張子なし） |
 | 変更ファイル | 新旧両方をコピー（`filename.ext.old` / `filename.ext.new`） |
 | その他 | 通常モードと同じ |
+
+### 6.3 特殊ファイル（Unix）
+
+Unix系OSでは、通常のファイルやディレクトリ以外に特殊ファイルが存在します。これらはコピーできないため、自動的にスキップされサマリーに記載されます。
+
+| 種類 | 説明 | 例 |
+|------|------|-----|
+| Socket | プロセス間通信用ソケット | `pseudo.socket`, `/var/run/*.sock` |
+| FIFO (Named Pipe) | 名前付きパイプ | パイプラインで使用 |
+| Block Device | ブロックデバイス | `/dev/sda` |
+| Char Device | キャラクタデバイス | `/dev/tty` |
+
+**注意**: Windowsでは特殊ファイルは存在しないため、このスキップ処理は発生しません。
 
 ---
 
@@ -428,15 +443,16 @@ Options:
     - __pycache__
     - node_modules
 
-Added:       5 files, 1 dir
-Modified:    8 files
-Deleted:     2 files, 1 dir
-Symlinks:    3 files
-Permissions: 2 files
-Errors:      1 file
-Unchanged:   50 files
+Added:         5 files, 1 dir
+Modified:      8 files
+Deleted:       2 files, 1 dir
+Symlinks:      3 files
+Special Files: 1 file
+Permissions:   2 files
+Errors:        1 file
+Unchanged:     50 files
 --------------------------
-Total:      70 items
+Total:        71 items
 
 ================
 File Tree
@@ -453,6 +469,7 @@ File Tree
 ├── old_link -> /old/path [symlink: deleted]
 ├── changed_link -> /new/path [symlink: changed]
 ├── became_broken -> /path [symlink: broken]
+├── pseudo.socket [special: socket]
 ├── secret.key [permission denied]
 └── legacy/ [deleted]
 
@@ -515,9 +532,14 @@ Errors
 secret.key: Permission denied
 
 ================
+Special Files (skipped)
+================
+pseudo.socket (socket)
+
+================
 Patch Details
 ================
-Generated: 8 patches, Skipped: 2 (binary)
+Generated: 8 patches, Skipped: 2 (binary), Failed: 1
 
 Generated:
   src/main.rs.patch
@@ -526,6 +548,16 @@ Generated:
 Skipped (binary):
   images/logo.png [skip]
   data/db.bin [skip]
+
+Failed:
+  corrupted.txt: Failed to read source file
+
+================
+Copy Failed
+================
+Failed: 1 files (Copied: 10 files)
+
+  large_file.dat: No space left on device
 ```
 
 ### 9.2 差分なしの場合
@@ -555,8 +587,10 @@ No differences found.
 | Unchanged Files | `--show-unchanged`指定時 | 変更がないファイル一覧 |
 | Symlink Details | シンボリックリンクあり時 | シンボリックリンクの詳細情報 |
 | Permission Changes | 権限変更あり時 | 権限変更の詳細 |
-| Errors | エラーあり時 | エラー詳細 |
-| Patch Details | パッチ生成時 | 生成/スキップされたパッチ一覧 |
+| Errors | エラーあり時 | 権限エラー詳細 |
+| Special Files (skipped) | 特殊ファイルあり時 | スキップされた特殊ファイル一覧（Unix） |
+| Patch Details | パッチ生成時 | 生成/スキップ/失敗したパッチ一覧 |
+| Copy Failed | コピー失敗時 | コピーに失敗したファイル一覧とエラー理由 |
 
 ### 9.4 統計情報の計算
 
@@ -566,6 +600,7 @@ No differences found.
 | Modified | 両方に存在し、内容が変更されたファイル数 |
 | Deleted | sourceにのみ存在するファイル/ディレクトリ数 |
 | Symlinks | 追加/削除/変更されたシンボリックリンク数 |
+| Special Files | スキップされた特殊ファイル数（Unix: ソケット、FIFO等） |
 | Permissions | 権限のみ変更されたファイル数 |
 | Errors | 権限エラー等でスキップされたファイル数 |
 | Unchanged | 両方に存在し、変更がないファイル数（常に表示） |
@@ -587,12 +622,17 @@ No differences found.
 | `[symlink: changed]` | リンク先が変更されたシンボリックリンク |
 | `[symlink: changed, broken]` | リンク先が変更され、かつ壊れたシンボリックリンク |
 | `[symlink: broken]` | 同じリンク先で壊れた状態になったシンボリックリンク |
+| `[special: socket]` | Unixソケットファイル（スキップ） |
+| `[special: fifo]` | FIFO/名前付きパイプ（スキップ） |
+| `[special: block device]` | ブロックデバイス（スキップ） |
+| `[special: char device]` | キャラクタデバイス（スキップ） |
 | `[permission denied]` | 権限エラー（スキップ） |
 | `[skip]` | パッチ生成スキップ（バイナリファイル） |
 
 ※ シンボリックリンクはコピーされず、Symlink Detailsセクションに詳細が表示される
 ※ 権限変更は File Tree には表示されず、Permission Changes セクションにのみ表示
 ※ バイナリファイルはパッチ生成時にスキップされ、Patch Detailsセクションに記載
+※ 特殊ファイルはUnix系OSでのみ検出され、スキップされてSpecial Files (skipped)セクションに記載
 
 ### 9.6 Excelレポート形式
 
@@ -633,16 +673,30 @@ No differences found.
 
 ## 11. エラーハンドリング
 
+### 11.1 処理停止するエラー
+
 | ケース | 挙動 |
 |--------|------|
 | source/targetディレクトリが存在しない | エラー終了（コード1） |
 | 出力先が既に存在 | エラー終了（`--force`で全削除して実行可能） |
-| ファイル読み取り権限エラー | スキップしてサマリーに記載、処理は継続 |
-| シンボリックリンク | スキップしてサマリーに記載、処理は継続 |
 | 設定ファイルの必須項目不足 | エラー終了（コード1） |
 | 無効なglob パターン | エラー終了（コード1） |
 | 危険なパスへの`--force` | エラー終了（コード1）、確認なしで即時拒否 |
 | `--force`でのユーザー拒否 | エラー終了（コード1） |
+
+### 11.2 処理継続するエラー（サマリーに記載）
+
+以下のエラーは処理を停止せず、サマリーとExcelレポートにエラー内容を記録して処理を継続します。
+
+| ケース | 挙動 | サマリーセクション |
+|--------|------|-----------------|
+| ファイル読み取り権限エラー | スキップ | Errors |
+| シンボリックリンク | スキップ | Symlink Details |
+| 特殊ファイル（ソケット、FIFO等） | スキップ | Special Files (skipped) |
+| ファイルコピー失敗 | スキップ | Copy Failed |
+| パッチ生成失敗 | スキップ | Patch Details (Failed) |
+
+**設計思想**: 大規模なディレクトリ比較では一部のファイルでエラーが発生することがあります。単一のエラーで全処理を停止するのではなく、可能な限り処理を継続し、エラー情報をサマリーに記録することで、ユーザーは処理結果を確認しながら問題のあるファイルを特定できます。
 
 ---
 
