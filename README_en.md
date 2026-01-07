@@ -12,6 +12,8 @@ A CLI tool that compares two directories and extracts only the files with differ
 - **Parallel processing** for fast comparison and copying (using rayon)
 - Phase-based progress display for visibility into processing status
 - Displays added, modified, and deleted files in tree format
+- **Copy deleted files**: Extract files that exist only in source with `.deleted` extension
+- **Preserve timestamps**: Keep file modification times when copying
 - Detailed symlink status display (added/deleted/changed/broken)
 - `git apply` compatible patch file generation
 - Excel report output (3-sheet layout: Summary/File Tree/Details)
@@ -94,6 +96,12 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-B, --base <PATH>` | Base (common ancestor) directory (required in three-way mode) |
 | `-M, --merge-style <STYLE>` | Copy style for conflicts (all/ours/theirs) |
 | `--conflict-only` | Output only files with conflicts |
+| `--filter-status <STATUS>` | Show only files with specified status (can specify multiple) |
+| `--stats-only` | Show only statistics (hide File Tree and detail sections) |
+| `--no-tree` | Hide File Tree section |
+| `--no-details` | Hide detail sections (Added/Modified/Deleted Files, etc.) |
+| `--copy-deleted` | Copy deleted files with `.deleted` extension |
+| `--preserve-timestamps` | Preserve file timestamps when copying |
 | `-h, --help` | Show help |
 | `-V, --version` | Show version |
 
@@ -154,6 +162,30 @@ rs_diffcopy -S old -T new -O output -e "*.log" --save-config diffcopy.toml
 
 # Use config file
 rs_diffcopy --config ./diffcopy.toml
+
+# Show only added files
+rs_diffcopy -S old -T new -O output --filter-status added
+
+# Show added and modified files (comma-separated)
+rs_diffcopy -S old -T new -O output --filter-status added,modified
+
+# Show everything except unchanged (all + ^exclusion)
+rs_diffcopy -S old -T new -O output --filter-status all,^unchanged
+
+# Show only statistics
+rs_diffcopy -S old -T new -O output --stats-only
+
+# Hide detail sections
+rs_diffcopy -S old -T new -O output --no-details
+
+# Copy deleted files with .deleted extension
+rs_diffcopy -S old -T new -O output --copy-deleted
+
+# Preserve timestamps when copying
+rs_diffcopy -S old -T new -O output --preserve-timestamps
+
+# Combine copy deleted and preserve timestamps
+rs_diffcopy -S old -T new -O output --copy-deleted --preserve-timestamps
 ```
 
 ## Config File (TOML Format)
@@ -210,6 +242,12 @@ exclude = [
 | `excel` | string | - | Excel report output path |
 | `excel_fold_level` | integer | - | Excel file tree fold level |
 | `show_unchanged` | bool | - | Show unchanged files in summary details |
+| `filter_status` | array | - | Status to display (supports all, ^exclusion) |
+| `stats_only` | bool | - | Show only statistics |
+| `no_tree` | bool | - | Hide File Tree section |
+| `no_details` | bool | - | Hide detail sections |
+| `copy_deleted` | bool | - | Copy deleted files with `.deleted` extension |
+| `preserve_timestamps` | bool | - | Preserve file timestamps when copying |
 | `three_way` | bool | - | Enable three-way comparison mode |
 | `base` | string | * | Base (common ancestor) directory (required in three-way mode) |
 | `merge_style` | string | - | Copy style for conflicts (all/ours/theirs) |
@@ -370,6 +408,50 @@ Files:
 
 **Note:** The Options section and detail sections are only displayed when applicable items exist.
 
+### Output Format by Destination
+
+The output format differs between two-way and three-way comparison, and between console and file output.
+
+| Mode | Console Output | File Output (-s option) |
+|------|---------------|------------------------|
+| Two-way | Tree format | Tree format |
+| Three-way | Tree format (compact indicators) | Tree format (aligned indicators) |
+
+**Three-way comparison console output (compact indicator format):**
+```
+Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
+.
+├── file1.txt [○M=] ours-only
+├── new_ours.txt [-A-] added-ours
+├── new_theirs.txt [--A] added-theirs
+├── subdir/
+│   └── nested.txt [○=M] theirs-only
+└── 日本語ファイル.txt [○M=] ours-only
+```
+
+**Three-way comparison file output (aligned indicator format):**
+```
+Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
+                                         B  O  T
+.
+├── file1.txt                          [○  M  =] ours-only
+├── new_ours.txt                       [-  A  -] added-ours
+├── new_theirs.txt                     [-  -  A] added-theirs
+├── subdir/
+│   └── nested.txt                    [○  =  M] theirs-only
+└── 日本語ファイル.txt                 [○  M  =] ours-only
+```
+
+**Indicators:**
+| Symbol | Meaning |
+|--------|---------|
+| `○` | File exists in base |
+| `-` | File does not exist |
+| `=` | Same as base (unchanged) |
+| `M` | Modified from base |
+| `A` | Added (new file) |
+| `D` | Deleted |
+
 ### Status Tags
 
 | Tag | Meaning |
@@ -400,7 +482,7 @@ Files:
 | New file | Copy to output |
 | Modified file | Copy to output (from target) |
 | New directory (including empty) | Create in output |
-| Deleted file/directory | Report in summary only |
+| Deleted file/directory | Report in summary only (`--copy-deleted` copies with `.deleted` extension) |
 | Symbolic link | Report in summary only |
 | Special file (Unix) | Skip and report in summary |
 | Copy failure | Skip and report in summary, processing continues |
@@ -408,6 +490,21 @@ Files:
 ### Special Files (Unix)
 
 On Unix systems, special files such as sockets, FIFOs, and device files are automatically skipped and reported in the summary. This allows safe comparison of directories containing special files, such as Yocto build environments.
+
+### --copy-deleted Mode
+
+When using `--copy-deleted` option, deleted files (files that exist only in source) are also copied to output:
+
+```
+output/
+├── file.txt          # Modified file
+├── new.txt           # New file
+└── old.txt.deleted   # Deleted file (with .deleted extension)
+```
+
+### --preserve-timestamps Mode
+
+When using `--preserve-timestamps` option, file modification times (mtime) are preserved when copying. This is useful for tracking file history.
 
 ### --both-versions Mode
 
@@ -442,6 +539,54 @@ Permission Changes
 scripts/build.sh: 755 -> 644
 src/main.py: 755 -> 644
 ```
+
+### Output Filter
+
+Filter the output (console, summary file, Excel report) to show only specific items.
+
+#### Status Filter (--filter-status)
+
+Show only files with specified status.
+
+**Two-way mode status values:**
+| Status | Target |
+|--------|--------|
+| `all` | All statuses (use with exclusion) |
+| `added` | Added files |
+| `modified` | Modified files |
+| `deleted` | Deleted files |
+| `unchanged` | Unchanged files |
+| `symlink` | Symbolic links |
+| `special` | Special files |
+| `permission` | Permission changes |
+| `error` | Errors |
+
+**Exclusion (^ prefix):**
+
+Add `^` before a status to exclude it.
+
+```bash
+# Show everything except unchanged
+--filter-status all,^unchanged
+
+# Add added and modified, then exclude added (result: modified only)
+--filter-status added,modified,^added
+```
+
+**Behavior:**
+- Processed left to right (later wins)
+- `all` adds all statuses to target
+- `^` prefix excludes from target
+- Statistics show **pre-filter totals**
+- Filtered items show "(filtered out)" in statistics
+
+#### Section Filter
+
+| Option | Effect |
+|--------|--------|
+| `--stats-only` | Show only statistics (hide File Tree and detail sections) |
+| `--no-tree` | Hide File Tree section |
+| `--no-details` | Hide detail sections (Added/Modified/Deleted Files, etc.) |
 
 ### Progress Display
 

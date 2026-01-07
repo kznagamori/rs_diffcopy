@@ -12,6 +12,8 @@
 - **並列処理**による高速な比較・コピー（rayon使用）
 - フェーズ別進捗表示で処理状況を可視化
 - 追加・変更・削除ファイルをツリー形式で表示
+- **削除ファイルのコピー**: source側にのみ存在するファイルを`.deleted`拡張子付きで抽出
+- **タイムスタンプ保持**: コピー時にファイルの更新日時を保持
 - シンボリックリンクの詳細な状態表示（追加/削除/変更/壊れたリンク）
 - `git apply`互換のパッチファイル生成
 - Excelレポート出力（Summary/File Tree/Detailsの3シート構成）
@@ -94,6 +96,12 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-B, --base <PATH>` | 共通祖先ディレクトリ（三者間モード時必須） |
 | `-M, --merge-style <STYLE>` | コンフリクト時のコピー方式（all/ours/theirs） |
 | `--conflict-only` | コンフリクトのあるファイルのみ出力 |
+| `--filter-status <STATUS>` | 指定ステータスのファイルのみ表示（複数指定可） |
+| `--stats-only` | 統計情報のみ表示（File Tree、詳細セクションを非表示） |
+| `--no-tree` | File Treeセクションを非表示 |
+| `--no-details` | 詳細セクション（Added/Modified/Deleted Files等）を非表示 |
+| `--copy-deleted` | 削除ファイルもコピー（.deleted拡張子付与） |
+| `--preserve-timestamps` | コピー時にファイルのタイムスタンプを保持 |
 | `-h, --help` | ヘルプ表示 |
 | `-V, --version` | バージョン表示 |
 
@@ -154,6 +162,30 @@ rs_diffcopy -S old -T new -O output -e "*.log" --save-config diffcopy.toml
 
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
+
+# 追加ファイルのみ表示
+rs_diffcopy -S old -T new -O output --filter-status added
+
+# 追加と変更ファイルのみ表示（カンマ区切り）
+rs_diffcopy -S old -T new -O output --filter-status added,modified
+
+# unchanged以外すべて表示（all + ^除外）
+rs_diffcopy -S old -T new -O output --filter-status all,^unchanged
+
+# 統計情報のみ表示
+rs_diffcopy -S old -T new -O output --stats-only
+
+# 詳細セクションを非表示
+rs_diffcopy -S old -T new -O output --no-details
+
+# 削除ファイルもコピー（.deleted拡張子付与）
+rs_diffcopy -S old -T new -O output --copy-deleted
+
+# タイムスタンプを保持してコピー
+rs_diffcopy -S old -T new -O output --preserve-timestamps
+
+# 削除ファイルのコピーとタイムスタンプ保持を組み合わせ
+rs_diffcopy -S old -T new -O output --copy-deleted --preserve-timestamps
 ```
 
 ## 設定ファイル（TOML形式）
@@ -210,6 +242,12 @@ exclude = [
 | `excel` | string | - | Excelレポート出力パス |
 | `excel_fold_level` | integer | - | Excelファイルツリーの折りたたみレベル |
 | `show_unchanged` | bool | - | 変更がないファイルをサマリー詳細に表示 |
+| `filter_status` | array | - | 表示するステータス（all, ^除外対応） |
+| `stats_only` | bool | - | 統計情報のみ表示 |
+| `no_tree` | bool | - | File Treeセクション非表示 |
+| `no_details` | bool | - | 詳細セクション非表示 |
+| `copy_deleted` | bool | - | 削除ファイルもコピー（.deleted拡張子） |
+| `preserve_timestamps` | bool | - | コピー時にタイムスタンプを保持 |
 | `three_way` | bool | - | 三者間比較モードを有効化 |
 | `base` | string | ※ | 共通祖先ディレクトリ（三者間モード時は必須） |
 | `merge_style` | string | - | コンフリクト時のコピー方式（all/ours/theirs） |
@@ -370,6 +408,36 @@ Files:
 
 **注意:** Optionsセクションおよび各詳細セクションは、該当する項目がある場合のみ表示されます。
 
+### 出力先別の形式
+
+二者間比較と三者間比較で、コンソール出力とファイル出力の形式が異なります。
+
+| モード | コンソール出力 | ファイル出力（-s指定時） |
+|--------|---------------|------------------------|
+| 二者間比較 (File Tree) | ツリー形式 | ツリー形式 |
+| 三者間比較 (File Tree) | ツリー形式（コンパクト） | ツリー形式（整列） |
+
+**三者間比較のコンソール出力例（コンパクト形式）:**
+```
+Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
+.
+├── file1.txt [○M=] ours-only
+├── subdir/
+│   └── nested.txt [○=M] theirs-only
+└── 日本語ファイル.txt [○M=] ours-only
+```
+
+**三者間比較のファイル出力例（整列形式）:**
+```
+Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
+                                     B  O  T
+.
+├── file1.txt                      [○  M  =] ours-only
+├── subdir/
+│   └── nested.txt                [○  =  M] theirs-only
+└── 日本語ファイル.txt             [○  M  =] ours-only
+```
+
 ### ステータスタグ
 
 | タグ | 意味 |
@@ -400,10 +468,25 @@ Files:
 | 新規ファイル | 出力先にコピー |
 | 変更ファイル | 出力先にコピー（比較先のファイル） |
 | 新規ディレクトリ（空含む） | 出力先に作成 |
-| 削除ファイル/ディレクトリ | サマリーに記載のみ |
+| 削除ファイル/ディレクトリ | サマリーに記載のみ（`--copy-deleted`時は`.deleted`拡張子付きでコピー） |
 | シンボリックリンク | サマリーに記載のみ |
 | 特殊ファイル（Unix） | スキップしてサマリーに記載 |
 | コピー失敗 | スキップしてサマリーに記載、処理は継続 |
+
+### --copy-deleted モード
+
+削除されたファイル（source側にのみ存在するファイル）も出力先にコピーします：
+
+```
+output/
+├── file.txt          # 変更ファイル
+├── new.txt           # 新規ファイル
+└── old.txt.deleted   # 削除ファイル（.deleted拡張子付与）
+```
+
+### --preserve-timestamps モード
+
+`--preserve-timestamps` オプションを使用すると、コピー時にファイルの更新日時（mtime）を保持します。ファイル履歴の追跡に有用です。
 
 ### 特殊ファイル（Unix）
 
@@ -442,6 +525,54 @@ Permission Changes
 scripts/build.sh: 755 -> 644
 src/main.py: 755 -> 644
 ```
+
+### 出力フィルター機能
+
+出力結果（コンソール、サマリーファイル、Excelレポート）に対して、表示内容をフィルタリングできます。
+
+#### ステータスフィルター（--filter-status）
+
+指定したステータスのファイルのみを表示します。
+
+**二者間モード用ステータス値：**
+| ステータス値 | 対象 |
+|-------------|------|
+| `all` | 全ステータス（除外指定と組み合わせて使用） |
+| `added` | 追加されたファイル |
+| `modified` | 変更されたファイル |
+| `deleted` | 削除されたファイル |
+| `unchanged` | 変更なしのファイル |
+| `symlink` | シンボリックリンク |
+| `special` | 特殊ファイル |
+| `permission` | 権限変更 |
+| `error` | エラー |
+
+**除外指定（^プレフィックス）：**
+
+`^`をステータス値の前に付けることで、そのステータスを除外できます。
+
+```bash
+# unchanged以外すべて表示
+--filter-status all,^unchanged
+
+# addedとmodifiedを追加し、addedを除外（結果: modifiedのみ）
+--filter-status added,modified,^added
+```
+
+**動作仕様：**
+- 指定は左から右へ順番に処理（後勝ち）
+- `all` を指定すると全ステータスを対象に追加
+- `^`プレフィックス付きは対象から除外
+- 統計情報は**フィルター前の全体数**を表示
+- フィルター適用時は統計情報に「(filtered out)」を表示
+
+#### セクションフィルター
+
+| オプション | 効果 |
+|-----------|------|
+| `--stats-only` | 統計情報のみ表示（File Tree、詳細セクションを非表示） |
+| `--no-tree` | File Treeセクションを非表示 |
+| `--no-details` | 詳細セクション（Added/Modified/Deleted Files等）を非表示 |
 
 ### 進捗表示
 

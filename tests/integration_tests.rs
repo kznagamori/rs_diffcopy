@@ -3466,3 +3466,471 @@ fn test_three_way_mixed_scenarios() {
     assert!(stdout.contains("added-ours") || stdout.contains("Added (ours)"));
     assert!(stdout.contains("deleted-both") || stdout.contains("Deleted (both)"));
 }
+
+// ============================================================================
+// 3.11 Output Filter Tests
+// ============================================================================
+
+/// IT-1001: Basic --filter-status with single status
+#[test]
+fn test_filter_status_basic() {
+    let env = TestEnv::new();
+
+    // Create test files with different statuses
+    create_file(env.source_path(), "unchanged.txt", "same content");
+    create_file(env.target_path(), "unchanged.txt", "same content");
+    create_file(env.target_path(), "added.txt", "new file");
+    create_file(env.source_path(), "modified.txt", "old content");
+    create_file(env.target_path(), "modified.txt", "new content");
+    create_file(env.source_path(), "deleted.txt", "will be deleted");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--filter-status", "added"],
+    );
+
+    assert!(output.status.success() || output.status.code() == Some(0));
+    let stdout = stdout_str(&output);
+
+    // Should show added file in tree
+    assert!(stdout.contains("added.txt"), "Should show added file");
+    // Modified should be filtered out from tree (but stats remain)
+    assert!(stdout.contains("(filtered out)"), "Should show filtered marker in stats");
+}
+
+/// IT-1002: --filter-status with multiple statuses (comma-separated)
+#[test]
+fn test_filter_status_multiple() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "unchanged.txt", "same");
+    create_file(env.target_path(), "unchanged.txt", "same");
+    create_file(env.target_path(), "added.txt", "new");
+    create_file(env.source_path(), "modified.txt", "old");
+    create_file(env.target_path(), "modified.txt", "new");
+    create_file(env.source_path(), "deleted.txt", "gone");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--filter-status", "added,modified"],
+    );
+
+    assert!(output.status.success() || output.status.code() == Some(0));
+    let stdout = stdout_str(&output);
+
+    // Should show both added and modified
+    assert!(stdout.contains("added.txt"), "Should show added file");
+    assert!(stdout.contains("modified.txt"), "Should show modified file");
+}
+
+/// IT-1003: --filter-status with all keyword
+#[test]
+fn test_filter_status_all() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "unchanged.txt", "same");
+    create_file(env.target_path(), "unchanged.txt", "same");
+    create_file(env.target_path(), "added.txt", "new");
+    create_file(env.source_path(), "deleted.txt", "gone");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--filter-status", "all", "--show-unchanged"],
+    );
+
+    assert!(output.status.success() || output.status.code() == Some(0));
+    let stdout = stdout_str(&output);
+
+    // All statuses should be shown
+    assert!(stdout.contains("added.txt"), "Should show added");
+    assert!(stdout.contains("deleted.txt"), "Should show deleted");
+    assert!(stdout.contains("unchanged.txt"), "Should show unchanged");
+}
+
+/// IT-1004: --filter-status with ^ exclusion prefix
+#[test]
+fn test_filter_status_exclusion() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "unchanged.txt", "same");
+    create_file(env.target_path(), "unchanged.txt", "same");
+    create_file(env.target_path(), "added.txt", "new");
+    create_file(env.source_path(), "modified.txt", "old");
+    create_file(env.target_path(), "modified.txt", "new");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--filter-status", "all,^unchanged"],
+    );
+
+    assert!(output.status.success() || output.status.code() == Some(0));
+    let stdout = stdout_str(&output);
+
+    // Should show added and modified but not unchanged in details
+    assert!(stdout.contains("added.txt"), "Should show added");
+    assert!(stdout.contains("modified.txt"), "Should show modified");
+    // unchanged should be filtered
+    assert!(stdout.contains("(filtered out)"), "Unchanged should be filtered out in stats");
+}
+
+/// IT-1007: --stats-only option
+#[test]
+fn test_stats_only() {
+    let env = TestEnv::new();
+
+    create_file(env.target_path(), "added.txt", "new");
+    create_file(env.source_path(), "modified.txt", "old");
+    create_file(env.target_path(), "modified.txt", "new");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--stats-only"],
+    );
+
+    assert!(output.status.success() || output.status.code() == Some(0));
+    let stdout = stdout_str(&output);
+
+    // Should have statistics
+    assert!(stdout.contains("Added:"), "Should show Added count");
+    assert!(stdout.contains("Modified:"), "Should show Modified count");
+    // Should NOT have File Tree or details
+    assert!(!stdout.contains("File Tree"), "Should NOT have File Tree section");
+    assert!(!stdout.contains("Added Files"), "Should NOT have Added Files section");
+}
+
+/// IT-1008: --no-tree option
+#[test]
+fn test_no_tree() {
+    let env = TestEnv::new();
+
+    create_file(env.target_path(), "added.txt", "new");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--no-tree"],
+    );
+
+    assert!(output.status.success() || output.status.code() == Some(0));
+    let stdout = stdout_str(&output);
+
+    // Should NOT have File Tree
+    assert!(!stdout.contains("File Tree"), "Should NOT have File Tree section");
+    // But should have details
+    assert!(stdout.contains("Added Files"), "Should have Added Files section");
+}
+
+/// IT-1009: --no-details option
+#[test]
+fn test_no_details() {
+    let env = TestEnv::new();
+
+    create_file(env.target_path(), "added.txt", "new");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--no-details"],
+    );
+
+    assert!(output.status.success() || output.status.code() == Some(0));
+    let stdout = stdout_str(&output);
+
+    // Should have File Tree
+    assert!(stdout.contains("File Tree"), "Should have File Tree section");
+    // But should NOT have details
+    assert!(!stdout.contains("Added Files"), "Should NOT have Added Files section");
+}
+
+/// IT-1010: Filter shows "(filtered out)" in statistics
+#[test]
+fn test_filter_shows_filtered_marker() {
+    let env = TestEnv::new();
+
+    create_file(env.target_path(), "added.txt", "new");
+    create_file(env.source_path(), "deleted.txt", "gone");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--filter-status", "added"],
+    );
+
+    assert!(output.status.success() || output.status.code() == Some(0));
+    let stdout = stdout_str(&output);
+
+    // Statistics should show filtered marker
+    assert!(stdout.contains("(filtered out)"), "Should show (filtered out) marker");
+}
+
+// ============================================================================
+// 3.12 Three-way Filter Tests
+// ============================================================================
+
+/// IT-1101: Three-way basic filter status
+#[test]
+fn test_three_way_filter_status_basic() {
+    let env = ThreeWayTestEnv::new();
+
+    // Unchanged file
+    create_file(env.base_path(), "unchanged.txt", "base");
+    create_file(env.ours_path(), "unchanged.txt", "base");
+    create_file(env.theirs_path(), "unchanged.txt", "base");
+
+    // Ours-only change
+    create_file(env.base_path(), "ours_only.txt", "base");
+    create_file(env.ours_path(), "ours_only.txt", "ours");
+    create_file(env.theirs_path(), "ours_only.txt", "base");
+
+    // Conflict
+    create_file(env.base_path(), "conflict.txt", "base");
+    create_file(env.ours_path(), "conflict.txt", "ours");
+    create_file(env.theirs_path(), "conflict.txt", "theirs");
+
+    let output = run_three_way_diffcopy_with_opts(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+        &["--filter-status", "conflict"],
+    );
+
+    let stdout = stdout_str(&output);
+    // Should show conflict file
+    assert!(stdout.contains("conflict.txt"), "Should show conflict file");
+}
+
+/// IT-1102: Three-way filter conflict only
+#[test]
+fn test_three_way_filter_conflict_only() {
+    let env = ThreeWayTestEnv::new();
+
+    // Unchanged
+    create_file(env.base_path(), "unchanged.txt", "base");
+    create_file(env.ours_path(), "unchanged.txt", "base");
+    create_file(env.theirs_path(), "unchanged.txt", "base");
+
+    // Conflict
+    create_file(env.base_path(), "conflict.txt", "base");
+    create_file(env.ours_path(), "conflict.txt", "ours");
+    create_file(env.theirs_path(), "conflict.txt", "theirs");
+
+    // Added both diff (also conflict)
+    create_file(env.ours_path(), "new_conflict.txt", "ours version");
+    create_file(env.theirs_path(), "new_conflict.txt", "theirs version");
+
+    let output = run_three_way_diffcopy_with_opts(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+        &["--filter-status", "conflict,added-both-diff"],
+    );
+
+    let stdout = stdout_str(&output);
+    // Should show conflict files
+    assert!(stdout.contains("conflict.txt") || stdout.contains("CONFLICT"),
+            "Should show conflict");
+}
+
+/// Helper for three-way tests with options
+fn run_three_way_diffcopy_with_opts(base: &Path, ours: &Path, theirs: &Path, output: &Path, opts: &[&str]) -> Output {
+    let mut args = vec![
+        "-3",
+        "-B", base.to_str().unwrap(),
+        "-S", ours.to_str().unwrap(),
+        "-T", theirs.to_str().unwrap(),
+        "-O", output.to_str().unwrap(),
+    ];
+    args.extend(opts);
+    run_diffcopy(&args)
+}
+
+// ============================================================================
+// 3.15 Copy Options Tests (--copy-deleted, --preserve-timestamps)
+// ============================================================================
+
+/// IT-1201: Copy deleted files with --copy-deleted option
+#[test]
+fn test_copy_deleted_option() {
+    let env = TestEnv::new();
+
+    // Create a file only in source (will be detected as "deleted")
+    create_file(env.source_path(), "deleted_file.txt", "This file was deleted");
+    create_file(env.source_path(), "common.txt", "common content");
+    create_file(env.target_path(), "common.txt", "common content");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--copy-deleted"],
+    );
+
+    assert!(output.status.success(), "Command should succeed");
+
+    // Deleted file should be copied with .deleted extension
+    let deleted_file = env.output_path().join("deleted_file.txt.deleted");
+    assert!(deleted_file.exists(), "Deleted file should be copied with .deleted extension");
+
+    let content = fs::read_to_string(deleted_file).unwrap();
+    assert_eq!(content, "This file was deleted");
+}
+
+/// IT-1202: Copy deleted files in subdirectories
+#[test]
+fn test_copy_deleted_with_subdirectory() {
+    let env = TestEnv::new();
+
+    // Create a file in subdirectory only in source
+    create_file(env.source_path(), "src/old_module.rs", "// old module code");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--copy-deleted"],
+    );
+
+    assert!(output.status.success(), "Command should succeed");
+
+    let deleted_file = env.output_path().join("src/old_module.rs.deleted");
+    assert!(deleted_file.exists(), "Deleted file in subdirectory should be copied");
+}
+
+/// IT-1203: Without --copy-deleted, deleted files are not copied
+#[test]
+fn test_no_copy_deleted_by_default() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "deleted_file.txt", "This file was deleted");
+
+    let output = run_diffcopy_sto(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+    );
+
+    assert!(output.status.success() || output.status.code() == Some(2), "Command should succeed or return exit code 2");
+
+    // Deleted file should NOT be copied
+    assert!(!env.output_path().join("deleted_file.txt.deleted").exists(),
+            "Deleted file should NOT be copied without --copy-deleted");
+    assert!(!env.output_path().join("deleted_file.txt").exists(),
+            "Deleted file should NOT be copied without --copy-deleted");
+}
+
+/// IT-1204: Preserve timestamps with --preserve-timestamps option
+#[test]
+fn test_preserve_timestamps_option() {
+    use filetime::FileTime;
+
+    let env = TestEnv::new();
+
+    // Create a file in target with a specific timestamp
+    let file_path = create_file(env.target_path(), "new_file.txt", "New content");
+
+    // Set a specific timestamp (2021-01-01 00:00:00 UTC)
+    let specific_time = FileTime::from_unix_time(1609459200, 0);
+    filetime::set_file_mtime(&file_path, specific_time).unwrap();
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--preserve-timestamps"],
+    );
+
+    assert!(output.status.success(), "Command should succeed");
+
+    let copied_file = env.output_path().join("new_file.txt");
+    assert!(copied_file.exists(), "File should be copied");
+
+    let metadata = fs::metadata(&copied_file).unwrap();
+    let copied_mtime = FileTime::from_last_modification_time(&metadata);
+
+    assert_eq!(copied_mtime.unix_seconds(), specific_time.unix_seconds(),
+               "Timestamp should be preserved");
+}
+
+/// IT-1205: Combine --copy-deleted and --preserve-timestamps
+#[test]
+fn test_copy_deleted_with_preserve_timestamps() {
+    use filetime::FileTime;
+
+    let env = TestEnv::new();
+
+    // Create a deleted file with a specific timestamp
+    let file_path = create_file(env.source_path(), "old_file.txt", "Old content");
+    let specific_time = FileTime::from_unix_time(1609459200, 0);
+    filetime::set_file_mtime(&file_path, specific_time).unwrap();
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--copy-deleted", "--preserve-timestamps"],
+    );
+
+    assert!(output.status.success(), "Command should succeed");
+
+    let copied_file = env.output_path().join("old_file.txt.deleted");
+    assert!(copied_file.exists(), "Deleted file should be copied");
+
+    let metadata = fs::metadata(&copied_file).unwrap();
+    let copied_mtime = FileTime::from_last_modification_time(&metadata);
+
+    assert_eq!(copied_mtime.unix_seconds(), specific_time.unix_seconds(),
+               "Timestamp should be preserved for deleted file");
+}
+
+/// IT-1206: Summary shows copy_deleted option
+#[test]
+fn test_summary_shows_copy_deleted_option() {
+    let env = TestEnv::new();
+
+    create_file(env.source_path(), "deleted.txt", "content");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--copy-deleted"],
+    );
+
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("Copy deleted: Yes"),
+            "Summary should show copy deleted option");
+}
+
+/// IT-1207: Summary shows preserve_timestamps option
+#[test]
+fn test_summary_shows_preserve_timestamps_option() {
+    let env = TestEnv::new();
+
+    create_file(env.target_path(), "new.txt", "content");
+
+    let output = run_diffcopy_with_opts(
+        env.source_path(),
+        env.target_path(),
+        env.output_path(),
+        &["--preserve-timestamps"],
+    );
+
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("Preserve timestamps: Yes"),
+            "Summary should show preserve timestamps option");
+}

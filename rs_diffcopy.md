@@ -3,7 +3,7 @@
 ## 1. プロジェクト概要
 
 - **アプリケーション名**: `rs_diffcopy`
-- **バージョン**: `v1.0`
+- **バージョン**: `v1.0.0`
 - **開発目的**: diffコマンドだと初心者には変更点が分かりにくいため、初心者・非技術者でも変更点が視覚的に分かるツールを作成
 - **ゴール**: 2つのディレクトリを比較し、差異があるファイルのみを階層構造を維持したまま別フォルダへ抽出する
 - **想定ユーザー**: 初心者、非技術者
@@ -21,18 +21,22 @@
 
 ---
 
-## 3. 機能一覧（v1.0）
+## 3. 機能一覧（v1.0.0）
 
 | 機能 | 説明 |
 |------|------|
 | ディレクトリ比較 | 2つのディレクトリを比較し、差分ファイルを抽出 |
+| 三者間比較 | base/ours/theirsの3ディレクトリを比較してコンフリクト検出 |
 | 除外パターン | glob形式で除外ファイル/ディレクトリを指定可能 |
 | 設定ファイル | TOML形式の設定ファイルで複雑な設定を再利用 |
 | 新旧両方コピー | 変更ファイルの新旧両方を `.old`/`.new` 拡張子付きでコピー |
+| 削除ファイルのコピー | source側にのみ存在するファイルを`.deleted`拡張子付きで出力 |
+| タイムスタンプ保持 | コピー時にファイルの更新日時を保持 |
 | 権限チェック | ファイル権限の変更を検出（スクリプト限定/全ファイル） |
 | パッチ生成 | 変更ファイルのunified diff形式パッチを生成（`git apply`互換） |
 | Excelレポート | サマリーをExcelファイル(.xlsx)として出力（3シート構成） |
 | 変更なしファイル表示 | 変更がないファイルをサマリー詳細に表示可能 |
+| 出力フィルター | ステータス別フィルタ、セクション表示制御 |
 | ドライラン | 実際にコピーせず、対象ファイルをプレビュー |
 | 進捗表示 | フェーズ別プログレスバーを表示 |
 | 並列処理 | ファイル比較・コピーを並列実行で高速化 |
@@ -67,6 +71,12 @@ rs_diffcopy [OPTIONS]
   -L, --excel-fold-level <LEVEL>   Excelファイルツリーの折りたたみレベル（指定深さ以上を折りたたみ）
   -u, --show-unchanged             変更がないファイルをサマリー詳細に表示
   -C, --save-config <PATH>         現在のオプションを設定ファイル(TOML形式)に保存
+  --filter-status <STATUS>         指定ステータスのファイルのみ表示（複数指定可）
+  --stats-only                     統計情報のみ表示（File Tree、詳細セクションを非表示）
+  --no-tree                        File Treeセクションを非表示
+  --no-details                     詳細セクション（Added/Modified/Deleted Files等）を非表示
+  --copy-deleted                   削除ファイルもコピー（.deleted拡張子付与）
+  --preserve-timestamps            コピー時にファイルのタイムスタンプを保持
   -h, --help                       ヘルプ表示
   -V, --version                    バージョン表示
 ```
@@ -124,6 +134,39 @@ rs_diffcopy -S old -T new -O output -e "*.log" --save-config diffcopy.toml
 
 # 設定ファイルを使用
 rs_diffcopy --config ./diffcopy.toml
+
+# 追加ファイルのみ表示
+rs_diffcopy -S old -T new -O output --filter-status added
+
+# 追加と変更ファイルのみ表示（カンマ区切り）
+rs_diffcopy -S old -T new -O output --filter-status added,modified
+
+# unchanged以外すべて表示（all + ^除外）
+rs_diffcopy -S old -T new -O output --filter-status all,^unchanged
+
+# added と deleted 以外すべて表示
+rs_diffcopy -S old -T new -O output --filter-status all,^added,^deleted
+
+# 統計情報のみ表示（詳細セクションなし）
+rs_diffcopy -S old -T new -O output --stats-only
+
+# File Treeを非表示にして詳細セクションのみ表示
+rs_diffcopy -S old -T new -O output --no-tree
+
+# 詳細セクションを非表示にしてFile Treeのみ表示
+rs_diffcopy -S old -T new -O output --no-details
+
+# エラーと警告系のみ表示
+rs_diffcopy -S old -T new -O output --filter-status error,symlink
+
+# 削除ファイルもコピー（.deleted拡張子付与）
+rs_diffcopy -S old -T new -O output --copy-deleted
+
+# タイムスタンプを保持してコピー
+rs_diffcopy -S old -T new -O output --preserve-timestamps
+
+# 削除ファイルのコピーとタイムスタンプ保持を組み合わせ
+rs_diffcopy -S old -T new -O output --copy-deleted --preserve-timestamps
 ```
 
 ### 4.3 設定ファイル（TOML形式）
@@ -150,6 +193,16 @@ patch_file = ""             # 統合パッチファイルパス（空で無効�
 excel = ""                  # Excelレポート出力パス（空で無効）
 # excel_fold_level = 2      # Excelファイルツリーの折りたたみレベル（省略時は折りたたみなし）
 show_unchanged = false      # 変更がないファイルをサマリー詳細に表示
+
+# 出力フィルター設定
+# filter_status = ["added", "modified"]  # 表示するステータス（省略時は全て表示）
+stats_only = false          # 統計情報のみ表示
+no_tree = false             # File Treeセクション非表示
+no_details = false          # 詳細セクション非表示
+
+# コピーオプション
+copy_deleted = false        # 削除ファイルもコピー（.deleted拡張子）
+preserve_timestamps = false # タイムスタンプを保持
 
 # 除外パターン（複数指定可）
 exclude = [
@@ -180,6 +233,12 @@ exclude = [
 | `excel` | string | - | - | Excelレポート出力パス |
 | `excel_fold_level` | integer | - | - | Excelファイルツリーの折りたたみレベル（指定深さ以上を折りたたみ） |
 | `show_unchanged` | bool | - | `false` | 変更がないファイルをサマリー詳細に表示 |
+| `filter_status` | array | - | `[]` | 表示するステータスのリスト（空は全て表示） |
+| `stats_only` | bool | - | `false` | 統計情報のみ表示 |
+| `no_tree` | bool | - | `false` | File Treeセクションを非表示 |
+| `no_details` | bool | - | `false` | 詳細セクションを非表示 |
+| `copy_deleted` | bool | - | `false` | 削除ファイルもコピー（.deleted拡張子） |
+| `preserve_timestamps` | bool | - | `false` | コピー時にタイムスタンプを保持 |
 
 #### 優先順位
 
@@ -222,11 +281,29 @@ patch = false  # 個別パッチファイル生成
 # excel_fold_level = 2  # Excelファイルツリーの折りたたみレベル（省略時は折りたたみなし）
 show_unchanged = false  # 変更なしファイルをサマリーに表示
 
+# 三者間比較オプション
+three_way = false  # 三者間比較モード
+# base = "./base_version"  # 共通祖先ディレクトリ
+merge_style = "all"  # all / ours / theirs
+conflict_only = false  # コンフリクトのみ出力
+
+# 出力フィルター設定
+# filter_status = ["added", "modified"]  # 表示するステータス（省略時は全て表示）
+stats_only = false  # 統計情報のみ表示
+no_tree = false  # File Treeセクション非表示
+no_details = false  # 詳細セクション非表示
+
+# コピーオプション
+copy_deleted = false  # 削除ファイルもコピー
+preserve_timestamps = false  # タイムスタンプを保持
+
 # 除外パターン（glob形式、複数指定可）
-exclude = [
-    "*.log",
-    "node_modules",
-]
+# exclude = [
+#     "*.log",
+#     "*.tmp",
+#     "node_modules",
+#     ".git",
+# ]
 ```
 
 ### 4.4 除外パターン
@@ -330,7 +407,21 @@ rs_diffcopy -S old -T new -O output -e "__pycache__"
 | 権限変更のみ | サマリーに記載のみ（コピーしない） |
 | コピー失敗 | スキップしてサマリーに記載、処理は継続 |
 
-### 6.2 --both-versions モード
+### 6.2 --copy-deleted モード
+
+| 状態 | 扱い |
+|------|------|
+| 削除ファイル | 出力先にコピー（`.deleted`拡張子付与、例: `file.txt` → `file.txt.deleted`） |
+| その他 | 通常モードと同じ |
+
+### 6.3 --preserve-timestamps モード
+
+| 状態 | 扱い |
+|------|------|
+| コピー対象ファイル | ファイルの更新日時（mtime）を保持してコピー |
+| その他 | 通常モードと同じ |
+
+### 6.4 --both-versions モード
 
 | 状態 | 扱い |
 |------|------|
@@ -338,7 +429,7 @@ rs_diffcopy -S old -T new -O output -e "__pycache__"
 | 変更ファイル | 新旧両方をコピー（`filename.ext.old` / `filename.ext.new`） |
 | その他 | 通常モードと同じ |
 
-### 6.3 特殊ファイル（Unix）
+### 6.5 特殊ファイル（Unix）
 
 Unix系OSでは、通常のファイルやディレクトリ以外に特殊ファイルが存在します。これらはコピーできないため、自動的にスキップされサマリーに記載されます。
 
@@ -366,7 +457,19 @@ output_dir/
 └── config.toml          # 変更ファイル
 ```
 
-### 7.2 --both-versions モード
+### 7.2 --copy-deleted モード
+
+```
+output_dir/
+├── src/
+│   ├── main.rs              # 変更ファイル
+│   ├── new_feature.rs       # 新規ファイル
+│   └── old_module.rs.deleted  # 削除ファイル（source側、.deleted拡張子付与）
+├── docs/
+└── config.toml
+```
+
+### 7.3 --both-versions モード
 
 ```
 output_dir/
@@ -379,7 +482,7 @@ output_dir/
 └── config.toml.new
 ```
 
-### 7.3 --patch モード
+### 7.5 --patch モード
 
 ```
 output_dir/
@@ -392,7 +495,7 @@ output_dir/
 └── config.toml.patch
 ```
 
-### 7.4 パッチ生成
+### 7.6 パッチ生成
 
 #### パッチ形式
 
@@ -482,6 +585,8 @@ Date: 2025-12-18 10:30:00
 Options:
   Mode: Dry-run (no files copied)
   Copy mode: Both versions (.old/.new)
+  Copy deleted: Yes (.deleted)
+  Preserve timestamps: Yes
   Permission check: scripts
   Patch mode: Individual files (.patch)
   Combined patch file: changes.patch
@@ -640,6 +745,67 @@ No differences found.
 | Patch Details | パッチ生成時 | 生成/スキップ/失敗したパッチ一覧 |
 | Copy Failed | コピー失敗時 | コピーに失敗したファイル一覧とエラー理由 |
 
+### 9.3.1 出力先別の形式
+
+二者間比較と三者間比較で、コンソール出力とファイル出力の形式が異なります。
+
+| モード | コンソール出力 | ファイル出力（-s指定時） |
+|--------|---------------|------------------------|
+| 二者間比較 (File Tree) | ツリー形式 | ツリー形式 |
+| 三者間比較 (File Tree) | ツリー形式（コンパクト） | ツリー形式（整列） |
+
+#### 二者間比較のFile Tree形式
+
+コンソール・ファイル共にツリー形式で出力されます。
+
+```
+================
+File Tree
+================
+.
+├── file1.txt [modified]
+├── subdir/
+│   ├── added.txt [added]
+│   └── nested/
+│       └── deep.txt [modified]
+└── config.toml [deleted]
+```
+
+#### 三者間比較のFile Tree形式
+
+三者間比較でもツリー形式を使用し、[Base|Ours|Theirs]のインジケータを付加します。
+
+**コンソール出力**: コンパクト形式（`[○M=]`のように詰めて表示）
+
+```
+================
+File Tree
+================
+Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
+.
+├── file1.txt [○M=] ours-only
+├── new_ours.txt [-A-] added-ours
+├── subdir/
+│   └── nested.txt [○=M] theirs-only
+└── 日本語ファイル.txt [○M=] ours-only
+```
+
+**ファイル出力**: 整列形式（パス幅に応じて整列、日本語は2文字幅で計算）
+
+```
+================
+File Tree
+================
+Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
+                                     B  O  T
+.
+├── file1.txt                      [○  M  =] ours-only
+├── new_ours.txt                   [-  A  -] added-ours
+├── subdir/
+│   └── nested.txt                [○  =  M] theirs-only
+└── 日本語ファイル.txt             [○  M  =] ours-only
+```
+
 ### 9.4 統計情報の計算
 
 | 項目 | 説明 |
@@ -706,6 +872,154 @@ No differences found.
   - 変更なし（Unchanged）: グレー (#808080)
 - **File Tree**: 等幅フォント（Consolas）で表示、行の折りたたみに対応（`-L`オプション使用時）
 - **Details**: パスを「Directory」と「File」の2列に分離して表示
+
+### 9.7 出力フィルター機能
+
+出力結果（コンソール、サマリーファイル、Excelレポート）に対して、表示内容をフィルタリングできます。
+
+#### ステータスフィルター（--filter-status）
+
+指定したステータスのファイルのみを表示します。
+
+| ステータス値 | 対象 |
+|-------------|------|
+| `all` | 全ステータス（除外指定と組み合わせて使用） |
+| `added` | 新規追加されたファイル/ディレクトリ |
+| `modified` | 内容が変更されたファイル |
+| `deleted` | 削除されたファイル/ディレクトリ |
+| `unchanged` | 変更がないファイル |
+| `symlink` | シンボリックリンク（追加/削除/変更） |
+| `special` | 特殊ファイル（ソケット、FIFO等） |
+| `error` | 権限エラー等でスキップされたファイル |
+| `permission` | 権限のみ変更されたファイル |
+
+**除外指定（^プレフィックス）：**
+
+ステータス値の先頭に`^`を付けると、そのステータスを表示対象から除外します。
+
+```bash
+# unchanged以外すべて表示
+--filter-status all,^unchanged
+
+# added と modified 以外すべて表示
+--filter-status all,^added,^modified
+
+# addedとmodifiedを追加し、addedを除外（結果: modifiedのみ）
+--filter-status added,modified,^added
+```
+
+**三者間モード用ステータス値：**
+
+| ステータス値 | 対象 |
+|-------------|------|
+| `all` | 全ステータス（除外指定と組み合わせて使用） |
+| `unchanged` | 3つとも同一（変更なし） |
+| `ours-only` | oursのみ変更 |
+| `theirs-only` | theirsのみ変更 |
+| `both-same` | 両方が同じ変更 |
+| `conflict` | コンフリクト（両方が異なる変更） |
+| `added-ours` | oursでのみ追加 |
+| `added-theirs` | theirsでのみ追加 |
+| `added-both-same` | 両方で追加（同一内容） |
+| `added-both-diff` | 両方で追加（異なる内容）- コンフリクト |
+| `deleted-ours` | oursで削除 |
+| `deleted-theirs` | theirsで削除 |
+| `deleted-both` | 両方で削除 |
+| `modify-delete` | oursで変更、theirsで削除 - コンフリクト |
+| `delete-modify` | oursで削除、theirsで変更 - コンフリクト |
+
+**動作仕様：**
+
+- 指定は左から右へ順番に処理（後勝ち）
+- `all` を指定すると全ステータスを対象に追加
+- `^`プレフィックス付きは対象から除外
+- プレフィックスなしは対象に追加
+- 統計情報は**フィルター前の全体数**を表示
+- フィルター適用時は統計情報に「(filtered out)」を表示
+- File Tree、詳細セクション、Excelレポートにはフィルター後のファイルのみ表示
+
+**処理例：**
+
+```
+# 例1: all,^unchanged
+1. all → {added, modified, deleted, unchanged, symlink, special, permission, error}
+2. ^unchanged → unchangedを除外
+→ 結果: {added, modified, deleted, symlink, special, permission, error}
+
+# 例2: added,modified,^added
+1. added → {added}
+2. modified → {added, modified}
+3. ^added → addedを除外
+→ 結果: {modified}
+
+# 例3: all,^unchanged,unchanged
+1. all → 全ステータス
+2. ^unchanged → unchangedを除外
+3. unchanged → unchangedを追加
+→ 結果: 全ステータス（後勝ち）
+```
+
+#### セクションフィルター
+
+| オプション | 効果 |
+|-----------|------|
+| `--stats-only` | ヘッダー、Options、統計情報のみ表示（File Tree、詳細セクションを非表示） |
+| `--no-tree` | File Treeセクションを非表示 |
+| `--no-details` | Added/Modified/Deleted Files等の詳細セクションを非表示 |
+
+**優先順位：**
+
+- `--stats-only` は `--no-tree` と `--no-details` を暗黙的に有効化
+- `--stats-only` と `--no-tree`/`--no-details` の同時指定は冗長だが許容
+
+#### Excelレポートへの適用
+
+- ステータスフィルターはExcelの全シートに適用
+- `--stats-only` 指定時はExcelは出力されない（統計情報はテキスト出力のみ）
+- `--no-tree` 指定時はFile Treeシートが空になる
+- `--no-details` 指定時はDetailsシートが空になる
+
+#### 出力例（フィルター適用時）
+
+```
+rs_diffcopy Summary
+================
+Source: /path/to/source
+Target: /path/to/target
+Output: /path/to/output
+Date: 2025-12-18 10:30:00
+
+Options:
+  Filter status: added, modified
+
+Added:         5 files, 1 dir
+Modified:      8 files
+Deleted:       2 files, 1 dir    (filtered out)
+Symlinks:      3 files           (filtered out)
+...
+--------------------------
+Total:        71 items
+Showing:      13 items (filtered)
+
+================
+File Tree (filtered)
+================
+.
+└── src/
+    ├── main.rs [modified]
+    └── new_feature.rs [added]
+
+================
+Added Files (filtered)
+================
+Files:
+  src/new_feature.rs
+
+================
+Modified Files (filtered)
+================
+  src/main.rs
+```
 
 ---
 
@@ -806,7 +1120,7 @@ Are you sure you want to delete this directory? [yes/no]:
 
 ---
 
-## 14. 三者間差分機能（v1.1）
+## 14. 三者間差分機能
 
 ### 14.1 概要
 
@@ -837,6 +1151,10 @@ rs_diffcopy --three-way [OPTIONS]
   -e, --exclude <PATTERN>        除外パターン
   -f, --force                    出力先を全削除して再実行
   -s, --summary <PATH>           サマリーをファイルに出力
+  --filter-status <STATUS>       指定ステータスのファイルのみ表示
+  --stats-only                   統計情報のみ表示
+  --no-tree                      File Matrixセクションを非表示
+  --no-details                   詳細セクションを非表示
   -v, --verbose                  詳細出力モード
   -n, --dry-run                  ドライラン
   -E, --excel <PATH>             Excelレポート出力
@@ -873,6 +1191,12 @@ output = "./merge_output"
 merge_style = "all"          # all / ours / theirs
 conflict_only = false
 exclude = ["*.log", ".git/**"]
+
+# 出力フィルター設定
+# filter_status = ["conflict", "ours-only"]  # 表示するステータス
+stats_only = false
+no_tree = false
+no_details = false
 ```
 
 ### 14.5 ファイル状態の判定
@@ -940,6 +1264,11 @@ output_dir/
 
 ### 14.8 サマリー出力形式（三者間モード）
 
+三者間比較では、File Tree形式にステータスインジケータを付加して出力します。
+コンソール出力とファイル出力で形式が異なります。
+
+#### コンソール出力（コンパクト形式）
+
 ```
 rs_diffcopy Summary (Three-way)
 ================================
@@ -956,34 +1285,58 @@ Status          | Count
 ----------------|------
 Unchanged       |   50
 Ours only       |    8
-Theirs only     |    5
-Both same       |    3
-Conflict        |    2
-Added (ours)    |    4
-Added (theirs)  |    2
-Added (both)    |    1
-Deleted (ours)  |    1
-Deleted (theirs)|    1
-Deleted (both)  |    0
-Modify/Delete   |    1
+...
 --------------------------
 Total           |   78
 Conflicts       |    4
 
 ================
-File Matrix
+File Tree
 ================
-File                    | Base | Ours | Theirs | Status
-------------------------|------|------|--------|---------------
-src/main.rs             |  ○   |  M   |   =    | ours-only
-src/utils.rs            |  ○   |  =   |   M    | theirs-only
-src/handler.rs          |  ○   |  M   |   M    | CONFLICT
-src/new_feature.rs      |  -   |  A   |   -    | added-ours
-lib/helper.rs           |  ○   |  M   |   D    | CONFLICT (modify/delete)
-...
+Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
+.
+├── file1.txt [○M=] ours-only
+├── new_ours.txt [-A-] added-ours
+├── handler.rs [○MM] CONFLICT
+├── subdir/
+│   └── nested.txt [○=M] theirs-only
+└── 日本語ファイル.txt [○M=] ours-only
+```
 
-Legend: ○=exists, -=missing, ==same as base, M=modified, A=added, D=deleted
+#### ファイル出力（整列形式）
 
+ファイル出力では、パス幅に応じて整列した形式で出力します。
+日本語などの全角文字は2文字分として幅計算されます。
+
+```
+================
+File Tree
+================
+Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
+                                     B  O  T
+.
+├── file1.txt                      [○  M  =] ours-only
+├── new_ours.txt                   [-  A  -] added-ours
+├── handler.rs                     [○  M  M] CONFLICT
+├── subdir/
+│   └── nested.txt                [○  =  M] theirs-only
+└── 日本語ファイル.txt             [○  M  =] ours-only
+```
+
+#### インジケータの意味
+
+| インジケータ | 意味 |
+|-------------|------|
+| `○` | ファイルが存在 |
+| `-` | ファイルが存在しない |
+| `=` | baseと同一（変更なし） |
+| `M` | 変更あり |
+| `A` | 新規追加 |
+| `D` | 削除 |
+
+#### Conflict Details セクション
+
+```
 ================
 Conflict Details
 ================
@@ -997,27 +1350,6 @@ Conflict Details
    Type: Modify/Delete conflict
    Ours: Modified (500 bytes)
    Theirs: Deleted
-
-================
-Copied Files
-================
-Ours only:
-  src/main.rs
-  ...
-
-Theirs only:
-  src/utils.rs
-  ...
-
-Both same:
-  src/config.rs
-  ...
-
-Conflicts (all versions copied):
-  src/handler.rs.base
-  src/handler.rs.ours
-  src/handler.rs.theirs
-  lib/helper.rs.ours
 ```
 
 ### 14.9 Excelレポート（三者間モード）
@@ -1054,15 +1386,13 @@ Conflicts (all versions copied):
 
 ## 15. 将来の機能検討
 
-### 15.1 v1.2 で検討する機能（優先度: 高）
+### 15.1 v1.1 で検討する機能（優先度: 高）
 
 | 機能 | オプション案 | 説明 | 対象ユーザーへの価値 |
 |------|-------------|------|---------------------|
-| 削除ファイルのコピー | `--copy-deleted` | source側にしかないファイルも出力先に抽出 | 変更前後の完全な差分を確認したい場合に有用 |
-| タイムスタンプ保持 | `--preserve-timestamps` | コピー時にファイルの更新日時を保持 | ファイル履歴の追跡に有用 |
 | カラー出力 | `--color` / `--no-color` | ターミナルで色付き出力（added=緑, deleted=赤, modified=黄） | 視認性向上、初心者にも分かりやすい |
 
-### 15.2 v1.3 以降で検討する機能（優先度: 中）
+### 15.2 v1.2 以降で検討する機能（優先度: 中）
 
 | 機能 | オプション案 | 説明 |
 |------|-------------|------|
@@ -1080,9 +1410,9 @@ Conflicts (all versions copied):
 | HTMLレポート | ブラウザで閲覧可能なレポート生成 |
 | ウォッチモード | ディレクトリの変更を監視して自動実行 |
 
-### 15.4 v1.0 機能充足度
+### 15.4 v1.0.0 機能充足度
 
-v1.0は想定ユーザー（初心者・非技術者）に対して以下の点で十分な機能を提供：
+v1.0.0は想定ユーザー（初心者・非技術者）に対して以下の点で十分な機能を提供：
 
 - **シンプルなCLI**: 最小限のオプションで基本機能を利用可能
 - **分かりやすい出力**: ツリー形式のサマリーで変更点を視覚的に把握
@@ -1091,3 +1421,6 @@ v1.0は想定ユーザー（初心者・非技術者）に対して以下の点�
 - **クロスプラットフォーム**: Windows/Linux/macOSで同一の動作
 - **パッチ生成**: `git apply`互換のunified diff形式パッチを生成可能
 - **Excelレポート**: 非技術者にも見やすいExcel形式のレポート出力
+- **三者間比較**: base/ours/theirsの3ディレクトリを比較してコンフリクト検出
+- **削除ファイルのコピー**: source側にのみ存在するファイルを`.deleted`拡張子付きで抽出
+- **タイムスタンプ保持**: コピー時にファイルの更新日時を保持

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use chrono::Local;
 use clap::{Parser, ValueEnum};
+use filetime::{FileTime, set_file_mtime};
 use glob::Pattern;
 use rayon::prelude::*;
 use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook};
@@ -291,6 +292,32 @@ struct Args {
     /// Only output conflict files in three-way mode
     #[arg(long)]
     conflict_only: bool,
+
+    /// Filter output by status (can be specified multiple times)
+    /// Two-way: added, modified, deleted, unchanged, symlink, special, error, permission
+    /// Three-way: unchanged, ours-only, theirs-only, both-same, conflict, added-ours, added-theirs, added-both, deleted-ours, deleted-theirs, deleted-both
+    #[arg(long = "filter-status", value_name = "STATUS")]
+    filter_status: Vec<String>,
+
+    /// Show only statistics (hide File Tree and detail sections)
+    #[arg(long)]
+    stats_only: bool,
+
+    /// Hide File Tree section in output
+    #[arg(long)]
+    no_tree: bool,
+
+    /// Hide detail sections (Added/Modified/Deleted Files etc.) in output
+    #[arg(long)]
+    no_details: bool,
+
+    /// Copy deleted files (files only in source) to output directory
+    #[arg(long)]
+    copy_deleted: bool,
+
+    /// Preserve file timestamps when copying
+    #[arg(long)]
+    preserve_timestamps: bool,
 }
 
 /// Configuration file structure (TOML format)
@@ -327,6 +354,20 @@ struct ConfigFile {
     merge_style: MergeStyle,
     #[serde(default)]
     conflict_only: bool,
+    // Output filter options
+    #[serde(default)]
+    filter_status: Vec<String>,
+    #[serde(default)]
+    stats_only: bool,
+    #[serde(default)]
+    no_tree: bool,
+    #[serde(default)]
+    no_details: bool,
+    // Copy options
+    #[serde(default)]
+    copy_deleted: bool,
+    #[serde(default)]
+    preserve_timestamps: bool,
 }
 
 /// Resolved configuration after merging CLI args and config file
@@ -353,6 +394,14 @@ struct ResolvedConfig {
     base_dir: Option<PathBuf>,
     merge_style: MergeStyle,
     conflict_only: bool,
+    // Output filter options
+    filter_status: Vec<String>,
+    stats_only: bool,
+    no_tree: bool,
+    no_details: bool,
+    // Copy options
+    copy_deleted: bool,
+    preserve_timestamps: bool,
 }
 
 impl ResolvedConfig {
@@ -429,6 +478,19 @@ impl ResolvedConfig {
         };
         let conflict_only = args.conflict_only || config_file.conflict_only;
 
+        // Output filter options
+        let mut filter_status = args.filter_status;
+        if filter_status.is_empty() {
+            filter_status = config_file.filter_status;
+        }
+        let stats_only = args.stats_only || config_file.stats_only;
+        let no_tree = args.no_tree || config_file.no_tree;
+        let no_details = args.no_details || config_file.no_details;
+
+        // Copy options
+        let copy_deleted = args.copy_deleted || config_file.copy_deleted;
+        let preserve_timestamps = args.preserve_timestamps || config_file.preserve_timestamps;
+
         // Validate three-way mode requirements
         if three_way && base_dir.is_none() {
             bail!("Base directory is required for three-way mode. Use --base or specify in config file.");
@@ -456,6 +518,12 @@ impl ResolvedConfig {
             base_dir,
             merge_style,
             conflict_only,
+            filter_status,
+            stats_only,
+            no_tree,
+            no_details,
+            copy_deleted,
+            preserve_timestamps,
         })
     }
 
@@ -551,6 +619,28 @@ impl ResolvedConfig {
         };
         content.push_str(&format!("merge_style = \"{}\"  # all / ours / theirs\n", merge_style_str));
         content.push_str(&format!("conflict_only = {}  # コンフリクトのみ出力\n", self.conflict_only));
+        content.push_str("\n");
+
+        // Output filter options
+        content.push_str("# 出力フィルター設定\n");
+        if self.filter_status.is_empty() {
+            content.push_str("# filter_status = [\"added\", \"modified\"]  # 表示するステータス（省略時は全て表示）\n");
+        } else {
+            content.push_str("filter_status = [\n");
+            for status in &self.filter_status {
+                content.push_str(&format!("    \"{}\",\n", status));
+            }
+            content.push_str("]\n");
+        }
+        content.push_str(&format!("stats_only = {}  # 統計情報のみ表示\n", self.stats_only));
+        content.push_str(&format!("no_tree = {}  # File Treeセクション非表示\n", self.no_tree));
+        content.push_str(&format!("no_details = {}  # 詳細セクション非表示\n", self.no_details));
+        content.push_str("\n");
+
+        // Copy options
+        content.push_str("# コピーオプション\n");
+        content.push_str(&format!("copy_deleted = {}  # 削除ファイルもコピー\n", self.copy_deleted));
+        content.push_str(&format!("preserve_timestamps = {}  # タイムスタンプを保持\n", self.preserve_timestamps));
         content.push_str("\n");
 
         // Exclude patterns
@@ -890,6 +980,16 @@ struct SummaryOptions {
     copy_result: Option<CopyResult>,
     excel_fold_level: Option<u16>,
     show_unchanged: bool,
+    // Output filter options
+    filter_status: Vec<String>,
+    stats_only: bool,
+    no_tree: bool,
+    no_details: bool,
+    // Output format: true = full path (file), false = grouped by directory (console)
+    output_to_file: bool,
+    // Copy options
+    copy_deleted: bool,
+    preserve_timestamps: bool,
 }
 
 impl DiffResult {
@@ -1050,8 +1150,15 @@ fn run_two_way_mode(config: &ResolvedConfig, exclude_patterns: &[Pattern]) -> Re
     )?;
 
     // Copy files (if not dry-run and has differences)
-    let copy_result = if !config.dry_run && diff_result.has_differences() {
-        Some(copy_diff_files(&diff_result, &config.output_dir, config.verbose, config.both_versions)?)
+    let copy_result = if !config.dry_run && (diff_result.has_differences() || config.copy_deleted) {
+        Some(copy_diff_files(
+            &diff_result,
+            &config.output_dir,
+            config.verbose,
+            config.both_versions,
+            config.copy_deleted,
+            config.preserve_timestamps,
+        )?)
     } else {
         None
     };
@@ -1086,6 +1193,13 @@ fn run_two_way_mode(config: &ResolvedConfig, exclude_patterns: &[Pattern]) -> Re
         copy_result,
         excel_fold_level: config.excel_fold_level,
         show_unchanged: config.show_unchanged,
+        filter_status: config.filter_status.clone(),
+        stats_only: config.stats_only,
+        no_tree: config.no_tree,
+        no_details: config.no_details,
+        output_to_file: config.summary.is_some(),
+        copy_deleted: config.copy_deleted,
+        preserve_timestamps: config.preserve_timestamps,
     };
     let summary = generate_summary(&diff_result, &summary_options);
 
@@ -1101,12 +1215,18 @@ fn run_two_way_mode(config: &ResolvedConfig, exclude_patterns: &[Pattern]) -> Re
         println_to_stdout(&summary);
     }
 
-    // Output Excel summary if requested
+    // Output Excel summary if requested (skip if stats_only)
     if let Some(excel_path) = &config.excel {
-        generate_excel_summary(&diff_result, &summary_options, excel_path)
-            .with_context(|| format!("Failed to create Excel file: {}", excel_path.display()))?;
-        if is_terminal() {
-            println_to_stdout(&format!("Excel summary written to: {}", excel_path.display()));
+        if config.stats_only {
+            if is_terminal() {
+                println_to_stdout("Excel output skipped (--stats-only mode)");
+            }
+        } else {
+            generate_excel_summary(&diff_result, &summary_options, excel_path)
+                .with_context(|| format!("Failed to create Excel file: {}", excel_path.display()))?;
+            if is_terminal() {
+                println_to_stdout(&format!("Excel summary written to: {}", excel_path.display()));
+            }
         }
     }
 
@@ -1167,6 +1287,11 @@ fn run_three_way_mode(config: &ResolvedConfig, exclude_patterns: &[Pattern]) -> 
         config_file: config.config_file.clone(),
         output_dir: config.output_dir.clone(),
         copy_result,
+        filter_status: config.filter_status.clone(),
+        stats_only: config.stats_only,
+        no_tree: config.no_tree,
+        no_details: config.no_details,
+        output_to_file: config.summary.is_some(),
     };
     let summary = generate_three_way_summary(&diff_result, &summary_options);
 
@@ -2029,6 +2154,18 @@ fn compute_file_hash(path: &Path) -> Result<blake3::Hash> {
     Ok(hasher.finalize())
 }
 
+/// Copy a single file and optionally preserve timestamps
+fn copy_file_with_timestamp(src: &Path, dst: &Path, preserve_timestamps: bool) -> Result<()> {
+    fs::copy(src, dst)?;
+    if preserve_timestamps {
+        if let Ok(metadata) = fs::metadata(src) {
+            let file_time = FileTime::from_last_modification_time(&metadata);
+            let _ = set_file_mtime(dst, file_time);
+        }
+    }
+    Ok(())
+}
+
 /// Copy a single file entry
 fn copy_single_file(
     entry: &DiffEntry,
@@ -2036,6 +2173,8 @@ fn copy_single_file(
     target_dir: &Path,
     output_dir: &Path,
     both_versions: bool,
+    copy_deleted: bool,
+    preserve_timestamps: bool,
 ) -> Result<()> {
     match &entry.status {
         FileStatus::Added => {
@@ -2048,7 +2187,7 @@ fn copy_single_file(
                 if let Some(parent) = dst.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                fs::copy(&src, &dst)?;
+                copy_file_with_timestamp(&src, &dst, preserve_timestamps)?;
             }
         }
         FileStatus::Modified => {
@@ -2068,10 +2207,29 @@ fn copy_single_file(
                 let dst_old = add_extension(&dst_base, "old");
                 let dst_new = add_extension(&dst_base, "new");
 
-                fs::copy(&src_old, &dst_old)?;
-                fs::copy(&src_new, &dst_new)?;
+                copy_file_with_timestamp(&src_old, &dst_old, preserve_timestamps)?;
+                copy_file_with_timestamp(&src_new, &dst_new, preserve_timestamps)?;
             } else {
-                fs::copy(&src_new, &dst_base)?;
+                copy_file_with_timestamp(&src_new, &dst_base, preserve_timestamps)?;
+            }
+        }
+        FileStatus::Deleted => {
+            if !copy_deleted {
+                return Ok(());
+            }
+
+            let src = source_dir.join(&entry.relative_path);
+            let dst = output_dir.join(&entry.relative_path);
+
+            if entry.is_dir {
+                fs::create_dir_all(&dst)?;
+            } else {
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                // Copy deleted file with .deleted extension
+                let dst_deleted = add_extension(&dst, "deleted");
+                copy_file_with_timestamp(&src, &dst_deleted, preserve_timestamps)?;
             }
         }
         _ => {}
@@ -2080,14 +2238,24 @@ fn copy_single_file(
     Ok(())
 }
 
-fn copy_diff_files(diff_result: &DiffResult, output_dir: &Path, verbose: bool, both_versions: bool) -> Result<CopyResult> {
+fn copy_diff_files(
+    diff_result: &DiffResult,
+    output_dir: &Path,
+    verbose: bool,
+    both_versions: bool,
+    copy_deleted: bool,
+    preserve_timestamps: bool,
+) -> Result<CopyResult> {
     fs::create_dir_all(output_dir)?;
 
     // Filter entries that need to be copied
     let entries_to_copy: Vec<_> = diff_result
         .entries
         .iter()
-        .filter(|e| matches!(e.status, FileStatus::Added | FileStatus::Modified))
+        .filter(|e| {
+            matches!(e.status, FileStatus::Added | FileStatus::Modified)
+                || (copy_deleted && matches!(e.status, FileStatus::Deleted))
+        })
         .collect();
 
     let total_files = entries_to_copy.len();
@@ -2117,6 +2285,8 @@ fn copy_diff_files(diff_result: &DiffResult, output_dir: &Path, verbose: bool, b
                 &diff_result.target_dir,
                 output_dir,
                 both_versions,
+                copy_deleted,
+                preserve_timestamps,
             ) {
                 let mut errs = errors.lock().unwrap();
                 errs.push(CopyError {
@@ -2602,6 +2772,128 @@ fn generate_patches(
     Ok(result)
 }
 
+/// All possible two-way status values
+const TWO_WAY_ALL_STATUSES: &[&str] = &[
+    "added", "modified", "deleted", "unchanged", "symlink", "special", "error", "permission"
+];
+
+/// Resolve filter status list into a set of included statuses
+/// Handles `all` keyword and `^` prefix for exclusion
+/// Processing is left-to-right (last wins)
+fn resolve_filter_statuses(filter_status: &[String], all_statuses: &[&str]) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+
+    let mut result: HashSet<String> = HashSet::new();
+
+    for filter in filter_status {
+        // Split by comma to support both multiple --filter-status and comma-separated values
+        for part in filter.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+
+            let lower = part.to_lowercase();
+
+            if lower.starts_with('^') {
+                // Exclusion: remove from set
+                let status = lower[1..].to_string();
+                result.remove(&status);
+            } else if lower == "all" {
+                // Add all statuses
+                for s in all_statuses {
+                    result.insert(s.to_string());
+                }
+            } else {
+                // Inclusion: add to set
+                result.insert(lower);
+            }
+        }
+    }
+
+    result
+}
+
+/// Check if an entry matches the status filter (two-way mode)
+fn entry_matches_filter(entry: &DiffEntry, filter_status: &[String]) -> bool {
+    if filter_status.is_empty() {
+        return true;
+    }
+
+    let resolved = resolve_filter_statuses(filter_status, TWO_WAY_ALL_STATUSES);
+
+    if resolved.is_empty() {
+        return false;
+    }
+
+    let entry_status = match &entry.status {
+        FileStatus::Added => "added",
+        FileStatus::Modified => "modified",
+        FileStatus::Deleted => "deleted",
+        FileStatus::Unchanged => "unchanged",
+        FileStatus::Symlink { .. } => "symlink",
+        FileStatus::SpecialFile { .. } => "special",
+        FileStatus::PermissionDenied { .. } => "error",
+    };
+
+    resolved.contains(entry_status)
+}
+
+/// Check if a permission change matches the filter
+fn permission_matches_filter(filter_status: &[String]) -> bool {
+    if filter_status.is_empty() {
+        return true;
+    }
+    let resolved = resolve_filter_statuses(filter_status, TWO_WAY_ALL_STATUSES);
+    resolved.contains("permission")
+}
+
+/// Check if a specific status is filtered out (for statistics display)
+fn is_status_filtered_out(status: &str, filter_status: &[String]) -> bool {
+    if filter_status.is_empty() {
+        return false;
+    }
+    let resolved = resolve_filter_statuses(filter_status, TWO_WAY_ALL_STATUSES);
+    !resolved.contains(status)
+}
+
+/// All three-way status values for filter resolution
+const THREE_WAY_ALL_STATUSES: &[&str] = &[
+    "unchanged", "ours-only", "theirs-only", "both-same", "conflict",
+    "added-ours", "added-theirs", "added-both-same", "added-both-diff",
+    "deleted-ours", "deleted-theirs", "deleted-both",
+    "modify-delete", "delete-modify"
+];
+
+/// Convert ThreeWayStatus to filter string
+fn three_way_status_to_filter_str(status: &ThreeWayStatus) -> &'static str {
+    match status {
+        ThreeWayStatus::Unchanged => "unchanged",
+        ThreeWayStatus::OursOnly => "ours-only",
+        ThreeWayStatus::TheirsOnly => "theirs-only",
+        ThreeWayStatus::BothSame => "both-same",
+        ThreeWayStatus::Conflict => "conflict",
+        ThreeWayStatus::AddedOurs => "added-ours",
+        ThreeWayStatus::AddedTheirs => "added-theirs",
+        ThreeWayStatus::AddedBothSame => "added-both-same",
+        ThreeWayStatus::AddedBothDiff => "added-both-diff",
+        ThreeWayStatus::DeletedOurs => "deleted-ours",
+        ThreeWayStatus::DeletedTheirs => "deleted-theirs",
+        ThreeWayStatus::DeletedBoth => "deleted-both",
+        ThreeWayStatus::ModifyDelete => "modify-delete",
+        ThreeWayStatus::DeleteModify => "delete-modify",
+    }
+}
+
+/// Check if a three-way status is filtered out
+fn is_three_way_status_filtered_out(status: &ThreeWayStatus, filter_status: &[String]) -> bool {
+    if filter_status.is_empty() {
+        return false;
+    }
+    let resolved = resolve_filter_statuses(filter_status, THREE_WAY_ALL_STATUSES);
+    !resolved.contains(three_way_status_to_filter_str(status))
+}
+
 fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> String {
     let mut output = String::new();
     let now = Local::now();
@@ -2658,6 +2950,30 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
         options_output.push_str("  Show unchanged: Yes\n");
         has_options = true;
     }
+    if !options.filter_status.is_empty() {
+        options_output.push_str(&format!("  Filter status: {}\n", options.filter_status.join(", ")));
+        has_options = true;
+    }
+    if options.stats_only {
+        options_output.push_str("  Stats only: Yes\n");
+        has_options = true;
+    }
+    if options.no_tree && !options.stats_only {
+        options_output.push_str("  No tree: Yes\n");
+        has_options = true;
+    }
+    if options.no_details && !options.stats_only {
+        options_output.push_str("  No details: Yes\n");
+        has_options = true;
+    }
+    if options.copy_deleted {
+        options_output.push_str("  Copy deleted: Yes (.deleted)\n");
+        has_options = true;
+    }
+    if options.preserve_timestamps {
+        options_output.push_str("  Preserve timestamps: Yes\n");
+        has_options = true;
+    }
 
     if has_options {
         output.push_str("Options:\n");
@@ -2676,7 +2992,18 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
     // Calculate unchanged count (always shown, regardless of show_unchanged option)
     let unchanged_files = diff_result.unchanged_count();
 
-    // Statistics
+    // Check which statuses are filtered out (using resolved filter with all/^ support)
+    let has_filter = !options.filter_status.is_empty();
+    let filter_added = is_status_filtered_out("added", &options.filter_status);
+    let filter_modified = is_status_filtered_out("modified", &options.filter_status);
+    let filter_deleted = is_status_filtered_out("deleted", &options.filter_status);
+    let filter_symlink = is_status_filtered_out("symlink", &options.filter_status);
+    let filter_special = is_status_filtered_out("special", &options.filter_status);
+    let filter_permission = is_status_filtered_out("permission", &options.filter_status);
+    let filter_error = is_status_filtered_out("error", &options.filter_status);
+    let filter_unchanged = is_status_filtered_out("unchanged", &options.filter_status);
+
+    // Statistics (always show full counts, with "(filtered out)" suffix when filtered)
     if added_files > 0 || added_dirs > 0 {
         let mut parts = Vec::new();
         if added_files > 0 {
@@ -2685,10 +3012,12 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
         if added_dirs > 0 {
             parts.push(format!("{} dirs", added_dirs));
         }
-        output.push_str(&format!("Added:      {}\n", parts.join(", ")));
+        let suffix = if filter_added { "    (filtered out)" } else { "" };
+        output.push_str(&format!("Added:      {}{}\n", parts.join(", "), suffix));
     }
     if modified_files > 0 {
-        output.push_str(&format!("Modified:   {} files\n", modified_files));
+        let suffix = if filter_modified { "    (filtered out)" } else { "" };
+        output.push_str(&format!("Modified:   {} files{}\n", modified_files, suffix));
     }
     if deleted_files > 0 || deleted_dirs > 0 {
         let mut parts = Vec::new();
@@ -2698,340 +3027,396 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
         if deleted_dirs > 0 {
             parts.push(format!("{} dirs", deleted_dirs));
         }
-        output.push_str(&format!("Deleted:    {}\n", parts.join(", ")));
+        let suffix = if filter_deleted { "    (filtered out)" } else { "" };
+        output.push_str(&format!("Deleted:    {}{}\n", parts.join(", "), suffix));
     }
     if symlinks > 0 {
-        output.push_str(&format!("Symlinks:   {} files\n", symlinks));
+        let suffix = if filter_symlink { "    (filtered out)" } else { "" };
+        output.push_str(&format!("Symlinks:   {} files{}\n", symlinks, suffix));
     }
     if special_files > 0 {
-        output.push_str(&format!("Special:    {} files\n", special_files));
+        let suffix = if filter_special { "    (filtered out)" } else { "" };
+        output.push_str(&format!("Special:    {} files{}\n", special_files, suffix));
     }
     if permission_changes > 0 {
-        output.push_str(&format!("Permissions: {} files\n", permission_changes));
+        let suffix = if filter_permission { "    (filtered out)" } else { "" };
+        output.push_str(&format!("Permissions: {} files{}\n", permission_changes, suffix));
     }
     if errors > 0 {
-        output.push_str(&format!("Errors:     {} files\n", errors));
+        let suffix = if filter_error { "    (filtered out)" } else { "" };
+        output.push_str(&format!("Errors:     {} files{}\n", errors, suffix));
     }
     // Always show unchanged count
-    output.push_str(&format!("Unchanged:  {} files\n", unchanged_files));
+    let suffix = if filter_unchanged { "    (filtered out)" } else { "" };
+    output.push_str(&format!("Unchanged:  {} files{}\n", unchanged_files, suffix));
 
     // Total = unique paths in source ∪ target
     let total = diff_result.total_unique_paths();
     output.push_str("--------------------------\n");
     output.push_str(&format!("Total:     {} items\n", total));
+
+    // Show filtered count if filter is applied
+    if has_filter {
+        let filtered_entries: Vec<_> = diff_result.entries.iter()
+            .filter(|e| entry_matches_filter(e, &options.filter_status))
+            .collect();
+        let filtered_perm = if permission_matches_filter(&options.filter_status) {
+            diff_result.permission_changes.len()
+        } else {
+            0
+        };
+        output.push_str(&format!("Showing:   {} items (filtered)\n", filtered_entries.len() + filtered_perm));
+    }
     output.push('\n');
 
-    // File Tree
-    output.push_str("================\n");
-    output.push_str("File Tree\n");
-    output.push_str("================\n");
-    output.push_str(&generate_tree(&diff_result.entries));
-    output.push('\n');
-
-    // Added Details
-    let added_entries: Vec<_> = diff_result
-        .entries
-        .iter()
-        .filter(|e| matches!(e.status, FileStatus::Added))
-        .collect();
-
-    if !added_entries.is_empty() {
-        output.push_str("================\n");
-        output.push_str("Added Files\n");
-        output.push_str("================\n");
-
-        let added_dirs: Vec<_> = added_entries.iter().filter(|e| e.is_dir).collect();
-        let added_files: Vec<_> = added_entries.iter().filter(|e| !e.is_dir).collect();
-
-        if !added_dirs.is_empty() {
-            output.push_str("Directories:\n");
-            for entry in added_dirs {
-                output.push_str(&format!("  {}/\n", entry.relative_path.display()));
-            }
-            output.push('\n');
-        }
-
-        if !added_files.is_empty() {
-            output.push_str("Files:\n");
-            for entry in added_files {
-                output.push_str(&format!("  {}\n", entry.relative_path.display()));
-            }
-            output.push('\n');
-        }
+    // stats_only mode: stop here
+    if options.stats_only {
+        return output;
     }
 
-    // Modified Details
-    let modified_entries: Vec<_> = diff_result
-        .entries
-        .iter()
-        .filter(|e| matches!(e.status, FileStatus::Modified))
-        .collect();
+    // File Tree (skip if no_tree)
+    if !options.no_tree {
+        let filtered_suffix = if has_filter { " (filtered)" } else { "" };
+        output.push_str("================\n");
+        output.push_str(&format!("File Tree{}\n", filtered_suffix));
+        output.push_str("================\n");
 
-    if !modified_entries.is_empty() {
-        output.push_str("================\n");
-        output.push_str("Modified Files\n");
-        output.push_str("================\n");
-        for entry in modified_entries {
-            output.push_str(&format!("  {}\n", entry.relative_path.display()));
-        }
+        // Filter entries for tree display
+        let tree_entries: Vec<DiffEntry> = diff_result.entries.iter()
+            .filter(|e| entry_matches_filter(e, &options.filter_status))
+            .cloned()
+            .collect();
+
+        // Both console and file output use tree structure
+        output.push_str(&generate_tree(&tree_entries));
         output.push('\n');
     }
 
-    // Deleted Details
-    let deleted_entries: Vec<_> = diff_result
-        .entries
-        .iter()
-        .filter(|e| matches!(e.status, FileStatus::Deleted))
-        .collect();
+    // Details sections (skip if no_details)
+    if !options.no_details {
+        let filtered_suffix = if has_filter { " (filtered)" } else { "" };
 
-    if !deleted_entries.is_empty() {
-        output.push_str("================\n");
-        output.push_str("Deleted Files\n");
-        output.push_str("================\n");
+        // Added Details (only if not filtered out)
+        if !filter_added {
+            let added_entries: Vec<_> = diff_result
+                .entries
+                .iter()
+                .filter(|e| matches!(e.status, FileStatus::Added))
+                .collect();
 
-        let deleted_dirs: Vec<_> = deleted_entries.iter().filter(|e| e.is_dir).collect();
-        let deleted_files: Vec<_> = deleted_entries.iter().filter(|e| !e.is_dir).collect();
+            if !added_entries.is_empty() {
+                output.push_str("================\n");
+                output.push_str(&format!("Added Files{}\n", filtered_suffix));
+                output.push_str("================\n");
 
-        if !deleted_dirs.is_empty() {
-            output.push_str("Directories:\n");
-            for entry in deleted_dirs {
-                output.push_str(&format!("  {}/\n", entry.relative_path.display()));
-            }
-            output.push('\n');
-        }
+                let added_dirs: Vec<_> = added_entries.iter().filter(|e| e.is_dir).collect();
+                let added_files: Vec<_> = added_entries.iter().filter(|e| !e.is_dir).collect();
 
-        if !deleted_files.is_empty() {
-            output.push_str("Files:\n");
-            for entry in deleted_files {
-                output.push_str(&format!("  {}\n", entry.relative_path.display()));
-            }
-            output.push('\n');
-        }
-    }
+                if !added_dirs.is_empty() {
+                    output.push_str("Directories:\n");
+                    for entry in added_dirs {
+                        output.push_str(&format!("  {}/\n", entry.relative_path.display()));
+                    }
+                    output.push('\n');
+                }
 
-    // Unchanged Details
-    let unchanged_entries: Vec<_> = diff_result
-        .entries
-        .iter()
-        .filter(|e| matches!(e.status, FileStatus::Unchanged))
-        .collect();
-
-    if !unchanged_entries.is_empty() {
-        output.push_str("================\n");
-        output.push_str("Unchanged Files\n");
-        output.push_str("================\n");
-        for entry in unchanged_entries {
-            output.push_str(&format!("  {}\n", entry.relative_path.display()));
-        }
-        output.push('\n');
-    }
-
-    // Symlink Details
-    let symlink_entries: Vec<_> = diff_result
-        .entries
-        .iter()
-        .filter(|e| matches!(e.status, FileStatus::Symlink { .. }))
-        .collect();
-
-    if !symlink_entries.is_empty() {
-        output.push_str("================\n");
-        output.push_str("Symlink Details\n");
-        output.push_str("================\n");
-
-        // Group by change type
-        let added: Vec<_> = symlink_entries.iter()
-            .filter(|e| matches!(&e.status, FileStatus::Symlink { change_type: SymlinkChangeType::Added, .. }))
-            .collect();
-        let deleted: Vec<_> = symlink_entries.iter()
-            .filter(|e| matches!(&e.status, FileStatus::Symlink { change_type: SymlinkChangeType::Deleted, .. }))
-            .collect();
-        let changed: Vec<_> = symlink_entries.iter()
-            .filter(|e| matches!(&e.status, FileStatus::Symlink { change_type: SymlinkChangeType::Changed, .. }))
-            .collect();
-
-        // Added symlinks
-        if !added.is_empty() {
-            output.push_str("Added:\n");
-            for entry in added {
-                if let FileStatus::Symlink { current: Some(info), .. } = &entry.status {
-                    let type_str = if info.is_dir { "directory" } else { "file" };
-                    let status_str = if info.exists { "OK" } else { "BROKEN (target does not exist)" };
-                    output.push_str(&format!(
-                        "  {} -> {}\n    Type: {} | Status: {}\n\n",
-                        entry.relative_path.display(),
-                        info.target.display(),
-                        type_str,
-                        status_str
-                    ));
+                if !added_files.is_empty() {
+                    output.push_str("Files:\n");
+                    for entry in added_files {
+                        output.push_str(&format!("  {}\n", entry.relative_path.display()));
+                    }
+                    output.push('\n');
                 }
             }
         }
 
-        // Deleted symlinks
-        if !deleted.is_empty() {
-            output.push_str("Deleted:\n");
-            for entry in deleted {
-                if let FileStatus::Symlink { previous: Some(info), .. } = &entry.status {
-                    let type_str = if info.is_dir { "directory" } else { "file" };
-                    output.push_str(&format!(
-                        "  {} -> {}\n    Type: {}\n\n",
-                        entry.relative_path.display(),
-                        info.target.display(),
-                        type_str
-                    ));
+        // Modified Details (only if not filtered out)
+        if !filter_modified {
+            let modified_entries: Vec<_> = diff_result
+                .entries
+                .iter()
+                .filter(|e| matches!(e.status, FileStatus::Modified))
+                .collect();
+
+            if !modified_entries.is_empty() {
+                output.push_str("================\n");
+                output.push_str(&format!("Modified Files{}\n", filtered_suffix));
+                output.push_str("================\n");
+                for entry in modified_entries {
+                    output.push_str(&format!("  {}\n", entry.relative_path.display()));
                 }
+                output.push('\n');
             }
         }
 
-        // Changed symlinks
-        if !changed.is_empty() {
-            output.push_str("Changed:\n");
-            for entry in changed {
-                if let FileStatus::Symlink { current: Some(curr), previous: Some(prev), .. } = &entry.status {
-                    let prev_type = if prev.is_dir { "directory" } else { "file" };
-                    let curr_type = if curr.is_dir { "directory" } else { "file" };
-                    let prev_status = if prev.exists { "OK" } else { "BROKEN" };
-                    let curr_status = if curr.exists { "OK" } else { "BROKEN" };
-                    output.push_str(&format!(
-                        "  {}\n    Before: {} ({}, {})\n    After:  {} ({}, {})\n\n",
-                        entry.relative_path.display(),
-                        prev.target.display(),
-                        prev_type,
-                        prev_status,
-                        curr.target.display(),
-                        curr_type,
-                        curr_status
-                    ));
-                }
-            }
-        }
-    }
+        // Deleted Details (only if not filtered out)
+        let deleted_entries: Vec<_> = if !filter_deleted {
+            diff_result
+                .entries
+                .iter()
+                .filter(|e| matches!(e.status, FileStatus::Deleted))
+                .collect()
+        } else {
+            vec![]
+        };
 
-    // Special Files (sockets, fifos, devices, etc.)
-    let special_entries: Vec<_> = diff_result
-        .entries
-        .iter()
-        .filter(|e| matches!(e.status, FileStatus::SpecialFile { .. }))
-        .collect();
-
-    if !special_entries.is_empty() {
-        output.push_str("================\n");
-        output.push_str("Special Files (skipped)\n");
-        output.push_str("================\n");
-        for entry in special_entries {
-            if let FileStatus::SpecialFile { file_type } = &entry.status {
-                output.push_str(&format!("{}: {}\n", entry.relative_path.display(), file_type));
-            }
-        }
-        output.push('\n');
-    }
-
-    // Permission Changes
-    if !diff_result.permission_changes.is_empty() {
-        output.push_str("================\n");
-        output.push_str("Permission Changes\n");
-        output.push_str("================\n");
-        for change in &diff_result.permission_changes {
-            output.push_str(&format!(
-                "{}: {} -> {}\n",
-                change.relative_path.display(),
-                change.old_mode,
-                change.new_mode
-            ));
-        }
-        output.push('\n');
-    }
-
-    // Errors
-    let error_entries: Vec<_> = diff_result
-        .entries
-        .iter()
-        .filter(|e| matches!(e.status, FileStatus::PermissionDenied { .. }))
-        .collect();
-
-    if !error_entries.is_empty() {
-        output.push_str("================\n");
-        output.push_str("Errors\n");
-        output.push_str("================\n");
-        for entry in error_entries {
-            if let FileStatus::PermissionDenied { error } = &entry.status {
-                output.push_str(&format!("{}: {}\n", entry.relative_path.display(), error));
-            }
-        }
-    }
-
-    // Patch Details
-    if let Some(patch_result) = &options.patch_result {
-        if !patch_result.patches.is_empty() || !patch_result.errors.is_empty() {
+        if !deleted_entries.is_empty() {
             output.push_str("================\n");
-            output.push_str("Patch Details\n");
+            output.push_str(&format!("Deleted Files{}\n", filtered_suffix));
             output.push_str("================\n");
 
-            let generated: Vec<_> = patch_result.patches.iter().filter(|p| p.patch_generated).collect();
-            let skipped: Vec<_> = patch_result.patches.iter().filter(|p| p.is_binary).collect();
+            let deleted_dirs: Vec<_> = deleted_entries.iter().filter(|e| e.is_dir).collect();
+            let deleted_files: Vec<_> = deleted_entries.iter().filter(|e| !e.is_dir).collect();
 
-            if patch_result.errors.is_empty() {
-                output.push_str(&format!(
-                    "Generated: {} patches, Skipped: {} (binary)\n\n",
-                    patch_result.total_generated,
-                    patch_result.total_skipped
-                ));
-            } else {
-                output.push_str(&format!(
-                    "Generated: {} patches, Skipped: {} (binary), Failed: {}\n\n",
-                    patch_result.total_generated,
-                    patch_result.total_skipped,
-                    patch_result.errors.len()
-                ));
+            if !deleted_dirs.is_empty() {
+                output.push_str("Directories:\n");
+                for entry in deleted_dirs {
+                    output.push_str(&format!("  {}/\n", entry.relative_path.display()));
+                }
+                output.push('\n');
             }
 
-            if !generated.is_empty() {
-                output.push_str("Generated:\n");
-                for patch in generated {
-                    if options.patch {
-                        output.push_str(&format!("  {}.patch\n", patch.relative_path.display()));
-                    } else {
-                        output.push_str(&format!("  {}\n", patch.relative_path.display()));
+            if !deleted_files.is_empty() {
+                output.push_str("Files:\n");
+                for entry in deleted_files {
+                    output.push_str(&format!("  {}\n", entry.relative_path.display()));
+                }
+                output.push('\n');
+            }
+        }
+
+        // Unchanged Details (only if show_unchanged and not filtered out)
+        if options.show_unchanged && !filter_unchanged {
+            let unchanged_entries: Vec<_> = diff_result
+                .entries
+                .iter()
+                .filter(|e| matches!(e.status, FileStatus::Unchanged))
+                .collect();
+
+            if !unchanged_entries.is_empty() {
+                output.push_str("================\n");
+                output.push_str(&format!("Unchanged Files{}\n", filtered_suffix));
+                output.push_str("================\n");
+                for entry in unchanged_entries {
+                    output.push_str(&format!("  {}\n", entry.relative_path.display()));
+                }
+                output.push('\n');
+            }
+        }
+
+        // Symlink Details (only if not filtered out)
+        if !filter_symlink {
+            let symlink_entries: Vec<_> = diff_result
+                .entries
+                .iter()
+                .filter(|e| matches!(e.status, FileStatus::Symlink { .. }))
+                .collect();
+
+            if !symlink_entries.is_empty() {
+                output.push_str("================\n");
+                output.push_str(&format!("Symlink Details{}\n", filtered_suffix));
+                output.push_str("================\n");
+
+                // Group by change type
+                let added: Vec<_> = symlink_entries.iter()
+                    .filter(|e| matches!(&e.status, FileStatus::Symlink { change_type: SymlinkChangeType::Added, .. }))
+                    .collect();
+                let deleted: Vec<_> = symlink_entries.iter()
+                    .filter(|e| matches!(&e.status, FileStatus::Symlink { change_type: SymlinkChangeType::Deleted, .. }))
+                    .collect();
+                let changed: Vec<_> = symlink_entries.iter()
+                    .filter(|e| matches!(&e.status, FileStatus::Symlink { change_type: SymlinkChangeType::Changed, .. }))
+                    .collect();
+
+                // Added symlinks
+                if !added.is_empty() {
+                    output.push_str("Added:\n");
+                    for entry in added {
+                        if let FileStatus::Symlink { current: Some(info), .. } = &entry.status {
+                            let type_str = if info.is_dir { "directory" } else { "file" };
+                            let status_str = if info.exists { "OK" } else { "BROKEN (target does not exist)" };
+                            output.push_str(&format!(
+                                "  {} -> {}\n    Type: {} | Status: {}\n\n",
+                                entry.relative_path.display(),
+                                info.target.display(),
+                                type_str,
+                                status_str
+                            ));
+                        }
+                    }
+                }
+
+                // Deleted symlinks
+                if !deleted.is_empty() {
+                    output.push_str("Deleted:\n");
+                    for entry in deleted {
+                        if let FileStatus::Symlink { previous: Some(info), .. } = &entry.status {
+                            let type_str = if info.is_dir { "directory" } else { "file" };
+                            output.push_str(&format!(
+                                "  {} -> {}\n    Type: {}\n\n",
+                                entry.relative_path.display(),
+                                info.target.display(),
+                                type_str
+                            ));
+                        }
+                    }
+                }
+
+                // Changed symlinks
+                if !changed.is_empty() {
+                    output.push_str("Changed:\n");
+                    for entry in changed {
+                        if let FileStatus::Symlink { current: Some(curr), previous: Some(prev), .. } = &entry.status {
+                            let prev_type = if prev.is_dir { "directory" } else { "file" };
+                            let curr_type = if curr.is_dir { "directory" } else { "file" };
+                            let prev_status = if prev.exists { "OK" } else { "BROKEN" };
+                            let curr_status = if curr.exists { "OK" } else { "BROKEN" };
+                            output.push_str(&format!(
+                                "  {}\n    Before: {} ({}, {})\n    After:  {} ({}, {})\n\n",
+                                entry.relative_path.display(),
+                                prev.target.display(),
+                                prev_type,
+                                prev_status,
+                                curr.target.display(),
+                                curr_type,
+                                curr_status
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Special Files (sockets, fifos, devices, etc.) - only if not filtered out
+        if !filter_special {
+            let special_entries: Vec<_> = diff_result
+                .entries
+                .iter()
+                .filter(|e| matches!(e.status, FileStatus::SpecialFile { .. }))
+                .collect();
+
+            if !special_entries.is_empty() {
+                output.push_str("================\n");
+                output.push_str(&format!("Special Files (skipped){}\n", filtered_suffix));
+                output.push_str("================\n");
+                for entry in special_entries {
+                    if let FileStatus::SpecialFile { file_type } = &entry.status {
+                        output.push_str(&format!("{}: {}\n", entry.relative_path.display(), file_type));
                     }
                 }
                 output.push('\n');
             }
+        }
 
-            if !skipped.is_empty() {
-                output.push_str("Skipped (binary):\n");
-                for patch in skipped {
-                    output.push_str(&format!("  {} [skip]\n", patch.relative_path.display()));
-                }
-                output.push('\n');
+        // Permission Changes - only if not filtered out
+        if !filter_permission && !diff_result.permission_changes.is_empty() {
+            output.push_str("================\n");
+            output.push_str(&format!("Permission Changes{}\n", filtered_suffix));
+            output.push_str("================\n");
+            for change in &diff_result.permission_changes {
+                output.push_str(&format!(
+                    "{}: {} -> {}\n",
+                    change.relative_path.display(),
+                    change.old_mode,
+                    change.new_mode
+                ));
             }
+            output.push('\n');
+        }
 
-            if !patch_result.errors.is_empty() {
-                output.push_str("Failed:\n");
-                for err in &patch_result.errors {
+        // Errors - only if not filtered out
+        if !filter_error {
+            let error_entries: Vec<_> = diff_result
+                .entries
+                .iter()
+                .filter(|e| matches!(e.status, FileStatus::PermissionDenied { .. }))
+                .collect();
+
+            if !error_entries.is_empty() {
+                output.push_str("================\n");
+                output.push_str(&format!("Errors{}\n", filtered_suffix));
+                output.push_str("================\n");
+                for entry in error_entries {
+                    if let FileStatus::PermissionDenied { error } = &entry.status {
+                        output.push_str(&format!("{}: {}\n", entry.relative_path.display(), error));
+                    }
+                }
+            }
+        }
+
+        // Patch Details
+        if let Some(patch_result) = &options.patch_result {
+            if !patch_result.patches.is_empty() || !patch_result.errors.is_empty() {
+                output.push_str("================\n");
+                output.push_str("Patch Details\n");
+                output.push_str("================\n");
+
+                let generated: Vec<_> = patch_result.patches.iter().filter(|p| p.patch_generated).collect();
+                let skipped: Vec<_> = patch_result.patches.iter().filter(|p| p.is_binary).collect();
+
+                if patch_result.errors.is_empty() {
+                    output.push_str(&format!(
+                        "Generated: {} patches, Skipped: {} (binary)\n\n",
+                        patch_result.total_generated,
+                        patch_result.total_skipped
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "Generated: {} patches, Skipped: {} (binary), Failed: {}\n\n",
+                        patch_result.total_generated,
+                        patch_result.total_skipped,
+                        patch_result.errors.len()
+                    ));
+                }
+
+                if !generated.is_empty() {
+                    output.push_str("Generated:\n");
+                    for patch in generated {
+                        if options.patch {
+                            output.push_str(&format!("  {}.patch\n", patch.relative_path.display()));
+                        } else {
+                            output.push_str(&format!("  {}\n", patch.relative_path.display()));
+                        }
+                    }
+                    output.push('\n');
+                }
+
+                if !skipped.is_empty() {
+                    output.push_str("Skipped (binary):\n");
+                    for patch in skipped {
+                        output.push_str(&format!("  {} [skip]\n", patch.relative_path.display()));
+                    }
+                    output.push('\n');
+                }
+
+                if !patch_result.errors.is_empty() {
+                    output.push_str("Failed:\n");
+                    for err in &patch_result.errors {
+                        output.push_str(&format!("  {}: {}\n", err.relative_path.display(), err.error));
+                    }
+                    output.push('\n');
+                }
+            }
+        }
+
+        // Copy Failed
+        if let Some(copy_result) = &options.copy_result {
+            if !copy_result.errors.is_empty() {
+                output.push_str("================\n");
+                output.push_str("Copy Failed\n");
+                output.push_str("================\n");
+                output.push_str(&format!(
+                    "Failed: {} files (Copied: {} files)\n\n",
+                    copy_result.errors.len(),
+                    copy_result.copied_count
+                ));
+                for err in &copy_result.errors {
                     output.push_str(&format!("  {}: {}\n", err.relative_path.display(), err.error));
                 }
                 output.push('\n');
             }
         }
-    }
-
-    // Copy Failed
-    if let Some(copy_result) = &options.copy_result {
-        if !copy_result.errors.is_empty() {
-            output.push_str("================\n");
-            output.push_str("Copy Failed\n");
-            output.push_str("================\n");
-            output.push_str(&format!(
-                "Failed: {} files (Copied: {} files)\n\n",
-                copy_result.errors.len(),
-                copy_result.copied_count
-            ));
-            for err in &copy_result.errors {
-                output.push_str(&format!("  {}: {}\n", err.relative_path.display(), err.error));
-            }
-            output.push('\n');
-        }
-    }
+    } // End of !options.no_details block
 
     output
 }
@@ -3049,6 +3434,12 @@ struct ThreeWaySummaryOptions {
     config_file: Option<PathBuf>,
     output_dir: PathBuf,
     copy_result: Option<ThreeWayCopyResult>,
+    filter_status: Vec<String>,
+    stats_only: bool,
+    no_tree: bool,
+    no_details: bool,
+    // Output format: true = full path (file), false = grouped by directory (console)
+    output_to_file: bool,
 }
 
 /// Generate three-way summary
@@ -3068,6 +3459,7 @@ fn generate_three_way_summary(diff_result: &ThreeWayDiffResult, options: &ThreeW
     // Options section
     if options.dry_run || options.conflict_only || options.merge_style != MergeStyle::All
         || options.config_file.is_some() || !options.exclude_patterns.is_empty()
+        || !options.filter_status.is_empty() || options.stats_only || options.no_tree || options.no_details
     {
         output.push_str("Options:\n");
         if options.dry_run {
@@ -3090,6 +3482,19 @@ fn generate_three_way_summary(diff_result: &ThreeWayDiffResult, options: &ThreeW
             for pattern in &options.exclude_patterns {
                 output.push_str(&format!("    - {}\n", pattern));
             }
+        }
+        // Filter options
+        if !options.filter_status.is_empty() {
+            output.push_str(&format!("  Filter status: {}\n", options.filter_status.join(", ")));
+        }
+        if options.stats_only {
+            output.push_str("  Output: Statistics only\n");
+        }
+        if options.no_tree {
+            output.push_str("  No file matrix: Yes\n");
+        }
+        if options.no_details {
+            output.push_str("  No details: Yes\n");
         }
         output.push('\n');
     }
@@ -3139,60 +3544,67 @@ fn generate_three_way_summary(diff_result: &ThreeWayDiffResult, options: &ThreeW
     output.push_str(&format!("Conflicts       | {:>5}\n", diff_result.count_conflicts()));
     output.push('\n');
 
-    // File Matrix
-    output.push_str("================\n");
-    output.push_str("File Matrix\n");
-    output.push_str("================\n");
-    output.push_str(&format!("{:<40} | {:^4} | {:^4} | {:^6} | {}\n", "File", "Base", "Ours", "Theirs", "Status"));
-    output.push_str(&format!("{:-<40}-|{:-^6}|{:-^6}|{:-^8}|{:-<20}\n", "", "", "", "", ""));
-
-    for entry in &diff_result.entries {
-        if entry.status == ThreeWayStatus::Unchanged {
-            continue; // Skip unchanged in matrix
-        }
-        let path_str = entry.relative_path.display().to_string();
-        let path_display = if path_str.len() > 40 {
-            format!("...{}", &path_str[path_str.len()-37..])
-        } else {
-            path_str
-        };
-        output.push_str(&format!(
-            "{:<40} | {:^4} | {:^4} | {:^6} | {}\n",
-            path_display,
-            entry.status.base_indicator(),
-            entry.status.ours_indicator(),
-            entry.status.theirs_indicator(),
-            entry.status.display_str()
-        ));
+    // Return early if stats_only
+    if options.stats_only {
+        return output;
     }
-    output.push('\n');
-    output.push_str("Legend: ○=exists, -=missing, ==same as base, M=modified, A=added, D=deleted\n");
-    output.push('\n');
+
+    // File Tree (three-way)
+    if !options.no_tree {
+        output.push_str("================\n");
+        output.push_str("File Tree\n");
+        output.push_str("================\n");
+
+        // Collect filtered entries
+        let filtered_entries: Vec<_> = diff_result.entries.iter()
+            .filter(|entry| {
+                // Skip unchanged by default (unless explicitly included in filter)
+                if entry.status == ThreeWayStatus::Unchanged && options.filter_status.is_empty() {
+                    return false;
+                }
+                // Apply filter
+                !is_three_way_status_filtered_out(&entry.status, &options.filter_status)
+            })
+            .collect();
+
+        if options.output_to_file {
+            // File output: Aligned tree format
+            output.push_str(&generate_three_way_tree_file(&filtered_entries));
+        } else {
+            // Console output: Compact tree format
+            output.push_str(&generate_three_way_tree_console(&filtered_entries));
+        }
+        output.push('\n');
+    }
 
     // Conflict Details
-    let conflicts: Vec<_> = diff_result.entries.iter().filter(|e| e.status.is_conflict()).collect();
-    if !conflicts.is_empty() {
-        output.push_str("================\n");
-        output.push_str("Conflict Details\n");
-        output.push_str("================\n");
+    if !options.no_details {
+        let conflicts: Vec<_> = diff_result.entries.iter()
+            .filter(|e| e.status.is_conflict() && !is_three_way_status_filtered_out(&e.status, &options.filter_status))
+            .collect();
+        if !conflicts.is_empty() {
+            output.push_str("================\n");
+            output.push_str("Conflict Details\n");
+            output.push_str("================\n");
 
-        for (i, entry) in conflicts.iter().enumerate() {
-            output.push_str(&format!("{}. {}\n", i + 1, entry.relative_path.display()));
-            output.push_str(&format!("   Type: {}\n", entry.status.display_str()));
-            if let Some(size) = entry.base_size {
-                output.push_str(&format!("   Base: {} bytes\n", size));
+            for (i, entry) in conflicts.iter().enumerate() {
+                output.push_str(&format!("{}. {}\n", i + 1, entry.relative_path.display()));
+                output.push_str(&format!("   Type: {}\n", entry.status.display_str()));
+                if let Some(size) = entry.base_size {
+                    output.push_str(&format!("   Base: {} bytes\n", size));
+                }
+                if let Some(size) = entry.ours_size {
+                    output.push_str(&format!("   Ours: {} bytes\n", size));
+                } else {
+                    output.push_str("   Ours: deleted\n");
+                }
+                if let Some(size) = entry.theirs_size {
+                    output.push_str(&format!("   Theirs: {} bytes\n", size));
+                } else {
+                    output.push_str("   Theirs: deleted\n");
+                }
+                output.push('\n');
             }
-            if let Some(size) = entry.ours_size {
-                output.push_str(&format!("   Ours: {} bytes\n", size));
-            } else {
-                output.push_str("   Ours: deleted\n");
-            }
-            if let Some(size) = entry.theirs_size {
-                output.push_str(&format!("   Theirs: {} bytes\n", size));
-            } else {
-                output.push_str("   Theirs: deleted\n");
-            }
-            output.push('\n');
         }
     }
 
@@ -3318,6 +3730,10 @@ fn generate_three_way_excel(diff_result: &ThreeWayDiffResult, options: &ThreeWay
     row += 1;
 
     for entry in &diff_result.entries {
+        // Apply filter
+        if is_three_way_status_filtered_out(&entry.status, &options.filter_status) {
+            continue;
+        }
         let format = if entry.status.is_conflict() {
             &conflict_format
         } else {
@@ -3339,7 +3755,9 @@ fn generate_three_way_excel(diff_result: &ThreeWayDiffResult, options: &ThreeWay
     }
 
     // ========== Conflicts Sheet ==========
-    let conflicts: Vec<_> = diff_result.entries.iter().filter(|e| e.status.is_conflict()).collect();
+    let conflicts: Vec<_> = diff_result.entries.iter()
+        .filter(|e| e.status.is_conflict() && !is_three_way_status_filtered_out(&e.status, &options.filter_status))
+        .collect();
     if !conflicts.is_empty() {
         let conflict_sheet = workbook.add_worksheet();
         conflict_sheet.set_name("Conflicts")?;
@@ -3481,7 +3899,8 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
     let mut has_options = false;
     if options.dry_run || options.both_versions || options.check_permissions != PermissionCheckMode::None
         || options.config_file.is_some() || !options.exclude_patterns.is_empty()
-        || options.patch || options.patch_file.is_some() {
+        || options.patch || options.patch_file.is_some()
+        || !options.filter_status.is_empty() || options.stats_only || options.no_tree || options.no_details {
         has_options = true;
     }
 
@@ -3529,6 +3948,27 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
             worksheet.write_with_format(row, 1, options.exclude_patterns.join(", "), &info_value_format)?;
             row += 1;
         }
+        // Filter options
+        if !options.filter_status.is_empty() {
+            worksheet.write_with_format(row, 0, "Filter status:", &info_label_format)?;
+            worksheet.write_with_format(row, 1, options.filter_status.join(", "), &info_value_format)?;
+            row += 1;
+        }
+        if options.stats_only {
+            worksheet.write_with_format(row, 0, "Output:", &info_label_format)?;
+            worksheet.write_with_format(row, 1, "Statistics only", &info_value_format)?;
+            row += 1;
+        }
+        if options.no_tree {
+            worksheet.write_with_format(row, 0, "No tree:", &info_label_format)?;
+            worksheet.write_with_format(row, 1, "Yes", &info_value_format)?;
+            row += 1;
+        }
+        if options.no_details {
+            worksheet.write_with_format(row, 0, "No details:", &info_label_format)?;
+            worksheet.write_with_format(row, 1, "Yes", &info_value_format)?;
+            row += 1;
+        }
         row += 1;
     }
 
@@ -3536,6 +3976,11 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
     let (added_files, added_dirs, modified_files, deleted_files, deleted_dirs, symlinks, permission_changes, errors, _, special_files) =
         diff_result.count_by_status();
     let unchanged_files = diff_result.unchanged_count();
+
+    // Helper to get filtered suffix (using resolved filter with all/^ support)
+    let filtered_suffix = |status: &str| -> &str {
+        if is_status_filtered_out(status, &options.filter_status) { " (filtered out)" } else { "" }
+    };
 
     worksheet.merge_range(row, 0, row, 2, "Statistics", &section_header_format)?;
     row += 1;
@@ -3546,7 +3991,8 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
     row += 1;
 
     if added_files > 0 || added_dirs > 0 {
-        worksheet.write_with_format(row, 0, "Added", &cell_format)?;
+        let label = format!("Added{}", filtered_suffix("added"));
+        worksheet.write_with_format(row, 0, &label, &cell_format)?;
         let desc = if added_dirs > 0 {
             format!("{} files, {} dirs", added_files, added_dirs)
         } else {
@@ -3558,14 +4004,16 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
     }
 
     if modified_files > 0 {
-        worksheet.write_with_format(row, 0, "Modified", &cell_format)?;
+        let label = format!("Modified{}", filtered_suffix("modified"));
+        worksheet.write_with_format(row, 0, &label, &cell_format)?;
         worksheet.write_with_format(row, 1, format!("{} files", modified_files), &modified_format)?;
         worksheet.write_number_with_format(row, 2, modified_files as f64, &number_format)?;
         row += 1;
     }
 
     if deleted_files > 0 || deleted_dirs > 0 {
-        worksheet.write_with_format(row, 0, "Deleted", &cell_format)?;
+        let label = format!("Deleted{}", filtered_suffix("deleted"));
+        worksheet.write_with_format(row, 0, &label, &cell_format)?;
         let desc = if deleted_dirs > 0 {
             format!("{} files, {} dirs", deleted_files, deleted_dirs)
         } else {
@@ -3577,7 +4025,8 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
     }
 
     if symlinks > 0 {
-        worksheet.write_with_format(row, 0, "Symlinks", &cell_format)?;
+        let label = format!("Symlinks{}", filtered_suffix("symlink"));
+        worksheet.write_with_format(row, 0, &label, &cell_format)?;
         worksheet.write_with_format(row, 1, format!("{} files", symlinks), &symlink_format)?;
         worksheet.write_number_with_format(row, 2, symlinks as f64, &number_format)?;
         row += 1;
@@ -3587,21 +4036,24 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
         let special_format = Format::new()
             .set_font_color(Color::RGB(0x666666))
             .set_align(FormatAlign::Left);
-        worksheet.write_with_format(row, 0, "Special", &cell_format)?;
+        let label = format!("Special{}", filtered_suffix("special"));
+        worksheet.write_with_format(row, 0, &label, &cell_format)?;
         worksheet.write_with_format(row, 1, format!("{} files (sockets, fifos, etc.)", special_files), &special_format)?;
         worksheet.write_number_with_format(row, 2, special_files as f64, &number_format)?;
         row += 1;
     }
 
     if permission_changes > 0 {
-        worksheet.write_with_format(row, 0, "Permissions", &cell_format)?;
+        let label = format!("Permissions{}", filtered_suffix("permission"));
+        worksheet.write_with_format(row, 0, &label, &cell_format)?;
         worksheet.write_with_format(row, 1, format!("{} files", permission_changes), &info_value_format)?;
         worksheet.write_number_with_format(row, 2, permission_changes as f64, &number_format)?;
         row += 1;
     }
 
     if errors > 0 {
-        worksheet.write_with_format(row, 0, "Errors", &cell_format)?;
+        let label = format!("Errors{}", filtered_suffix("error"));
+        worksheet.write_with_format(row, 0, &label, &cell_format)?;
         worksheet.write_with_format(row, 1, format!("{} files", errors), &deleted_format)?;
         worksheet.write_number_with_format(row, 2, errors as f64, &number_format)?;
         row += 1;
@@ -3612,7 +4064,8 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
         let unchanged_format = Format::new()
             .set_font_color(Color::RGB(0x808080))
             .set_align(FormatAlign::Left);
-        worksheet.write_with_format(row, 0, "Unchanged", &cell_format)?;
+        let label = format!("Unchanged{}", filtered_suffix("unchanged"));
+        worksheet.write_with_format(row, 0, &label, &cell_format)?;
         worksheet.write_with_format(row, 1, format!("{} files", unchanged_files), &unchanged_format)?;
         worksheet.write_number_with_format(row, 2, unchanged_files as f64, &number_format)?;
         row += 1;
@@ -3627,328 +4080,421 @@ fn generate_excel_summary(diff_result: &DiffResult, options: &SummaryOptions, ex
     worksheet.write_with_format(row, 0, "Total", &total_row_format)?;
     worksheet.write_with_format(row, 1, "", &total_row_format)?;
     worksheet.write_number_with_format(row, 2, total as f64, &total_row_format)?;
+    row += 1;
+
+    // Show filtered count if filter is active
+    if !options.filter_status.is_empty() {
+        let filtered_count = diff_result.entries.iter()
+            .filter(|e| entry_matches_filter(e, &options.filter_status))
+            .count();
+        let perm_filtered_count = if permission_matches_filter(&options.filter_status) {
+            diff_result.permission_changes.len()
+        } else {
+            0
+        };
+        let showing_count = filtered_count + perm_filtered_count;
+        row += 1;
+        worksheet.write_with_format(row, 0, "Showing:", &info_label_format)?;
+        worksheet.write_with_format(row, 1, format!("{} items (filtered)", showing_count), &info_value_format)?;
+    }
+
+    // Return early if stats_only
+    if options.stats_only {
+        workbook.save(excel_path)?;
+        return Ok(());
+    }
 
     // ==================== File Tree Sheet ====================
-    let tree_sheet = workbook.add_worksheet();
-    tree_sheet.set_name("File Tree")?;
+    if !options.no_tree {
+        let tree_sheet = workbook.add_worksheet();
+        tree_sheet.set_name("File Tree")?;
 
-    // Set column widths for tree display
-    for col in 0..10 {
-        tree_sheet.set_column_width(col, 4)?;
+        // Set column widths for tree display
+        for col in 0..10 {
+            tree_sheet.set_column_width(col, 4)?;
+        }
+        tree_sheet.set_column_width(10, 40)?;  // File name column
+        tree_sheet.set_column_width(11, 15)?;  // Status column
+
+        let mut tree_row: u32 = 0;
+        tree_sheet.write_with_format(tree_row, 0, "File Tree", &title_format)?;
+        tree_row += 2;
+
+        // Write tree header
+        tree_sheet.merge_range(tree_row, 0, tree_row, 10, "Path", &header_format)?;
+        tree_sheet.write_with_format(tree_row, 11, "Status", &header_format)?;
+        tree_row += 1;
+
+        // Build tree and write to Excel (filter entries if filter is active)
+        let unchanged_format_tree = Format::new()
+            .set_font_color(Color::RGB(0x808080))
+            .set_font_name("Consolas")
+            .set_font_size(10);
+        let filtered_entries: Vec<DiffEntry> = if !options.filter_status.is_empty() {
+            diff_result.entries.iter()
+                .filter(|e| entry_matches_filter(e, &options.filter_status))
+                .cloned()
+                .collect()
+        } else {
+            diff_result.entries.clone()
+        };
+        write_excel_tree(&filtered_entries, tree_sheet, &mut tree_row, &tree_format, &added_format, &modified_format, &deleted_format, &symlink_format, &unchanged_format_tree, options.excel_fold_level)?;
     }
-    tree_sheet.set_column_width(10, 40)?;  // File name column
-    tree_sheet.set_column_width(11, 15)?;  // Status column
-
-    let mut tree_row: u32 = 0;
-    tree_sheet.write_with_format(tree_row, 0, "File Tree", &title_format)?;
-    tree_row += 2;
-
-    // Write tree header
-    tree_sheet.merge_range(tree_row, 0, tree_row, 10, "Path", &header_format)?;
-    tree_sheet.write_with_format(tree_row, 11, "Status", &header_format)?;
-    tree_row += 1;
-
-    // Build tree and write to Excel
-    let unchanged_format_tree = Format::new()
-        .set_font_color(Color::RGB(0x808080))
-        .set_font_name("Consolas")
-        .set_font_size(10);
-    write_excel_tree(&diff_result.entries, tree_sheet, &mut tree_row, &tree_format, &added_format, &modified_format, &deleted_format, &symlink_format, &unchanged_format_tree, options.excel_fold_level)?;
 
     // ==================== Details Sheet ====================
-    let details_sheet = workbook.add_worksheet();
-    details_sheet.set_name("Details")?;
+    if !options.no_details {
+        let details_sheet = workbook.add_worksheet();
+        details_sheet.set_name("Details")?;
 
-    details_sheet.set_column_width(0, 12)?;  // Type
-    details_sheet.set_column_width(1, 40)?;  // Directory
-    details_sheet.set_column_width(2, 30)?;  // File
-    details_sheet.set_column_width(3, 30)?;  // Notes
+        details_sheet.set_column_width(0, 12)?;  // Type
+        details_sheet.set_column_width(1, 40)?;  // Directory
+        details_sheet.set_column_width(2, 30)?;  // File
+        details_sheet.set_column_width(3, 30)?;  // Notes
 
-    let mut details_row: u32 = 0;
-    details_sheet.write_with_format(details_row, 0, "Change Details", &title_format)?;
-    details_row += 2;
+        let mut details_row: u32 = 0;
+        details_sheet.write_with_format(details_row, 0, "Change Details", &title_format)?;
+        details_row += 2;
 
-    // Helper function to split path into directory and file name
-    fn split_path(path: &Path) -> (String, String) {
-        let parent = path.parent()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-        let file_name = path.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        (parent, file_name)
-    }
-
-    // Added files
-    let added_entries: Vec<_> = diff_result.entries.iter()
-        .filter(|e| matches!(e.status, FileStatus::Added))
-        .collect();
-
-    if !added_entries.is_empty() {
-        details_sheet.merge_range(details_row, 0, details_row, 3, "Added Files", &section_header_format)?;
-        details_row += 1;
-
-        details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
-        details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
-        details_row += 1;
-
-        for entry in &added_entries {
-            let type_str = if entry.is_dir { "Directory" } else { "File" };
-            let (dir, file) = split_path(&entry.relative_path);
-            details_sheet.write_with_format(details_row, 0, type_str, &cell_format)?;
-            details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
-            details_sheet.write_with_format(details_row, 2, &file, &added_format)?;
-            details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
-            details_row += 1;
+        // Helper function to split path into directory and file name
+        fn split_path(path: &Path) -> (String, String) {
+            let parent = path.parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            let file_name = path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            (parent, file_name)
         }
-        details_row += 1;
-    }
 
-    // Modified files
-    let modified_entries: Vec<_> = diff_result.entries.iter()
-        .filter(|e| matches!(e.status, FileStatus::Modified))
-        .collect();
+        // Helper to check if status should be shown (filter with ^exclusion and all support)
+        let show_added = !is_status_filtered_out("added", &options.filter_status);
+        let show_modified = !is_status_filtered_out("modified", &options.filter_status);
+        let show_deleted = !is_status_filtered_out("deleted", &options.filter_status);
+        let show_unchanged = !is_status_filtered_out("unchanged", &options.filter_status);
+        let show_symlink = !is_status_filtered_out("symlink", &options.filter_status);
+        let show_special = !is_status_filtered_out("special", &options.filter_status);
+        let show_permission = !is_status_filtered_out("permission", &options.filter_status);
+        let show_error = !is_status_filtered_out("error", &options.filter_status);
 
-    if !modified_entries.is_empty() {
-        details_sheet.merge_range(details_row, 0, details_row, 3, "Modified Files", &section_header_format)?;
-        details_row += 1;
+        // Added files
+        if show_added {
+            let added_entries: Vec<_> = diff_result.entries.iter()
+                .filter(|e| matches!(e.status, FileStatus::Added))
+                .collect();
 
-        details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
-        details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
-        details_row += 1;
+            if !added_entries.is_empty() {
+                details_sheet.merge_range(details_row, 0, details_row, 3, "Added Files", &section_header_format)?;
+                details_row += 1;
 
-        for entry in &modified_entries {
-            let (dir, file) = split_path(&entry.relative_path);
-            details_sheet.write_with_format(details_row, 0, "File", &cell_format)?;
-            details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
-            details_sheet.write_with_format(details_row, 2, &file, &modified_format)?;
-            details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
-            details_row += 1;
+                details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
+                details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+                details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+                details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
+                details_row += 1;
+
+                for entry in &added_entries {
+                    let type_str = if entry.is_dir { "Directory" } else { "File" };
+                    let (dir, file) = split_path(&entry.relative_path);
+                    details_sheet.write_with_format(details_row, 0, type_str, &cell_format)?;
+                    details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                    details_sheet.write_with_format(details_row, 2, &file, &added_format)?;
+                    details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
+                    details_row += 1;
+                }
+                details_row += 1;
+            }
         }
-        details_row += 1;
-    }
 
-    // Deleted files
-    let deleted_entries: Vec<_> = diff_result.entries.iter()
-        .filter(|e| matches!(e.status, FileStatus::Deleted))
-        .collect();
+        // Modified files
+        if show_modified {
+            let modified_entries: Vec<_> = diff_result.entries.iter()
+                .filter(|e| matches!(e.status, FileStatus::Modified))
+                .collect();
 
-    if !deleted_entries.is_empty() {
-        details_sheet.merge_range(details_row, 0, details_row, 3, "Deleted Files", &section_header_format)?;
-        details_row += 1;
+            if !modified_entries.is_empty() {
+                details_sheet.merge_range(details_row, 0, details_row, 3, "Modified Files", &section_header_format)?;
+                details_row += 1;
 
-        details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
-        details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
-        details_row += 1;
+                details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
+                details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+                details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+                details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
+                details_row += 1;
 
-        for entry in &deleted_entries {
-            let type_str = if entry.is_dir { "Directory" } else { "File" };
-            let (dir, file) = split_path(&entry.relative_path);
-            details_sheet.write_with_format(details_row, 0, type_str, &cell_format)?;
-            details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
-            details_sheet.write_with_format(details_row, 2, &file, &deleted_format)?;
-            details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
-            details_row += 1;
+                for entry in &modified_entries {
+                    let (dir, file) = split_path(&entry.relative_path);
+                    details_sheet.write_with_format(details_row, 0, "File", &cell_format)?;
+                    details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                    details_sheet.write_with_format(details_row, 2, &file, &modified_format)?;
+                    details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
+                    details_row += 1;
+                }
+                details_row += 1;
+            }
         }
-        details_row += 1;
-    }
 
-    // Unchanged files
-    let unchanged_entries: Vec<_> = diff_result.entries.iter()
-        .filter(|e| matches!(e.status, FileStatus::Unchanged))
-        .collect();
+        // Deleted files
+        if show_deleted {
+            let deleted_entries: Vec<_> = diff_result.entries.iter()
+                .filter(|e| matches!(e.status, FileStatus::Deleted))
+                .collect();
 
-    if !unchanged_entries.is_empty() {
-        let unchanged_format = Format::new()
-            .set_font_color(Color::RGB(0x808080))
-            .set_align(FormatAlign::Left);
+            if !deleted_entries.is_empty() {
+                details_sheet.merge_range(details_row, 0, details_row, 3, "Deleted Files", &section_header_format)?;
+                details_row += 1;
 
-        details_sheet.merge_range(details_row, 0, details_row, 3, "Unchanged Files", &section_header_format)?;
-        details_row += 1;
+                details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
+                details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+                details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+                details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
+                details_row += 1;
 
-        details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
-        details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
-        details_row += 1;
-
-        for entry in &unchanged_entries {
-            let (dir, file) = split_path(&entry.relative_path);
-            details_sheet.write_with_format(details_row, 0, "File", &cell_format)?;
-            details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
-            details_sheet.write_with_format(details_row, 2, &file, &unchanged_format)?;
-            details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
-            details_row += 1;
+                for entry in &deleted_entries {
+                    let type_str = if entry.is_dir { "Directory" } else { "File" };
+                    let (dir, file) = split_path(&entry.relative_path);
+                    details_sheet.write_with_format(details_row, 0, type_str, &cell_format)?;
+                    details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                    details_sheet.write_with_format(details_row, 2, &file, &deleted_format)?;
+                    details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
+                    details_row += 1;
+                }
+                details_row += 1;
+            }
         }
-        details_row += 1;
-    }
 
-    // Symlink details
-    let symlink_entries: Vec<_> = diff_result.entries.iter()
-        .filter(|e| matches!(e.status, FileStatus::Symlink { .. }))
-        .collect();
+        // Unchanged files
+        if show_unchanged {
+            let unchanged_entries: Vec<_> = diff_result.entries.iter()
+                .filter(|e| matches!(e.status, FileStatus::Unchanged))
+                .collect();
 
-    if !symlink_entries.is_empty() {
-        details_sheet.merge_range(details_row, 0, details_row, 3, "Symlink Details", &section_header_format)?;
-        details_row += 1;
+            if !unchanged_entries.is_empty() {
+                let unchanged_format = Format::new()
+                    .set_font_color(Color::RGB(0x808080))
+                    .set_align(FormatAlign::Left);
 
-        details_sheet.write_with_format(details_row, 0, "Change", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
-        details_sheet.write_with_format(details_row, 3, "Target", &header_format)?;
-        details_row += 1;
+                details_sheet.merge_range(details_row, 0, details_row, 3, "Unchanged Files", &section_header_format)?;
+                details_row += 1;
 
-        for entry in &symlink_entries {
-            if let FileStatus::Symlink { change_type, current, previous } = &entry.status {
-                let change_str = match change_type {
-                    SymlinkChangeType::Added => "Added",
-                    SymlinkChangeType::Deleted => "Deleted",
-                    SymlinkChangeType::Changed => "Changed",
-                };
-                let target_str = match (current, previous) {
-                    (Some(info), _) => {
-                        let broken = if !info.exists { " (BROKEN)" } else { "" };
-                        format!("{}{}", info.target.display(), broken)
+                details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
+                details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+                details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+                details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
+                details_row += 1;
+
+                for entry in &unchanged_entries {
+                    let (dir, file) = split_path(&entry.relative_path);
+                    details_sheet.write_with_format(details_row, 0, "File", &cell_format)?;
+                    details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                    details_sheet.write_with_format(details_row, 2, &file, &unchanged_format)?;
+                    details_sheet.write_with_format(details_row, 3, "", &cell_format)?;
+                    details_row += 1;
+                }
+                details_row += 1;
+            }
+        }
+
+        // Symlink details
+        if show_symlink {
+            let symlink_entries: Vec<_> = diff_result.entries.iter()
+                .filter(|e| matches!(e.status, FileStatus::Symlink { .. }))
+                .collect();
+
+            if !symlink_entries.is_empty() {
+                details_sheet.merge_range(details_row, 0, details_row, 3, "Symlink Details", &section_header_format)?;
+                details_row += 1;
+
+                details_sheet.write_with_format(details_row, 0, "Change", &header_format)?;
+                details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+                details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+                details_sheet.write_with_format(details_row, 3, "Target", &header_format)?;
+                details_row += 1;
+
+                for entry in &symlink_entries {
+                    if let FileStatus::Symlink { change_type, current, previous } = &entry.status {
+                        let change_str = match change_type {
+                            SymlinkChangeType::Added => "Added",
+                            SymlinkChangeType::Deleted => "Deleted",
+                            SymlinkChangeType::Changed => "Changed",
+                        };
+                        let target_str = match (current, previous) {
+                            (Some(info), _) => {
+                                let broken = if !info.exists { " (BROKEN)" } else { "" };
+                                format!("{}{}", info.target.display(), broken)
+                            }
+                            (None, Some(info)) => info.target.display().to_string(),
+                            _ => String::new(),
+                        };
+                        let (dir, file) = split_path(&entry.relative_path);
+                        details_sheet.write_with_format(details_row, 0, change_str, &cell_format)?;
+                        details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                        details_sheet.write_with_format(details_row, 2, &file, &symlink_format)?;
+                        details_sheet.write_with_format(details_row, 3, target_str, &cell_format)?;
+                        details_row += 1;
                     }
-                    (None, Some(info)) => info.target.display().to_string(),
-                    _ => String::new(),
-                };
-                let (dir, file) = split_path(&entry.relative_path);
-                details_sheet.write_with_format(details_row, 0, change_str, &cell_format)?;
-                details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
-                details_sheet.write_with_format(details_row, 2, &file, &symlink_format)?;
-                details_sheet.write_with_format(details_row, 3, target_str, &cell_format)?;
+                }
                 details_row += 1;
             }
         }
-        details_row += 1;
-    }
 
-    // Special files
-    let special_entries: Vec<_> = diff_result
-        .entries
-        .iter()
-        .filter(|e| matches!(e.status, FileStatus::SpecialFile { .. }))
-        .collect();
+        // Special files
+        if show_special {
+            let special_entries: Vec<_> = diff_result
+                .entries
+                .iter()
+                .filter(|e| matches!(e.status, FileStatus::SpecialFile { .. }))
+                .collect();
 
-    if !special_entries.is_empty() {
-        details_sheet.merge_range(details_row, 0, details_row, 3, "Special Files (skipped)", &section_header_format)?;
-        details_row += 1;
+            if !special_entries.is_empty() {
+                details_sheet.merge_range(details_row, 0, details_row, 3, "Special Files (skipped)", &section_header_format)?;
+                details_row += 1;
 
-        details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
-        details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
-        details_row += 1;
+                details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
+                details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+                details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+                details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
+                details_row += 1;
 
-        let special_file_format = Format::new()
-            .set_font_color(Color::RGB(0x666666))
-            .set_align(FormatAlign::Left);
+                let special_file_format = Format::new()
+                    .set_font_color(Color::RGB(0x666666))
+                    .set_align(FormatAlign::Left);
 
-        for entry in special_entries {
-            if let FileStatus::SpecialFile { file_type } = &entry.status {
-                let type_str = file_type.to_string();
-                let (dir, file) = split_path(&entry.relative_path);
-                details_sheet.write_with_format(details_row, 0, &type_str, &cell_format)?;
-                details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
-                details_sheet.write_with_format(details_row, 2, &file, &special_file_format)?;
-                details_sheet.write_with_format(details_row, 3, "Cannot be copied", &cell_format)?;
+                for entry in special_entries {
+                    if let FileStatus::SpecialFile { file_type } = &entry.status {
+                        let type_str = file_type.to_string();
+                        let (dir, file) = split_path(&entry.relative_path);
+                        details_sheet.write_with_format(details_row, 0, &type_str, &cell_format)?;
+                        details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                        details_sheet.write_with_format(details_row, 2, &file, &special_file_format)?;
+                        details_sheet.write_with_format(details_row, 3, "Cannot be copied", &cell_format)?;
+                        details_row += 1;
+                    }
+                }
                 details_row += 1;
             }
         }
-        details_row += 1;
-    }
 
-    // Permission changes
-    if !diff_result.permission_changes.is_empty() {
-        details_sheet.merge_range(details_row, 0, details_row, 3, "Permission Changes", &section_header_format)?;
-        details_row += 1;
-
-        details_sheet.write_with_format(details_row, 0, "Old", &header_format)?;
-        details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
-        details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
-        details_sheet.write_with_format(details_row, 3, "New", &header_format)?;
-        details_row += 1;
-
-        for change in &diff_result.permission_changes {
-            let (dir, file) = split_path(&change.relative_path);
-            details_sheet.write_with_format(details_row, 0, &change.old_mode, &cell_format)?;
-            details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
-            details_sheet.write_with_format(details_row, 2, &file, &info_value_format)?;
-            details_sheet.write_with_format(details_row, 3, &change.new_mode, &cell_format)?;
-            details_row += 1;
-        }
-    }
-
-    // Patch details if available
-    if let Some(patch_result) = &options.patch_result {
-        if !patch_result.patches.is_empty() || !patch_result.errors.is_empty() {
-            details_sheet.merge_range(details_row, 0, details_row, 3, "Patch Details", &section_header_format)?;
+        // Permission changes
+        if show_permission && !diff_result.permission_changes.is_empty() {
+            details_sheet.merge_range(details_row, 0, details_row, 3, "Permission Changes", &section_header_format)?;
             details_row += 1;
 
-            details_sheet.write_with_format(details_row, 0, "Status", &header_format)?;
+            details_sheet.write_with_format(details_row, 0, "Old", &header_format)?;
             details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
             details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
-            details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
+            details_sheet.write_with_format(details_row, 3, "New", &header_format)?;
             details_row += 1;
 
-            for patch in &patch_result.patches {
-                let status = if patch.is_binary { "Skipped" } else { "Generated" };
-                let notes = if patch.is_binary { "Binary file" } else { "" };
-                let status_format = if patch.is_binary { &deleted_format } else { &added_format };
-                let (dir, file) = split_path(&patch.relative_path);
-                details_sheet.write_with_format(details_row, 0, status, &cell_format)?;
+            for change in &diff_result.permission_changes {
+                let (dir, file) = split_path(&change.relative_path);
+                details_sheet.write_with_format(details_row, 0, &change.old_mode, &cell_format)?;
                 details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
-                details_sheet.write_with_format(details_row, 2, &file, status_format)?;
-                details_sheet.write_with_format(details_row, 3, notes, &cell_format)?;
-                details_row += 1;
-            }
-
-            // Patch errors
-            let patch_error_format = Format::new()
-                .set_font_color(Color::RGB(0xCC0000))
-                .set_align(FormatAlign::Left);
-
-            for err in &patch_result.errors {
-                let (dir, file) = split_path(&err.relative_path);
-                details_sheet.write_with_format(details_row, 0, "Failed", &deleted_format)?;
-                details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
-                details_sheet.write_with_format(details_row, 2, &file, &patch_error_format)?;
-                details_sheet.write_with_format(details_row, 3, &err.error, &cell_format)?;
+                details_sheet.write_with_format(details_row, 2, &file, &info_value_format)?;
+                details_sheet.write_with_format(details_row, 3, &change.new_mode, &cell_format)?;
                 details_row += 1;
             }
         }
-    }
 
-    // Copy failed
-    if let Some(copy_result) = &options.copy_result {
-        if !copy_result.errors.is_empty() {
-            details_sheet.merge_range(details_row, 0, details_row, 3, "Copy Failed", &section_header_format)?;
-            details_row += 1;
+        // Error entries (PermissionDenied)
+        if show_error {
+            let error_entries: Vec<_> = diff_result
+                .entries
+                .iter()
+                .filter(|e| matches!(e.status, FileStatus::PermissionDenied { .. }))
+                .collect();
 
-            details_sheet.write_with_format(details_row, 0, "Status", &header_format)?;
-            details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
-            details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
-            details_sheet.write_with_format(details_row, 3, "Error", &header_format)?;
-            details_row += 1;
-
-            let error_format = Format::new()
-                .set_font_color(Color::RGB(0xCC0000))
-                .set_align(FormatAlign::Left);
-
-            for err in &copy_result.errors {
-                let (dir, file) = split_path(&err.relative_path);
-                details_sheet.write_with_format(details_row, 0, "Failed", &deleted_format)?;
-                details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
-                details_sheet.write_with_format(details_row, 2, &file, &error_format)?;
-                details_sheet.write_with_format(details_row, 3, &err.error, &cell_format)?;
+            if !error_entries.is_empty() {
+                details_sheet.merge_range(details_row, 0, details_row, 3, "Errors", &section_header_format)?;
                 details_row += 1;
+
+                details_sheet.write_with_format(details_row, 0, "Type", &header_format)?;
+                details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+                details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+                details_sheet.write_with_format(details_row, 3, "Error", &header_format)?;
+                details_row += 1;
+
+                let error_text_format = Format::new()
+                    .set_font_color(Color::RGB(0xCC0000))
+                    .set_align(FormatAlign::Left);
+
+                for entry in error_entries {
+                    if let FileStatus::PermissionDenied { error: message } = &entry.status {
+                        let (dir, file) = split_path(&entry.relative_path);
+                        details_sheet.write_with_format(details_row, 0, "Error", &cell_format)?;
+                        details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                        details_sheet.write_with_format(details_row, 2, &file, &error_text_format)?;
+                        details_sheet.write_with_format(details_row, 3, message, &cell_format)?;
+                        details_row += 1;
+                    }
+                }
+                details_row += 1;
+            }
+        }
+
+        // Patch details if available (always show, not affected by filter)
+        if let Some(patch_result) = &options.patch_result {
+            if !patch_result.patches.is_empty() || !patch_result.errors.is_empty() {
+                details_sheet.merge_range(details_row, 0, details_row, 3, "Patch Details", &section_header_format)?;
+                details_row += 1;
+
+                details_sheet.write_with_format(details_row, 0, "Status", &header_format)?;
+                details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+                details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+                details_sheet.write_with_format(details_row, 3, "Notes", &header_format)?;
+                details_row += 1;
+
+                for patch in &patch_result.patches {
+                    let status = if patch.is_binary { "Skipped" } else { "Generated" };
+                    let notes = if patch.is_binary { "Binary file" } else { "" };
+                    let status_format = if patch.is_binary { &deleted_format } else { &added_format };
+                    let (dir, file) = split_path(&patch.relative_path);
+                    details_sheet.write_with_format(details_row, 0, status, &cell_format)?;
+                    details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                    details_sheet.write_with_format(details_row, 2, &file, status_format)?;
+                    details_sheet.write_with_format(details_row, 3, notes, &cell_format)?;
+                    details_row += 1;
+                }
+
+                // Patch errors
+                let patch_error_format = Format::new()
+                    .set_font_color(Color::RGB(0xCC0000))
+                    .set_align(FormatAlign::Left);
+
+                for err in &patch_result.errors {
+                    let (dir, file) = split_path(&err.relative_path);
+                    details_sheet.write_with_format(details_row, 0, "Failed", &deleted_format)?;
+                    details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                    details_sheet.write_with_format(details_row, 2, &file, &patch_error_format)?;
+                    details_sheet.write_with_format(details_row, 3, &err.error, &cell_format)?;
+                    details_row += 1;
+                }
+            }
+        }
+
+        // Copy failed (always show, not affected by filter)
+        if let Some(copy_result) = &options.copy_result {
+            if !copy_result.errors.is_empty() {
+                details_sheet.merge_range(details_row, 0, details_row, 3, "Copy Failed", &section_header_format)?;
+                details_row += 1;
+
+                details_sheet.write_with_format(details_row, 0, "Status", &header_format)?;
+                details_sheet.write_with_format(details_row, 1, "Directory", &header_format)?;
+                details_sheet.write_with_format(details_row, 2, "File", &header_format)?;
+                details_sheet.write_with_format(details_row, 3, "Error", &header_format)?;
+                details_row += 1;
+
+                let error_format = Format::new()
+                    .set_font_color(Color::RGB(0xCC0000))
+                    .set_align(FormatAlign::Left);
+
+                for err in &copy_result.errors {
+                    let (dir, file) = split_path(&err.relative_path);
+                    details_sheet.write_with_format(details_row, 0, "Failed", &deleted_format)?;
+                    details_sheet.write_with_format(details_row, 1, &dir, &cell_format)?;
+                    details_sheet.write_with_format(details_row, 2, &file, &error_format)?;
+                    details_sheet.write_with_format(details_row, 3, &err.error, &cell_format)?;
+                    details_row += 1;
+                }
             }
         }
     }
@@ -4378,6 +4924,371 @@ fn format_status_tag(status: &FileStatus) -> String {
         FileStatus::SpecialFile { file_type } => format!("[special: {}]", file_type),
         FileStatus::PermissionDenied { .. } => "[permission denied]".to_string(),
     }
+}
+
+/// Calculate display width considering full-width characters
+/// Full-width characters (Japanese, ○, ● etc.) count as 2, ASCII as 1
+fn display_width(s: &str) -> usize {
+    s.chars().map(|c| {
+        if c.is_ascii() {
+            1
+        } else {
+            2 // Japanese, ○, ●, etc.
+        }
+    }).sum()
+}
+
+/// Pad string to target display width
+fn pad_to_width(s: &str, target_width: usize) -> String {
+    let current_width = display_width(s);
+    if current_width >= target_width {
+        s.to_string()
+    } else {
+        format!("{}{}", s, " ".repeat(target_width - current_width))
+    }
+}
+
+/// Format three-way status indicators compact (for console)
+fn format_three_way_indicators_compact(status: &ThreeWayStatus) -> String {
+    format!("[{}{}{}]",
+        status.base_indicator(),
+        status.ours_indicator(),
+        status.theirs_indicator()
+    )
+}
+
+/// Format three-way status label
+fn format_three_way_status_label(status: &ThreeWayStatus) -> String {
+    if status.is_conflict() {
+        "CONFLICT".to_string()
+    } else {
+        status.display_str().to_string()
+    }
+}
+
+/// Generate three-way tree output for console (compact format)
+fn generate_three_way_tree_console(entries: &[&ThreeWayEntry]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    output.push_str("Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted\n");
+    output.push_str(".\n");
+
+    // Build tree structure
+    let mut tree: BTreeMap<PathBuf, Vec<&ThreeWayEntry>> = BTreeMap::new();
+    for entry in entries {
+        let parent = entry.relative_path.parent().unwrap_or(Path::new("")).to_path_buf();
+        tree.entry(parent).or_default().push(entry);
+    }
+
+    // Get all unique directory paths
+    let mut all_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    for entry in entries {
+        let mut current = entry.relative_path.parent();
+        while let Some(dir) = current {
+            if !dir.as_os_str().is_empty() {
+                all_dirs.insert(dir.to_path_buf());
+            }
+            current = dir.parent();
+        }
+    }
+
+    // Generate tree output
+    let root_entries = tree.get(&PathBuf::new()).cloned().unwrap_or_default();
+    let root_dirs: Vec<_> = all_dirs
+        .iter()
+        .filter(|d| d.parent().is_none() || d.parent() == Some(Path::new("")))
+        .collect();
+
+    // Combine directories and files at root level
+    let mut root_items: Vec<(PathBuf, Option<&ThreeWayEntry>)> = Vec::new();
+    for dir in &root_dirs {
+        root_items.push(((*dir).clone(), None));
+    }
+    for entry in &root_entries {
+        if !entry.is_dir || !all_dirs.contains(&entry.relative_path) {
+            root_items.push((entry.relative_path.clone(), Some(entry)));
+        }
+    }
+    root_items.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (i, (path, entry_opt)) in root_items.iter().enumerate() {
+        let is_last = i == root_items.len() - 1;
+        let prefix = if is_last { "└── " } else { "├── " };
+        let child_prefix = if is_last { "    " } else { "│   " };
+
+        if let Some(entry) = entry_opt {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let indicators = format_three_way_indicators_compact(&entry.status);
+            let label = format_three_way_status_label(&entry.status);
+            output.push_str(&format!("{}{} {} {}\n", prefix, name, indicators, label));
+        } else {
+            // It's a directory
+            output.push_str(&format!("{}{}/\n", prefix, path.display()));
+            output.push_str(&generate_three_way_subtree_console(entries, &all_dirs, path, child_prefix));
+        }
+    }
+
+    output
+}
+
+fn generate_three_way_subtree_console(
+    entries: &[&ThreeWayEntry],
+    all_dirs: &BTreeSet<PathBuf>,
+    parent: &Path,
+    prefix: &str,
+) -> String {
+    let mut output = String::new();
+
+    // Get items in this directory
+    let mut items: Vec<(PathBuf, Option<&ThreeWayEntry>)> = Vec::new();
+
+    // Subdirectories
+    for dir in all_dirs {
+        if dir.parent() == Some(parent) {
+            items.push((dir.clone(), None));
+        }
+    }
+
+    // Files in this directory
+    for entry in entries {
+        if entry.relative_path.parent() == Some(parent) {
+            if !entry.is_dir || !all_dirs.contains(&entry.relative_path) {
+                items.push((entry.relative_path.clone(), Some(entry)));
+            }
+        }
+    }
+
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (i, (path, entry_opt)) in items.iter().enumerate() {
+        let is_last = i == items.len() - 1;
+        let line_prefix = if is_last { "└── " } else { "├── " };
+        let child_prefix = if is_last {
+            format!("{}    ", prefix)
+        } else {
+            format!("{}│   ", prefix)
+        };
+
+        if let Some(entry) = entry_opt {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let indicators = format_three_way_indicators_compact(&entry.status);
+            let label = format_three_way_status_label(&entry.status);
+            output.push_str(&format!("{}{}{} {} {}\n", prefix, line_prefix, name, indicators, label));
+        } else {
+            // Directory
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            output.push_str(&format!("{}{}{}/\n", prefix, line_prefix, name));
+            output.push_str(&generate_three_way_subtree_console(entries, all_dirs, path, &child_prefix));
+        }
+    }
+
+    output
+}
+
+/// Generate three-way tree output for file (aligned format)
+fn generate_three_way_tree_file(entries: &[&ThreeWayEntry]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    // First pass: calculate max width needed
+    let mut max_width: usize = 0;
+
+    // Build tree structure and calculate widths
+    let mut tree: BTreeMap<PathBuf, Vec<&ThreeWayEntry>> = BTreeMap::new();
+    for entry in entries {
+        let parent = entry.relative_path.parent().unwrap_or(Path::new("")).to_path_buf();
+        tree.entry(parent).or_default().push(entry);
+    }
+
+    let mut all_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    for entry in entries {
+        let mut current = entry.relative_path.parent();
+        while let Some(dir) = current {
+            if !dir.as_os_str().is_empty() {
+                all_dirs.insert(dir.to_path_buf());
+            }
+            current = dir.parent();
+        }
+    }
+
+    // Calculate max width by simulating the tree generation
+    fn calc_width_recursive(
+        entries: &[&ThreeWayEntry],
+        all_dirs: &BTreeSet<PathBuf>,
+        parent: &Path,
+        depth: usize,
+        max_width: &mut usize,
+    ) {
+        let indent_width = depth * 4; // "│   " or "    " = 4 chars
+        let prefix_width = 4; // "├── " or "└── " = 4 chars
+
+        // Subdirectories
+        for dir in all_dirs {
+            if dir.parent() == Some(parent) {
+                let name = dir.file_name().unwrap_or_default().to_string_lossy();
+                let line_width = indent_width + prefix_width + display_width(&name) + 1; // +1 for "/"
+                if line_width > *max_width {
+                    *max_width = line_width;
+                }
+                calc_width_recursive(entries, all_dirs, dir, depth + 1, max_width);
+            }
+        }
+
+        // Files
+        for entry in entries {
+            if entry.relative_path.parent() == Some(parent) {
+                if !entry.is_dir || !all_dirs.contains(&entry.relative_path) {
+                    let name = entry.relative_path.file_name().unwrap_or_default().to_string_lossy();
+                    let line_width = indent_width + prefix_width + display_width(&name);
+                    if line_width > *max_width {
+                        *max_width = line_width;
+                    }
+                }
+            }
+        }
+    }
+
+    // Calculate width for root level
+    let root_entries = tree.get(&PathBuf::new()).cloned().unwrap_or_default();
+    let root_dirs: Vec<_> = all_dirs
+        .iter()
+        .filter(|d| d.parent().is_none() || d.parent() == Some(Path::new("")))
+        .collect();
+
+    for dir in &root_dirs {
+        let name = dir.file_name().unwrap_or_default().to_string_lossy();
+        let line_width = 4 + display_width(&name) + 1; // prefix + name + "/"
+        if line_width > max_width {
+            max_width = line_width;
+        }
+        calc_width_recursive(entries, &all_dirs, dir, 1, &mut max_width);
+    }
+
+    for entry in &root_entries {
+        if !entry.is_dir || !all_dirs.contains(&entry.relative_path) {
+            let name = entry.relative_path.file_name().unwrap_or_default().to_string_lossy();
+            let line_width = 4 + display_width(&name);
+            if line_width > max_width {
+                max_width = line_width;
+            }
+        }
+    }
+
+    // Ensure minimum width for header
+    let header_text = "Legend: [Base|Ours|Theirs]";
+    max_width = max_width.max(display_width(header_text) + 10);
+
+    // Add padding for alignment
+    max_width += 2;
+
+    // Now generate the output with alignment
+    let mut output = String::new();
+    output.push_str("Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted\n");
+
+    // Header line with column labels
+    let header_padding = " ".repeat(max_width.saturating_sub(1));
+    output.push_str(&format!("{}B  O  T\n", header_padding));
+    output.push_str(".\n");
+
+    // Generate tree with alignment
+    let mut root_items: Vec<(PathBuf, Option<&ThreeWayEntry>)> = Vec::new();
+    for dir in &root_dirs {
+        root_items.push(((*dir).clone(), None));
+    }
+    for entry in &root_entries {
+        if !entry.is_dir || !all_dirs.contains(&entry.relative_path) {
+            root_items.push((entry.relative_path.clone(), Some(entry)));
+        }
+    }
+    root_items.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (i, (path, entry_opt)) in root_items.iter().enumerate() {
+        let is_last = i == root_items.len() - 1;
+        let prefix = if is_last { "└── " } else { "├── " };
+        let child_prefix = if is_last { "    " } else { "│   " };
+
+        if let Some(entry) = entry_opt {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let tree_part = format!("{}{}", prefix, name);
+            let padded = pad_to_width(&tree_part, max_width);
+            let label = format_three_way_status_label(&entry.status);
+            output.push_str(&format!("{}[{}  {}  {}] {}\n",
+                padded,
+                entry.status.base_indicator(),
+                entry.status.ours_indicator(),
+                entry.status.theirs_indicator(),
+                label
+            ));
+        } else {
+            // Directory
+            output.push_str(&format!("{}{}/\n", prefix, path.display()));
+            output.push_str(&generate_three_way_subtree_file(entries, &all_dirs, path, child_prefix, max_width));
+        }
+    }
+
+    output
+}
+
+fn generate_three_way_subtree_file(
+    entries: &[&ThreeWayEntry],
+    all_dirs: &BTreeSet<PathBuf>,
+    parent: &Path,
+    prefix: &str,
+    max_width: usize,
+) -> String {
+    let mut output = String::new();
+
+    let mut items: Vec<(PathBuf, Option<&ThreeWayEntry>)> = Vec::new();
+
+    for dir in all_dirs {
+        if dir.parent() == Some(parent) {
+            items.push((dir.clone(), None));
+        }
+    }
+
+    for entry in entries {
+        if entry.relative_path.parent() == Some(parent) {
+            if !entry.is_dir || !all_dirs.contains(&entry.relative_path) {
+                items.push((entry.relative_path.clone(), Some(entry)));
+            }
+        }
+    }
+
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (i, (path, entry_opt)) in items.iter().enumerate() {
+        let is_last = i == items.len() - 1;
+        let line_prefix = if is_last { "└── " } else { "├── " };
+        let child_prefix = if is_last {
+            format!("{}    ", prefix)
+        } else {
+            format!("{}│   ", prefix)
+        };
+
+        if let Some(entry) = entry_opt {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let tree_part = format!("{}{}{}", prefix, line_prefix, name);
+            let padded = pad_to_width(&tree_part, max_width);
+            let label = format_three_way_status_label(&entry.status);
+            output.push_str(&format!("{}[{}  {}  {}] {}\n",
+                padded,
+                entry.status.base_indicator(),
+                entry.status.ours_indicator(),
+                entry.status.theirs_indicator(),
+                label
+            ));
+        } else {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            output.push_str(&format!("{}{}{}/\n", prefix, line_prefix, name));
+            output.push_str(&generate_three_way_subtree_file(entries, all_dirs, path, &child_prefix, max_width));
+        }
+    }
+
+    output
 }
 
 #[cfg(test)]
@@ -4898,6 +5809,13 @@ mod tests {
             copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         }
     }
 
@@ -5019,6 +5937,13 @@ mod tests {
             copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
 
         let summary = generate_summary(&result, &options);
@@ -5065,7 +5990,7 @@ mod tests {
             common_count: 0,
         };
 
-        copy_diff_files(&diff_result, output.path(), false, false).unwrap();
+        copy_diff_files(&diff_result, output.path(), false, false, false, false).unwrap();
 
         assert!(output.path().join("new_file.txt").exists());
         assert!(output.path().join("src/main.rs").exists());
@@ -5097,7 +6022,7 @@ mod tests {
             common_count: 0,
         };
 
-        copy_diff_files(&diff_result, output.path(), false, false).unwrap();
+        copy_diff_files(&diff_result, output.path(), false, false, false, false).unwrap();
 
         assert!(output.path().join("deep/nested/dir/file.txt").exists());
     }
@@ -5124,7 +6049,7 @@ mod tests {
             common_count: 0,
         };
 
-        copy_diff_files(&diff_result, output.path(), false, false).unwrap();
+        copy_diff_files(&diff_result, output.path(), false, false, false, false).unwrap();
 
         assert!(!output.path().join("deleted_file.txt").exists());
     }
@@ -5154,7 +6079,7 @@ mod tests {
             common_count: 0,
         };
 
-        copy_diff_files(&diff_result, output.path(), false, true).unwrap();
+        copy_diff_files(&diff_result, output.path(), false, true, false, false).unwrap();
 
         assert!(output.path().join("file.txt.old").exists());
         assert!(output.path().join("file.txt.new").exists());
@@ -5189,7 +6114,7 @@ mod tests {
             common_count: 0,
         };
 
-        copy_diff_files(&diff_result, output.path(), false, true).unwrap();
+        copy_diff_files(&diff_result, output.path(), false, true, false, false).unwrap();
 
         assert!(output.path().join("src/main.rs.old").exists());
         assert!(output.path().join("src/main.rs.new").exists());
@@ -5204,6 +6129,115 @@ mod tests {
         let path2 = PathBuf::from("file");
         let result2 = add_extension(&path2, "new");
         assert_eq!(result2, PathBuf::from("file.new"));
+    }
+
+    // ==================== copy_deleted tests ====================
+
+    #[test]
+    fn test_copy_diff_files_copy_deleted() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+        let output = create_temp_dir();
+
+        create_file(source.path(), "deleted_file.txt", "Old content");
+
+        let diff_result = DiffResult {
+            entries: vec![DiffEntry {
+                relative_path: PathBuf::from("deleted_file.txt"),
+                is_dir: false,
+                status: FileStatus::Deleted,
+            }],
+            permission_changes: vec![],
+            source_dir: source.path().to_path_buf(),
+            target_dir: target.path().to_path_buf(),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
+        };
+
+        // copy_deleted = true
+        copy_diff_files(&diff_result, output.path(), false, false, true, false).unwrap();
+
+        // File should be copied with .deleted extension
+        assert!(output.path().join("deleted_file.txt.deleted").exists());
+        let content = fs::read_to_string(output.path().join("deleted_file.txt.deleted")).unwrap();
+        assert_eq!(content, "Old content");
+    }
+
+    #[test]
+    fn test_copy_diff_files_copy_deleted_with_subdirectory() {
+        let source = create_temp_dir();
+        let target = create_temp_dir();
+        let output = create_temp_dir();
+
+        create_file(source.path(), "src/old_module.rs", "// old module");
+
+        let diff_result = DiffResult {
+            entries: vec![DiffEntry {
+                relative_path: PathBuf::from("src/old_module.rs"),
+                is_dir: false,
+                status: FileStatus::Deleted,
+            }],
+            permission_changes: vec![],
+            source_dir: source.path().to_path_buf(),
+            target_dir: target.path().to_path_buf(),
+            source_count: 0,
+            target_count: 0,
+            common_count: 0,
+        };
+
+        copy_diff_files(&diff_result, output.path(), false, false, true, false).unwrap();
+
+        assert!(output.path().join("src/old_module.rs.deleted").exists());
+    }
+
+    // ==================== preserve_timestamps tests ====================
+
+    #[test]
+    fn test_copy_file_with_timestamp_preserves_mtime() {
+        use filetime::FileTime;
+
+        let source = create_temp_dir();
+        let dest = create_temp_dir();
+
+        let src_file = source.path().join("file.txt");
+        fs::write(&src_file, "content").unwrap();
+
+        // Set a specific timestamp
+        let specific_time = FileTime::from_unix_time(1609459200, 0); // 2021-01-01 00:00:00 UTC
+        filetime::set_file_mtime(&src_file, specific_time).unwrap();
+
+        let dst_file = dest.path().join("file.txt");
+        copy_file_with_timestamp(&src_file, &dst_file, true).unwrap();
+
+        let dst_metadata = fs::metadata(&dst_file).unwrap();
+        let dst_mtime = FileTime::from_last_modification_time(&dst_metadata);
+
+        assert_eq!(dst_mtime.unix_seconds(), specific_time.unix_seconds());
+    }
+
+    #[test]
+    fn test_copy_file_without_timestamp_does_not_preserve() {
+        use filetime::FileTime;
+
+        let source = create_temp_dir();
+        let dest = create_temp_dir();
+
+        let src_file = source.path().join("file.txt");
+        fs::write(&src_file, "content").unwrap();
+
+        // Set an old timestamp
+        let old_time = FileTime::from_unix_time(1000000000, 0); // 2001-09-09
+        filetime::set_file_mtime(&src_file, old_time).unwrap();
+
+        let dst_file = dest.path().join("file.txt");
+        copy_file_with_timestamp(&src_file, &dst_file, false).unwrap();
+
+        let dst_metadata = fs::metadata(&dst_file).unwrap();
+        let dst_mtime = FileTime::from_last_modification_time(&dst_metadata);
+
+        // The destination file should have a recent timestamp, not the old one
+        assert_ne!(dst_mtime.unix_seconds(), old_time.unix_seconds());
     }
 
     // ==================== should_check_permissions tests ====================
@@ -5519,6 +6553,13 @@ mod tests {
             copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
 
         let summary = generate_summary(&result, &options);
@@ -5570,6 +6611,13 @@ mod tests {
             copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
 
         let summary = generate_summary(&result, &options);
@@ -5718,6 +6766,13 @@ mod tests {
             copy_result: None,
             excel_fold_level: None,
             show_unchanged: true,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
 
         let summary = generate_summary(&result, &options);
@@ -5757,6 +6812,13 @@ mod tests {
             copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
 
         let summary = generate_summary(&result, &options);
@@ -5804,6 +6866,13 @@ mod tests {
             copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
 
         let summary = generate_summary(&result, &options);
@@ -5811,6 +6880,207 @@ mod tests {
         assert!(summary.contains("test.socket"), "Should show special file in file tree");
         assert!(summary.contains("[special: socket]"), "Should show special file status tag");
         assert!(summary.contains("Special Files (skipped)"), "Should have Special Files section");
+    }
+
+    // ==================== Filter Tests ====================
+
+    #[test]
+    fn test_generate_summary_with_filter_status() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("added.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("modified.txt"),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("deleted.txt"),
+                    is_dir: false,
+                    status: FileStatus::Deleted,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 2,
+            target_count: 2,
+            common_count: 1,
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
+            copy_result: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+            filter_status: vec!["added".to_string()],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
+        };
+
+        let summary = generate_summary(&result, &options);
+        // Filter should show only added entries in tree and details
+        assert!(summary.contains("added.txt"), "Should show added file");
+        assert!(summary.contains("(filtered out)"), "Should mark filtered items");
+        assert!(summary.contains("items (filtered)"), "Should show filtered count");
+    }
+
+    #[test]
+    fn test_generate_summary_with_stats_only() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("file.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 1,
+            common_count: 0,
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
+            copy_result: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+            filter_status: vec![],
+            stats_only: true,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
+        };
+
+        let summary = generate_summary(&result, &options);
+        // Should have statistics but no file tree or details
+        assert!(summary.contains("rs_diffcopy Summary"), "Should have summary header");
+        assert!(summary.contains("Added:"), "Should show added count");
+        assert!(!summary.contains("File Tree"), "Should NOT have file tree");
+        assert!(!summary.contains("Added Files"), "Should NOT have Added Files section");
+    }
+
+    #[test]
+    fn test_generate_summary_with_no_tree() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("file.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 1,
+            common_count: 0,
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
+            copy_result: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: true,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
+        };
+
+        let summary = generate_summary(&result, &options);
+        // Should have header and details but no file tree
+        assert!(summary.contains("rs_diffcopy Summary"), "Should have summary header");
+        assert!(!summary.contains("File Tree"), "Should NOT have file tree");
+        assert!(summary.contains("Added Files"), "Should have Added Files section");
+    }
+
+    #[test]
+    fn test_generate_summary_with_no_details() {
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("file.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 0,
+            target_count: 1,
+            common_count: 0,
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
+            copy_result: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: true,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
+        };
+
+        let summary = generate_summary(&result, &options);
+        // Should have header and file tree but no details
+        assert!(summary.contains("rs_diffcopy Summary"), "Should have summary header");
+        assert!(summary.contains("File Tree"), "Should have file tree");
+        assert!(!summary.contains("Added Files"), "Should NOT have Added Files section");
     }
 
     // ==================== Copy Error Tests ====================
@@ -5854,6 +7124,13 @@ mod tests {
             }),
             excel_fold_level: None,
             show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
 
         let summary = generate_summary(&result, &options);
@@ -5905,6 +7182,13 @@ mod tests {
             copy_result: None,
             excel_fold_level: None,
             show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
 
         let summary = generate_summary(&result, &options);
@@ -5939,6 +7223,12 @@ mod tests {
             base_dir: None,
             merge_style: MergeStyle::All,
             conflict_only: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
 
         let content = config.generate_config_content();
@@ -5981,6 +7271,12 @@ mod tests {
             base_dir: None,
             merge_style: MergeStyle::All,
             conflict_only: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
 
         let content = config.generate_config_content();
@@ -6030,6 +7326,12 @@ mod tests {
             base_dir: None,
             merge_style: MergeStyle::All,
             conflict_only: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
 
         let content = config.generate_config_content();
@@ -6064,6 +7366,12 @@ mod tests {
             base_dir: None,
             merge_style: MergeStyle::All,
             conflict_only: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
         };
         assert!(config_none.generate_config_content().contains("check_permissions = \"none\""));
 
@@ -6693,6 +8001,11 @@ mod tests {
             config_file: None,
             output_dir: PathBuf::from("/output"),
             copy_result: None,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
         };
 
         let summary = generate_three_way_summary(&result, &options);
@@ -6723,6 +8036,11 @@ mod tests {
             config_file: None,
             output_dir: PathBuf::from("/output"),
             copy_result: None,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
         };
 
         let summary = generate_three_way_summary(&result, &options);
@@ -6731,5 +8049,437 @@ mod tests {
         assert!(summary.contains("Change Matrix"));
         assert!(summary.contains("Conflicts"));
         assert!(summary.contains("CONFLICT"));
+    }
+
+    // ==================== Filter Resolution Tests ====================
+
+    #[test]
+    fn test_resolve_filter_statuses_basic() {
+        // Basic include
+        let filter = vec!["added".to_string(), "modified".to_string()];
+        let resolved = resolve_filter_statuses(&filter, TWO_WAY_ALL_STATUSES);
+        assert!(resolved.contains("added"));
+        assert!(resolved.contains("modified"));
+        assert!(!resolved.contains("deleted"));
+        assert_eq!(resolved.len(), 2);
+    }
+
+    #[test]
+    fn test_resolve_filter_statuses_all_keyword() {
+        // all keyword includes everything
+        let filter = vec!["all".to_string()];
+        let resolved = resolve_filter_statuses(&filter, TWO_WAY_ALL_STATUSES);
+        assert!(resolved.contains("added"));
+        assert!(resolved.contains("modified"));
+        assert!(resolved.contains("deleted"));
+        assert!(resolved.contains("unchanged"));
+        assert!(resolved.contains("symlink"));
+        assert!(resolved.contains("special"));
+        assert!(resolved.contains("error"));
+        assert!(resolved.contains("permission"));
+        assert_eq!(resolved.len(), 8);
+    }
+
+    #[test]
+    fn test_resolve_filter_statuses_exclusion() {
+        // ^ prefix excludes
+        let filter = vec!["all".to_string(), "^unchanged".to_string()];
+        let resolved = resolve_filter_statuses(&filter, TWO_WAY_ALL_STATUSES);
+        assert!(resolved.contains("added"));
+        assert!(resolved.contains("modified"));
+        assert!(resolved.contains("deleted"));
+        assert!(!resolved.contains("unchanged"));  // excluded
+        assert_eq!(resolved.len(), 7);
+    }
+
+    #[test]
+    fn test_resolve_filter_statuses_multiple_exclusions() {
+        // Multiple exclusions
+        let filter = vec!["all".to_string(), "^unchanged".to_string(), "^error".to_string()];
+        let resolved = resolve_filter_statuses(&filter, TWO_WAY_ALL_STATUSES);
+        assert!(resolved.contains("added"));
+        assert!(!resolved.contains("unchanged"));  // excluded
+        assert!(!resolved.contains("error"));      // excluded
+        assert_eq!(resolved.len(), 6);
+    }
+
+    #[test]
+    fn test_resolve_filter_statuses_last_wins() {
+        // Last wins: add, exclude, add again
+        let filter = vec!["added".to_string(), "^added".to_string(), "added".to_string()];
+        let resolved = resolve_filter_statuses(&filter, TWO_WAY_ALL_STATUSES);
+        assert!(resolved.contains("added"));  // Re-added after exclusion
+    }
+
+    #[test]
+    fn test_resolve_filter_statuses_comma_separated() {
+        // Comma-separated values in single string
+        let filter = vec!["added,modified,deleted".to_string()];
+        let resolved = resolve_filter_statuses(&filter, TWO_WAY_ALL_STATUSES);
+        assert!(resolved.contains("added"));
+        assert!(resolved.contains("modified"));
+        assert!(resolved.contains("deleted"));
+        assert_eq!(resolved.len(), 3);
+    }
+
+    #[test]
+    fn test_resolve_filter_statuses_comma_with_exclusion() {
+        // Comma-separated with exclusion
+        let filter = vec!["all,^unchanged,^error".to_string()];
+        let resolved = resolve_filter_statuses(&filter, TWO_WAY_ALL_STATUSES);
+        assert!(resolved.contains("added"));
+        assert!(!resolved.contains("unchanged"));
+        assert!(!resolved.contains("error"));
+        assert_eq!(resolved.len(), 6);
+    }
+
+    #[test]
+    fn test_resolve_filter_statuses_case_insensitive() {
+        // Case insensitive
+        let filter = vec!["ADDED".to_string(), "Modified".to_string()];
+        let resolved = resolve_filter_statuses(&filter, TWO_WAY_ALL_STATUSES);
+        assert!(resolved.contains("added"));
+        assert!(resolved.contains("modified"));
+    }
+
+    #[test]
+    fn test_is_status_filtered_out_empty() {
+        // Empty filter means nothing is filtered out
+        let filter: Vec<String> = vec![];
+        assert!(!is_status_filtered_out("added", &filter));
+        assert!(!is_status_filtered_out("deleted", &filter));
+    }
+
+    #[test]
+    fn test_is_status_filtered_out_specific() {
+        // Only added is included
+        let filter = vec!["added".to_string()];
+        assert!(!is_status_filtered_out("added", &filter));  // included
+        assert!(is_status_filtered_out("modified", &filter));  // not included
+        assert!(is_status_filtered_out("deleted", &filter));   // not included
+    }
+
+    #[test]
+    fn test_is_status_filtered_out_with_exclusion() {
+        // All except unchanged
+        let filter = vec!["all,^unchanged".to_string()];
+        assert!(!is_status_filtered_out("added", &filter));
+        assert!(!is_status_filtered_out("modified", &filter));
+        assert!(is_status_filtered_out("unchanged", &filter));  // excluded
+    }
+
+    // ==================== Three-way Filter Tests ====================
+
+    #[test]
+    fn test_three_way_filter_basic() {
+        let filter = vec!["conflict".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Conflict, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::Unchanged, &filter));
+    }
+
+    #[test]
+    fn test_three_way_filter_all_keyword() {
+        let filter = vec!["all".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Conflict, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Unchanged, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::AddedBothDiff, &filter));
+    }
+
+    #[test]
+    fn test_three_way_filter_exclusion() {
+        let filter = vec!["all,^unchanged".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Conflict, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::Unchanged, &filter));  // excluded
+    }
+
+    #[test]
+    fn test_three_way_filter_conflicts_only() {
+        // Show only conflict-type statuses
+        let filter = vec!["conflict,added-both-diff,modify-delete,delete-modify".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Conflict, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::AddedBothDiff, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::ModifyDelete, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::DeleteModify, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::BothSame, &filter));
+    }
+
+    #[test]
+    fn test_three_way_status_to_filter_str() {
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::Unchanged), "unchanged");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::OursOnly), "ours-only");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::TheirsOnly), "theirs-only");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::BothSame), "both-same");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::Conflict), "conflict");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::AddedOurs), "added-ours");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::AddedTheirs), "added-theirs");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::AddedBothSame), "added-both-same");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::AddedBothDiff), "added-both-diff");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::DeletedOurs), "deleted-ours");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::DeletedTheirs), "deleted-theirs");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::DeletedBoth), "deleted-both");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::ModifyDelete), "modify-delete");
+        assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::DeleteModify), "delete-modify");
+    }
+
+    #[test]
+    fn test_generate_three_way_summary_with_filter() {
+        let result = ThreeWayDiffResult {
+            entries: vec![
+                make_three_way_entry("file1.txt", ThreeWayStatus::Unchanged),
+                make_three_way_entry("file2.txt", ThreeWayStatus::OursOnly),
+                make_three_way_entry("file3.txt", ThreeWayStatus::Conflict),
+            ],
+            base_dir: PathBuf::from("/base"),
+            ours_dir: PathBuf::from("/ours"),
+            theirs_dir: PathBuf::from("/theirs"),
+            total_paths: 3,
+        };
+
+        // Filter to show only conflict
+        let options = ThreeWaySummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            merge_style: MergeStyle::All,
+            conflict_only: false,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            copy_result: None,
+            filter_status: vec!["conflict".to_string()],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false,
+        };
+
+        let summary = generate_three_way_summary(&result, &options);
+
+        // File Matrix should only show conflict entry
+        assert!(summary.contains("file3.txt"), "Should show conflict file");
+        // file1.txt (unchanged) should not appear in matrix (either filtered or skipped by default)
+        // file2.txt (ours-only) should be filtered out
+    }
+
+    // ==================== Output Format Tests ====================
+
+    #[test]
+    fn test_file_tree_console_format() {
+        // Console format should use tree structure
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("dir/file1.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("dir/file2.txt"),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 1,
+            target_count: 2,
+            common_count: 1,
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
+            copy_result: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false, // Console format
+            copy_deleted: false,
+            preserve_timestamps: false,
+        };
+
+        let summary = generate_summary(&result, &options);
+        // Console format uses tree structure with indent markers
+        assert!(summary.contains("File Tree"), "Should have File Tree section");
+        assert!(summary.contains("├") || summary.contains("└"), "Console format should use tree markers");
+    }
+
+    #[test]
+    fn test_file_tree_file_format() {
+        // File format should use tree structure (same as console)
+        let result = DiffResult {
+            entries: vec![
+                DiffEntry {
+                    relative_path: PathBuf::from("dir/file1.txt"),
+                    is_dir: false,
+                    status: FileStatus::Added,
+                },
+                DiffEntry {
+                    relative_path: PathBuf::from("dir/file2.txt"),
+                    is_dir: false,
+                    status: FileStatus::Modified,
+                },
+            ],
+            permission_changes: vec![],
+            source_dir: PathBuf::from("/source"),
+            target_dir: PathBuf::from("/target"),
+            source_count: 1,
+            target_count: 2,
+            common_count: 1,
+        };
+
+        let options = SummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            both_versions: false,
+            check_permissions: PermissionCheckMode::None,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            patch: false,
+            patch_file: None,
+            patch_result: None,
+            copy_result: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: true, // File format
+            copy_deleted: false,
+            preserve_timestamps: false,
+        };
+
+        let summary = generate_summary(&result, &options);
+        // Both console and file use tree format
+        assert!(summary.contains("File Tree"), "Should have File Tree section");
+        assert!(summary.contains("├") || summary.contains("└"), "File format should use tree markers");
+        assert!(summary.contains("file1.txt"), "Should show file in tree");
+    }
+
+    #[test]
+    fn test_three_way_file_tree_console_format() {
+        // Console format should use compact tree with indicators
+        let result = ThreeWayDiffResult {
+            entries: vec![
+                ThreeWayEntry {
+                    relative_path: PathBuf::from("dir/file1.txt"),
+                    is_dir: false,
+                    base_size: Some(100),
+                    ours_size: Some(150),
+                    theirs_size: Some(100),
+                    status: ThreeWayStatus::OursOnly,
+                },
+            ],
+            base_dir: PathBuf::from("/base"),
+            ours_dir: PathBuf::from("/ours"),
+            theirs_dir: PathBuf::from("/theirs"),
+            total_paths: 1,
+        };
+
+        let options = ThreeWaySummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            merge_style: MergeStyle::All,
+            conflict_only: false,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            copy_result: None,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: false, // Console format
+        };
+
+        let summary = generate_three_way_summary(&result, &options);
+        // Console format should use tree with compact indicators
+        assert!(summary.contains("File Tree"), "Should have File Tree section");
+        assert!(summary.contains("Legend:"), "Should have legend");
+        assert!(summary.contains("[○M=]"), "Console format should have compact indicators");
+        assert!(summary.contains("ours-only"), "Should show status label");
+    }
+
+    #[test]
+    fn test_three_way_file_tree_file_format() {
+        // File format should use aligned tree with indicators
+        let result = ThreeWayDiffResult {
+            entries: vec![
+                ThreeWayEntry {
+                    relative_path: PathBuf::from("dir/file1.txt"),
+                    is_dir: false,
+                    base_size: Some(100),
+                    ours_size: Some(150),
+                    theirs_size: Some(100),
+                    status: ThreeWayStatus::OursOnly,
+                },
+            ],
+            base_dir: PathBuf::from("/base"),
+            ours_dir: PathBuf::from("/ours"),
+            theirs_dir: PathBuf::from("/theirs"),
+            total_paths: 1,
+        };
+
+        let options = ThreeWaySummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            merge_style: MergeStyle::All,
+            conflict_only: false,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            copy_result: None,
+            filter_status: vec![],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            output_to_file: true, // File format
+        };
+
+        let summary = generate_three_way_summary(&result, &options);
+        // File format should use aligned tree with spaced indicators
+        assert!(summary.contains("File Tree"), "Should have File Tree section");
+        assert!(summary.contains("B  O  T"), "File format should have column header");
+        assert!(summary.contains("[○  M  =]"), "File format should have spaced indicators");
+        assert!(summary.contains("file1.txt"), "Should show file name in tree");
+    }
+
+    #[test]
+    fn test_display_width() {
+        // Test ASCII characters
+        assert_eq!(display_width("hello"), 5);
+        assert_eq!(display_width("test.txt"), 8);
+
+        // Test Japanese characters (full-width)
+        assert_eq!(display_width("日本語"), 6); // 3 chars * 2
+        assert_eq!(display_width("テスト"), 6); // 3 chars * 2
+
+        // Test mixed
+        assert_eq!(display_width("file_日本語.txt"), 15); // 9 ASCII (file_.txt) + 3*2 Japanese
+
+        // Test special characters
+        assert_eq!(display_width("○"), 2);
+        assert_eq!(display_width("●"), 2);
+        assert_eq!(display_width("[○M=]"), 6); // 4 ASCII + 1 full-width
+    }
+
+    #[test]
+    fn test_pad_to_width() {
+        assert_eq!(pad_to_width("hello", 10), "hello     ");
+        assert_eq!(pad_to_width("日本語", 10), "日本語    "); // 6 width + 4 spaces
+        assert_eq!(pad_to_width("test", 4), "test"); // exact width
+        assert_eq!(pad_to_width("toolong", 5), "toolong"); // over width, no truncation
     }
 }
