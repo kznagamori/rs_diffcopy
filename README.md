@@ -559,10 +559,32 @@ src/main.py: 755 -> 644
 --filter-status added,modified,^added
 ```
 
+**三者間モード用グループキーワード：**
+
+三者間比較モードでは、複数のステータスをまとめて指定できるグループキーワードが使えます：
+
+| グループ | 含まれるステータス |
+|----------|-------------------|
+| `added` | added-ours, added-theirs, added-both-same, added-both-diff |
+| `modified` | ours-only, theirs-only, both-same, conflict |
+| `deleted` | deleted-ours, deleted-theirs, deleted-both |
+| `conflicts` | conflict, added-both-diff, modify-delete, delete-modify |
+
+```bash
+# 追加系のみ表示
+--filter-status added
+
+# 削除系を除外
+--filter-status ^deleted
+
+# 追加と変更のみ表示
+--filter-status added,modified
+```
+
 **動作仕様：**
 - 指定は左から右へ順番に処理（後勝ち）
 - `all` を指定すると全ステータスを対象に追加
-- `^`プレフィックス付きは対象から除外
+- `^`プレフィックス付きは対象から除外（最初が除外の場合、allから開始）
 - 統計情報は**フィルター前の全体数**を表示
 - フィルター適用時は統計情報に「(filtered out)」を表示
 

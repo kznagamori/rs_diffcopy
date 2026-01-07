@@ -2785,6 +2785,20 @@ fn resolve_filter_statuses(filter_status: &[String], all_statuses: &[&str]) -> s
 
     let mut result: HashSet<String> = HashSet::new();
 
+    // Check if the first non-empty filter is an exclusion - if so, start with all statuses
+    let first_is_exclusion = filter_status.iter()
+        .flat_map(|f| f.split(','))
+        .map(|s| s.trim())
+        .find(|s| !s.is_empty())
+        .map(|s| s.starts_with('^'))
+        .unwrap_or(false);
+
+    if first_is_exclusion {
+        for s in all_statuses {
+            result.insert(s.to_string());
+        }
+    }
+
     for filter in filter_status {
         // Split by comma to support both multiple --filter-status and comma-separated values
         for part in filter.split(',') {
@@ -2797,21 +2811,65 @@ fn resolve_filter_statuses(filter_status: &[String], all_statuses: &[&str]) -> s
 
             if lower.starts_with('^') {
                 // Exclusion: remove from set
-                let status = lower[1..].to_string();
-                result.remove(&status);
+                let status_to_remove = &lower[1..];
+                // Handle group exclusion for three-way mode
+                let statuses_to_remove = expand_three_way_group(status_to_remove, all_statuses);
+                for s in statuses_to_remove {
+                    result.remove(&s);
+                }
             } else if lower == "all" {
                 // Add all statuses
                 for s in all_statuses {
                     result.insert(s.to_string());
                 }
             } else {
-                // Inclusion: add to set
-                result.insert(lower);
+                // Inclusion: add to set (handle groups)
+                let statuses_to_add = expand_three_way_group(&lower, all_statuses);
+                for s in statuses_to_add {
+                    result.insert(s);
+                }
             }
         }
     }
 
     result
+}
+
+/// Expand three-way group keywords to individual statuses
+fn expand_three_way_group(keyword: &str, all_statuses: &[&str]) -> Vec<String> {
+    // Check if this is for three-way mode by looking at the available statuses
+    let is_three_way = all_statuses.contains(&"ours-only");
+
+    if !is_three_way {
+        return vec![keyword.to_string()];
+    }
+
+    match keyword {
+        "added" => vec![
+            "added-ours".to_string(),
+            "added-theirs".to_string(),
+            "added-both-same".to_string(),
+            "added-both-diff".to_string(),
+        ],
+        "modified" => vec![
+            "ours-only".to_string(),
+            "theirs-only".to_string(),
+            "both-same".to_string(),
+            "conflict".to_string(),
+        ],
+        "deleted" => vec![
+            "deleted-ours".to_string(),
+            "deleted-theirs".to_string(),
+            "deleted-both".to_string(),
+        ],
+        "conflicts" => vec![
+            "conflict".to_string(),
+            "added-both-diff".to_string(),
+            "modify-delete".to_string(),
+            "delete-modify".to_string(),
+        ],
+        _ => vec![keyword.to_string()],
+    }
 }
 
 /// Check if an entry matches the status filter (two-way mode)
@@ -8223,6 +8281,97 @@ mod tests {
         assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::DeletedBoth), "deleted-both");
         assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::ModifyDelete), "modify-delete");
         assert_eq!(three_way_status_to_filter_str(&ThreeWayStatus::DeleteModify), "delete-modify");
+    }
+
+    #[test]
+    fn test_three_way_filter_exclusion_only() {
+        // Bug fix: exclusion-only filters should work (start with all statuses)
+        let filter = vec!["^deleted-theirs".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Conflict, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::DeletedOurs, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::DeletedTheirs, &filter)); // excluded
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Unchanged, &filter));
+    }
+
+    #[test]
+    fn test_three_way_filter_multiple_exclusions() {
+        let filter = vec!["^deleted-theirs,^deleted-ours".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Conflict, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::DeletedOurs, &filter)); // excluded
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::DeletedTheirs, &filter)); // excluded
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::DeletedBoth, &filter));
+    }
+
+    #[test]
+    fn test_three_way_filter_group_added() {
+        // "added" group includes all added-* statuses
+        let filter = vec!["added".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::AddedOurs, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::AddedTheirs, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::AddedBothSame, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::AddedBothDiff, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::DeletedOurs, &filter));
+    }
+
+    #[test]
+    fn test_three_way_filter_group_modified() {
+        // "modified" group includes ours-only, theirs-only, both-same, conflict
+        let filter = vec!["modified".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::TheirsOnly, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::BothSame, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Conflict, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::AddedOurs, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::DeletedOurs, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::Unchanged, &filter));
+    }
+
+    #[test]
+    fn test_three_way_filter_group_deleted() {
+        // "deleted" group includes all deleted-* statuses
+        let filter = vec!["deleted".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::DeletedOurs, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::DeletedTheirs, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::DeletedBoth, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::AddedOurs, &filter));
+    }
+
+    #[test]
+    fn test_three_way_filter_group_conflicts() {
+        // "conflicts" group includes all conflict types
+        let filter = vec!["conflicts".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Conflict, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::AddedBothDiff, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::ModifyDelete, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::DeleteModify, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::BothSame, &filter));
+    }
+
+    #[test]
+    fn test_three_way_filter_group_exclusion() {
+        // Exclude entire group
+        let filter = vec!["^deleted".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Conflict, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::DeletedOurs, &filter)); // excluded
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::DeletedTheirs, &filter)); // excluded
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::DeletedBoth, &filter)); // excluded
+    }
+
+    #[test]
+    fn test_three_way_filter_combined_groups() {
+        // Combine multiple groups
+        let filter = vec!["added,modified".to_string()];
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::AddedOurs, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::OursOnly, &filter));
+        assert!(!is_three_way_status_filtered_out(&ThreeWayStatus::Conflict, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::DeletedOurs, &filter));
+        assert!(is_three_way_status_filtered_out(&ThreeWayStatus::Unchanged, &filter));
     }
 
     #[test]

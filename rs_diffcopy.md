@@ -928,11 +928,34 @@ Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=dele
 | `modify-delete` | oursで変更、theirsで削除 - コンフリクト |
 | `delete-modify` | oursで削除、theirsで変更 - コンフリクト |
 
+**三者間モード用グループキーワード：**
+
+複数のステータスをまとめて指定できるグループキーワード：
+
+| グループ | 含まれるステータス |
+|----------|-------------------|
+| `added` | added-ours, added-theirs, added-both-same, added-both-diff |
+| `modified` | ours-only, theirs-only, both-same, conflict |
+| `deleted` | deleted-ours, deleted-theirs, deleted-both |
+| `conflicts` | conflict, added-both-diff, modify-delete, delete-modify |
+
+```bash
+# 追加系のみ表示
+--filter-status added
+
+# 削除系を除外
+--filter-status ^deleted
+
+# 追加と変更のみ表示（削除と変更なしを除外）
+--filter-status added,modified
+```
+
 **動作仕様：**
 
 - 指定は左から右へ順番に処理（後勝ち）
 - `all` を指定すると全ステータスを対象に追加
 - `^`プレフィックス付きは対象から除外
+- **最初のフィルターが除外（^）の場合、全ステータスから開始**（例: `^deleted`は「deleted以外すべて」と同義）
 - プレフィックスなしは対象に追加
 - 統計情報は**フィルター前の全体数**を表示
 - フィルター適用時は統計情報に「(filtered out)」を表示

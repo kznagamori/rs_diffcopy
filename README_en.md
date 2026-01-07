@@ -573,10 +573,32 @@ Add `^` before a status to exclude it.
 --filter-status added,modified,^added
 ```
 
+**Three-way Mode Group Keywords:**
+
+In three-way comparison mode, group keywords can be used to specify multiple statuses at once:
+
+| Group | Included Statuses |
+|-------|-------------------|
+| `added` | added-ours, added-theirs, added-both-same, added-both-diff |
+| `modified` | ours-only, theirs-only, both-same, conflict |
+| `deleted` | deleted-ours, deleted-theirs, deleted-both |
+| `conflicts` | conflict, added-both-diff, modify-delete, delete-modify |
+
+```bash
+# Show only added files
+--filter-status added
+
+# Exclude deleted files
+--filter-status ^deleted
+
+# Show added and modified only
+--filter-status added,modified
+```
+
 **Behavior:**
 - Processed left to right (later wins)
 - `all` adds all statuses to target
-- `^` prefix excludes from target
+- `^` prefix excludes from target (if first filter is exclusion, starts with all)
 - Statistics show **pre-filter totals**
 - Filtered items show "(filtered out)" in statistics
 
