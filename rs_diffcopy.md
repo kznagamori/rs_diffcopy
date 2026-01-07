@@ -806,9 +806,255 @@ Are you sure you want to delete this directory? [yes/no]:
 
 ---
 
-## 14. 将来の機能検討
+## 14. 三者間差分機能（v1.1）
 
-### 14.1 v1.1 で検討する機能（優先度: 高）
+### 14.1 概要
+
+三者間差分（Three-way diff）機能は、共通の祖先（base）と2つの派生バージョン（ours/theirs）を比較し、マージ作業を支援します。
+
+**ユースケース**:
+- ブランチマージ前のコンフリクト事前確認
+- 複数人で並行開発した変更の統合確認
+- フォークしたプロジェクトの差分把握
+
+### 14.2 CLI仕様（三者間モード）
+
+```
+rs_diffcopy --three-way [OPTIONS]
+
+必須オプション:
+  -B, --base <PATH>              共通祖先ディレクトリ
+  -S, --source <PATH>            自分の変更（ours）
+  -T, --target <PATH>            相手の変更（theirs）
+  -O, --output <PATH>            差分ファイルの出力先
+
+三者間モード専用オプション:
+  -3, --three-way                三者間比較モードを有効化
+  -M, --merge-style <STYLE>      コンフリクト時のコピー方式（all/ours/theirs）
+      --conflict-only            コンフリクト候補のみ出力
+
+既存オプション（二者間と共通）:
+  -e, --exclude <PATTERN>        除外パターン
+  -f, --force                    出力先を全削除して再実行
+  -s, --summary <PATH>           サマリーをファイルに出力
+  -v, --verbose                  詳細出力モード
+  -n, --dry-run                  ドライラン
+  -E, --excel <PATH>             Excelレポート出力
+  -C, --save-config <PATH>       設定ファイル保存
+```
+
+### 14.3 使用例
+
+```bash
+# 基本的な三者間比較
+rs_diffcopy --three-way -B base_dir -S my_changes -T their_changes -O output
+
+# コンフリクト候補のみ抽出
+rs_diffcopy -3 -B base -S ours -T theirs -O output --conflict-only
+
+# Excelレポート付き
+rs_diffcopy -3 -B base -S ours -T theirs -O output -E report.xlsx
+
+# 設定ファイルを使用
+rs_diffcopy --config three_way.toml
+```
+
+### 14.4 設定ファイル（三者間モード）
+
+```toml
+# 三者間比較の設定
+three_way = true
+base = "./base_version"
+source = "./my_changes"      # ours
+target = "./their_changes"   # theirs
+output = "./merge_output"
+
+# オプション
+merge_style = "all"          # all / ours / theirs
+conflict_only = false
+exclude = ["*.log", ".git/**"]
+```
+
+### 14.5 ファイル状態の判定
+
+三者間比較では、各ファイルを以下の状態に分類します：
+
+| 状態 | Base | Ours | Theirs | 説明 |
+|------|:----:|:----:|:------:|------|
+| `unchanged` | ○ | = | = | 3つとも同一（変更なし） |
+| `ours-only` | ○ | ≠ | = | oursのみ変更 |
+| `theirs-only` | ○ | = | ≠ | theirsのみ変更 |
+| `both-same` | ○ | ≠ | ≠(=ours) | 両方が同じ変更 |
+| `conflict` | ○ | ≠ | ≠ | 両方が異なる変更（コンフリクト候補） |
+| `added-ours` | - | ○ | - | oursでのみ追加 |
+| `added-theirs` | - | - | ○ | theirsでのみ追加 |
+| `added-both-same` | - | ○ | ○(=ours) | 両方で同じファイルを追加 |
+| `added-both-diff` | - | ○ | ○ | 両方で異なるファイルを追加（コンフリクト） |
+| `deleted-ours` | ○ | - | ○ | oursで削除 |
+| `deleted-theirs` | ○ | ○ | - | theirsで削除 |
+| `deleted-both` | ○ | - | - | 両方で削除 |
+| `modify-delete` | ○ | ≠ | - | oursで変更、theirsで削除（コンフリクト） |
+| `delete-modify` | ○ | - | ≠ | oursで削除、theirsで変更（コンフリクト） |
+
+※ `○` = 存在、`-` = 存在しない、`=` = baseと同一、`≠` = baseと異なる
+
+### 14.6 コンフリクト判定
+
+以下の状態は**コンフリクト候補**として特別にマークされます：
+
+| コンフリクト種別 | 状態 | 説明 |
+|-----------------|------|------|
+| 内容コンフリクト | `conflict` | 同じファイルを異なる内容に変更 |
+| 追加コンフリクト | `added-both-diff` | 同名ファイルを異なる内容で追加 |
+| 変更/削除コンフリクト | `modify-delete` | 一方が変更、他方が削除 |
+| 削除/変更コンフリクト | `delete-modify` | 一方が削除、他方が変更 |
+
+### 14.7 出力構造（三者間モード）
+
+#### 通常モード（--merge-style all）
+
+```
+output_dir/
+├── src/
+│   ├── main.rs                    # ours-only: oursの変更をコピー
+│   ├── utils.rs                   # theirs-only: theirsの変更をコピー
+│   ├── config.rs                  # both-same: どちらか一方をコピー
+│   ├── handler.rs.base            # conflict: baseをコピー
+│   ├── handler.rs.ours            # conflict: oursをコピー
+│   ├── handler.rs.theirs          # conflict: theirsをコピー
+│   └── new_feature.rs             # added-ours: oursをコピー
+├── lib/
+│   └── helper.rs.ours             # modify-delete: oursをコピー
+│   └── helper.rs.theirs           # (theirsで削除されたため存在しない)
+└── docs/
+    └── readme.md                  # added-theirs: theirsをコピー
+```
+
+#### --merge-style ours
+
+コンフリクト時はoursを優先してコピー（`.ours`拡張子なし）
+
+#### --merge-style theirs
+
+コンフリクト時はtheirsを優先してコピー（`.theirs`拡張子なし）
+
+### 14.8 サマリー出力形式（三者間モード）
+
+```
+rs_diffcopy Summary (Three-way)
+================================
+Base:   /path/to/base
+Ours:   /path/to/ours
+Theirs: /path/to/theirs
+Output: /path/to/output
+Date:   2025-12-18 10:30:00
+
+================
+Change Matrix
+================
+Status          | Count
+----------------|------
+Unchanged       |   50
+Ours only       |    8
+Theirs only     |    5
+Both same       |    3
+Conflict        |    2
+Added (ours)    |    4
+Added (theirs)  |    2
+Added (both)    |    1
+Deleted (ours)  |    1
+Deleted (theirs)|    1
+Deleted (both)  |    0
+Modify/Delete   |    1
+--------------------------
+Total           |   78
+Conflicts       |    4
+
+================
+File Matrix
+================
+File                    | Base | Ours | Theirs | Status
+------------------------|------|------|--------|---------------
+src/main.rs             |  ○   |  M   |   =    | ours-only
+src/utils.rs            |  ○   |  =   |   M    | theirs-only
+src/handler.rs          |  ○   |  M   |   M    | CONFLICT
+src/new_feature.rs      |  -   |  A   |   -    | added-ours
+lib/helper.rs           |  ○   |  M   |   D    | CONFLICT (modify/delete)
+...
+
+Legend: ○=exists, -=missing, ==same as base, M=modified, A=added, D=deleted
+
+================
+Conflict Details
+================
+1. src/handler.rs
+   Type: Content conflict
+   Base:   abc123... (1024 bytes)
+   Ours:   def456... (1100 bytes)
+   Theirs: 789abc... (1050 bytes)
+
+2. lib/helper.rs
+   Type: Modify/Delete conflict
+   Ours: Modified (500 bytes)
+   Theirs: Deleted
+
+================
+Copied Files
+================
+Ours only:
+  src/main.rs
+  ...
+
+Theirs only:
+  src/utils.rs
+  ...
+
+Both same:
+  src/config.rs
+  ...
+
+Conflicts (all versions copied):
+  src/handler.rs.base
+  src/handler.rs.ours
+  src/handler.rs.theirs
+  lib/helper.rs.ours
+```
+
+### 14.9 Excelレポート（三者間モード）
+
+| シート名 | 内容 |
+|----------|------|
+| Summary | 基本情報、統計情報、コンフリクト数 |
+| File Matrix | 全ファイルの三者間状態マトリクス |
+| Conflicts | コンフリクト候補の詳細一覧 |
+| Copied Files | コピーされたファイルの一覧 |
+
+#### マトリクスシートの色分け
+
+| 状態 | 色 |
+|------|-----|
+| unchanged | グレー |
+| ours-only | 緑 |
+| theirs-only | 青 |
+| both-same | 水色 |
+| conflict | 赤（太字） |
+| added-* | 薄緑 |
+| deleted-* | 薄赤 |
+
+### 14.10 終了コード（三者間モード）
+
+| コード | 意味 |
+|:------:|------|
+| 0 | 正常終了（差分あり、コンフリクトなし） |
+| 1 | エラー終了 |
+| 2 | 正常終了（差分なし） |
+| 3 | 正常終了（コンフリクトあり） |
+
+---
+
+## 15. 将来の機能検討
+
+### 15.1 v1.2 で検討する機能（優先度: 高）
 
 | 機能 | オプション案 | 説明 | 対象ユーザーへの価値 |
 |------|-------------|------|---------------------|
@@ -816,7 +1062,7 @@ Are you sure you want to delete this directory? [yes/no]:
 | タイムスタンプ保持 | `--preserve-timestamps` | コピー時にファイルの更新日時を保持 | ファイル履歴の追跡に有用 |
 | カラー出力 | `--color` / `--no-color` | ターミナルで色付き出力（added=緑, deleted=赤, modified=黄） | 視認性向上、初心者にも分かりやすい |
 
-### 14.2 v1.2 以降で検討する機能（優先度: 中）
+### 15.2 v1.3 以降で検討する機能（優先度: 中）
 
 | 機能 | オプション案 | 説明 |
 |------|-------------|------|
@@ -826,7 +1072,7 @@ Are you sure you want to delete this directory? [yes/no]:
 | JSON出力 | `--json` | 機械可読なJSON形式でサマリー出力 |
 | 静音モード | `-q, --quiet` | 最小限の出力のみ（スクリプト向け） |
 
-### 14.3 将来検討する機能（優先度: 低）
+### 15.3 将来検討する機能（優先度: 低）
 
 | 機能 | 説明 |
 |------|------|
@@ -834,7 +1080,7 @@ Are you sure you want to delete this directory? [yes/no]:
 | HTMLレポート | ブラウザで閲覧可能なレポート生成 |
 | ウォッチモード | ディレクトリの変更を監視して自動実行 |
 
-### 14.4 v1.0 機能充足度
+### 15.4 v1.0 機能充足度
 
 v1.0は想定ユーザー（初心者・非技術者）に対して以下の点で十分な機能を提供：
 

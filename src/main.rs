@@ -31,6 +31,19 @@ pub enum PermissionCheckMode {
     All,
 }
 
+/// Merge style for three-way comparison conflicts
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MergeStyle {
+    /// Copy all versions (.base/.ours/.theirs) for conflicts
+    #[default]
+    All,
+    /// Prefer ours version for conflicts
+    Ours,
+    /// Prefer theirs version for conflicts
+    Theirs,
+}
+
 /// Script file extensions for permission checking
 const SCRIPT_EXTENSIONS: &[&str] = &[
     // Shell scripts
@@ -262,6 +275,22 @@ struct Args {
     /// Save current options to a config file (TOML format)
     #[arg(short = 'C', long, value_name = "PATH")]
     save_config: Option<PathBuf>,
+
+    /// Enable three-way comparison mode (requires --base)
+    #[arg(short = '3', long)]
+    three_way: bool,
+
+    /// Base directory (common ancestor) for three-way comparison
+    #[arg(short = 'B', long, value_name = "PATH")]
+    base: Option<PathBuf>,
+
+    /// Merge style for conflicts in three-way mode (all/ours/theirs)
+    #[arg(short = 'M', long, value_enum, default_value = "all")]
+    merge_style: MergeStyle,
+
+    /// Only output conflict files in three-way mode
+    #[arg(long)]
+    conflict_only: bool,
 }
 
 /// Configuration file structure (TOML format)
@@ -290,6 +319,14 @@ struct ConfigFile {
     excel_fold_level: Option<u16>,
     #[serde(default)]
     show_unchanged: bool,
+    // Three-way comparison options
+    #[serde(default)]
+    three_way: bool,
+    base: Option<String>,
+    #[serde(default)]
+    merge_style: MergeStyle,
+    #[serde(default)]
+    conflict_only: bool,
 }
 
 /// Resolved configuration after merging CLI args and config file
@@ -311,6 +348,11 @@ struct ResolvedConfig {
     excel_fold_level: Option<u16>,
     show_unchanged: bool,
     save_config: Option<PathBuf>,
+    // Three-way comparison options
+    three_way: bool,
+    base_dir: Option<PathBuf>,
+    merge_style: MergeStyle,
+    conflict_only: bool,
 }
 
 impl ResolvedConfig {
@@ -376,6 +418,22 @@ impl ResolvedConfig {
         // Show unchanged files
         let show_unchanged = args.show_unchanged || config_file.show_unchanged;
 
+        // Three-way comparison options
+        let three_way = args.three_way || config_file.three_way;
+        let base_dir = args.base
+            .or_else(|| config_file.base.map(PathBuf::from));
+        let merge_style = if args.merge_style != MergeStyle::All {
+            args.merge_style
+        } else {
+            config_file.merge_style
+        };
+        let conflict_only = args.conflict_only || config_file.conflict_only;
+
+        // Validate three-way mode requirements
+        if three_way && base_dir.is_none() {
+            bail!("Base directory is required for three-way mode. Use --base or specify in config file.");
+        }
+
         Ok(Self {
             source_dir,
             target_dir,
@@ -394,6 +452,10 @@ impl ResolvedConfig {
             excel_fold_level,
             show_unchanged,
             save_config: args.save_config,
+            three_way,
+            base_dir,
+            merge_style,
+            conflict_only,
         })
     }
 
@@ -472,6 +534,23 @@ impl ResolvedConfig {
 
         // Show unchanged
         content.push_str(&format!("show_unchanged = {}  # 変更なしファイルをサマリーに表示\n", self.show_unchanged));
+        content.push_str("\n");
+
+        // Three-way comparison options
+        content.push_str("# 三者間比較オプション\n");
+        content.push_str(&format!("three_way = {}  # 三者間比較モード\n", self.three_way));
+        if let Some(ref base_path) = self.base_dir {
+            content.push_str(&format!("base = \"{}\"  # 共通祖先ディレクトリ\n", base_path.display()));
+        } else {
+            content.push_str("# base = \"./base_version\"  # 共通祖先ディレクトリ\n");
+        }
+        let merge_style_str = match self.merge_style {
+            MergeStyle::All => "all",
+            MergeStyle::Ours => "ours",
+            MergeStyle::Theirs => "theirs",
+        };
+        content.push_str(&format!("merge_style = \"{}\"  # all / ours / theirs\n", merge_style_str));
+        content.push_str(&format!("conflict_only = {}  # コンフリクトのみ出力\n", self.conflict_only));
         content.push_str("\n");
 
         // Exclude patterns
@@ -584,6 +663,179 @@ struct DiffResult {
     target_count: usize,
     /// Files/dirs that exist in both source and target
     common_count: usize,
+}
+
+// ============================================================================
+// Three-way comparison data structures
+// ============================================================================
+
+/// Three-way comparison file status
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreeWayStatus {
+    /// All three versions are identical
+    Unchanged,
+    /// Only ours differs from base (theirs == base)
+    OursOnly,
+    /// Only theirs differs from base (ours == base)
+    TheirsOnly,
+    /// Both changed the same way (ours == theirs, both != base)
+    BothSame,
+    /// Both changed differently (ours != theirs, both != base) - CONFLICT
+    Conflict,
+    /// File added only in ours
+    AddedOurs,
+    /// File added only in theirs
+    AddedTheirs,
+    /// File added in both with same content
+    AddedBothSame,
+    /// File added in both with different content - CONFLICT
+    AddedBothDiff,
+    /// File deleted only in ours
+    DeletedOurs,
+    /// File deleted only in theirs
+    DeletedTheirs,
+    /// File deleted in both
+    DeletedBoth,
+    /// File modified in ours, deleted in theirs - CONFLICT
+    ModifyDelete,
+    /// File deleted in ours, modified in theirs - CONFLICT
+    DeleteModify,
+}
+
+impl ThreeWayStatus {
+    /// Returns true if this status represents a conflict
+    pub fn is_conflict(&self) -> bool {
+        matches!(
+            self,
+            ThreeWayStatus::Conflict
+                | ThreeWayStatus::AddedBothDiff
+                | ThreeWayStatus::ModifyDelete
+                | ThreeWayStatus::DeleteModify
+        )
+    }
+
+    /// Returns a display string for the status
+    pub fn display_str(&self) -> &'static str {
+        match self {
+            ThreeWayStatus::Unchanged => "unchanged",
+            ThreeWayStatus::OursOnly => "ours-only",
+            ThreeWayStatus::TheirsOnly => "theirs-only",
+            ThreeWayStatus::BothSame => "both-same",
+            ThreeWayStatus::Conflict => "CONFLICT",
+            ThreeWayStatus::AddedOurs => "added-ours",
+            ThreeWayStatus::AddedTheirs => "added-theirs",
+            ThreeWayStatus::AddedBothSame => "added-both-same",
+            ThreeWayStatus::AddedBothDiff => "CONFLICT (added-both-diff)",
+            ThreeWayStatus::DeletedOurs => "deleted-ours",
+            ThreeWayStatus::DeletedTheirs => "deleted-theirs",
+            ThreeWayStatus::DeletedBoth => "deleted-both",
+            ThreeWayStatus::ModifyDelete => "CONFLICT (modify-delete)",
+            ThreeWayStatus::DeleteModify => "CONFLICT (delete-modify)",
+        }
+    }
+
+    /// Returns a short matrix indicator for base
+    pub fn base_indicator(&self) -> &'static str {
+        match self {
+            ThreeWayStatus::AddedOurs
+            | ThreeWayStatus::AddedTheirs
+            | ThreeWayStatus::AddedBothSame
+            | ThreeWayStatus::AddedBothDiff => "-",
+            _ => "○",
+        }
+    }
+
+    /// Returns a short matrix indicator for ours
+    pub fn ours_indicator(&self) -> &'static str {
+        match self {
+            ThreeWayStatus::Unchanged | ThreeWayStatus::TheirsOnly => "=",
+            ThreeWayStatus::OursOnly | ThreeWayStatus::BothSame | ThreeWayStatus::Conflict | ThreeWayStatus::ModifyDelete => "M",
+            ThreeWayStatus::AddedOurs | ThreeWayStatus::AddedBothSame | ThreeWayStatus::AddedBothDiff => "A",
+            ThreeWayStatus::DeletedOurs | ThreeWayStatus::DeletedBoth | ThreeWayStatus::DeleteModify => "D",
+            ThreeWayStatus::AddedTheirs | ThreeWayStatus::DeletedTheirs => "-",
+        }
+    }
+
+    /// Returns a short matrix indicator for theirs
+    pub fn theirs_indicator(&self) -> &'static str {
+        match self {
+            ThreeWayStatus::Unchanged | ThreeWayStatus::OursOnly => "=",
+            ThreeWayStatus::TheirsOnly | ThreeWayStatus::BothSame | ThreeWayStatus::Conflict | ThreeWayStatus::DeleteModify => "M",
+            ThreeWayStatus::AddedTheirs | ThreeWayStatus::AddedBothSame | ThreeWayStatus::AddedBothDiff => "A",
+            ThreeWayStatus::DeletedTheirs | ThreeWayStatus::DeletedBoth | ThreeWayStatus::ModifyDelete => "D",
+            ThreeWayStatus::AddedOurs | ThreeWayStatus::DeletedOurs => "-",
+        }
+    }
+}
+
+/// Three-way comparison entry
+#[derive(Debug, Clone)]
+pub struct ThreeWayEntry {
+    pub relative_path: PathBuf,
+    pub is_dir: bool,
+    pub status: ThreeWayStatus,
+    /// File size in base (None if not exists)
+    pub base_size: Option<u64>,
+    /// File size in ours (None if not exists)
+    pub ours_size: Option<u64>,
+    /// File size in theirs (None if not exists)
+    pub theirs_size: Option<u64>,
+}
+
+/// Three-way comparison result
+pub struct ThreeWayDiffResult {
+    pub entries: Vec<ThreeWayEntry>,
+    pub base_dir: PathBuf,
+    pub ours_dir: PathBuf,
+    pub theirs_dir: PathBuf,
+    /// Total unique paths across all three directories
+    pub total_paths: usize,
+}
+
+impl ThreeWayDiffResult {
+    /// Count entries by status
+    pub fn count_by_status(&self, status: &ThreeWayStatus) -> usize {
+        self.entries.iter().filter(|e| &e.status == status).count()
+    }
+
+    /// Count all conflict entries
+    pub fn count_conflicts(&self) -> usize {
+        self.entries.iter().filter(|e| e.status.is_conflict()).count()
+    }
+
+    /// Returns true if there are any differences
+    pub fn has_differences(&self) -> bool {
+        self.entries.iter().any(|e| e.status != ThreeWayStatus::Unchanged)
+    }
+
+    /// Returns true if there are any conflicts
+    pub fn has_conflicts(&self) -> bool {
+        self.entries.iter().any(|e| e.status.is_conflict())
+    }
+
+    /// Get entries that need to be copied (non-unchanged, optionally conflict-only)
+    pub fn get_copy_entries(&self, conflict_only: bool) -> Vec<&ThreeWayEntry> {
+        self.entries
+            .iter()
+            .filter(|e| {
+                if conflict_only {
+                    e.status.is_conflict()
+                } else {
+                    e.status != ThreeWayStatus::Unchanged && e.status != ThreeWayStatus::DeletedBoth
+                }
+            })
+            .collect()
+    }
+}
+
+/// Three-way copy result
+#[derive(Debug, Default)]
+pub struct ThreeWayCopyResult {
+    pub copied_ours: usize,
+    pub copied_theirs: usize,
+    pub copied_both_same: usize,
+    pub copied_conflicts: usize,
+    pub errors: Vec<CopyError>,
 }
 
 /// Patch generation result for a single file
@@ -716,7 +968,7 @@ fn main() -> Result<()> {
     // Resolve configuration from CLI args and optional config file
     let config = ResolvedConfig::from_args(args)?;
 
-    // Validate source directory
+    // Validate source directory (ours in three-way mode)
     if !config.source_dir.exists() {
         bail!("Source directory does not exist: {}", config.source_dir.display());
     }
@@ -724,12 +976,24 @@ fn main() -> Result<()> {
         bail!("Source path is not a directory: {}", config.source_dir.display());
     }
 
-    // Validate target directory
+    // Validate target directory (theirs in three-way mode)
     if !config.target_dir.exists() {
         bail!("Target directory does not exist: {}", config.target_dir.display());
     }
     if !config.target_dir.is_dir() {
         bail!("Target path is not a directory: {}", config.target_dir.display());
+    }
+
+    // Validate base directory for three-way mode
+    if config.three_way {
+        if let Some(ref base_dir) = config.base_dir {
+            if !base_dir.exists() {
+                bail!("Base directory does not exist: {}", base_dir.display());
+            }
+            if !base_dir.is_dir() {
+                bail!("Base path is not a directory: {}", base_dir.display());
+            }
+        }
     }
 
     // Handle output directory
@@ -765,11 +1029,21 @@ fn main() -> Result<()> {
         .map(|p| Pattern::new(p).with_context(|| format!("Invalid glob pattern: {}", p)))
         .collect::<Result<Vec<_>>>()?;
 
+    // Branch based on three-way mode
+    if config.three_way {
+        run_three_way_mode(&config, &exclude_patterns)
+    } else {
+        run_two_way_mode(&config, &exclude_patterns)
+    }
+}
+
+/// Run two-way (normal) comparison mode
+fn run_two_way_mode(config: &ResolvedConfig, exclude_patterns: &[Pattern]) -> Result<()> {
     // Compare directories
     let diff_result = compare_directories(
         &config.source_dir,
         &config.target_dir,
-        &exclude_patterns,
+        exclude_patterns,
         config.verbose,
         config.check_permissions,
         config.show_unchanged,
@@ -851,6 +1125,92 @@ fn main() -> Result<()> {
     // Return appropriate exit code
     if !diff_result.has_differences() {
         std::process::exit(2);
+    }
+
+    Ok(())
+}
+
+/// Run three-way comparison mode
+fn run_three_way_mode(config: &ResolvedConfig, exclude_patterns: &[Pattern]) -> Result<()> {
+    let base_dir = config.base_dir.as_ref().expect("Base directory required for three-way mode");
+
+    // Compare three directories
+    let diff_result = compare_three_way_directories(
+        base_dir,
+        &config.source_dir,  // ours
+        &config.target_dir,  // theirs
+        exclude_patterns,
+        config.verbose,
+    )?;
+
+    // Copy files (if not dry-run and has differences)
+    let copy_result = if !config.dry_run && diff_result.has_differences() {
+        Some(copy_three_way_files(
+            &diff_result,
+            &config.output_dir,
+            config.merge_style,
+            config.conflict_only,
+            config.verbose,
+        )?)
+    } else {
+        None
+    };
+
+    // Phase 5: Generate and output summary
+    print_phase(5, 5, "Writing summary...");
+
+    let summary_options = ThreeWaySummaryOptions {
+        exclude_patterns: config.exclude.clone(),
+        dry_run: config.dry_run,
+        merge_style: config.merge_style,
+        conflict_only: config.conflict_only,
+        config_file: config.config_file.clone(),
+        output_dir: config.output_dir.clone(),
+        copy_result,
+    };
+    let summary = generate_three_way_summary(&diff_result, &summary_options);
+
+    // Output summary
+    if let Some(summary_path) = &config.summary {
+        let mut file = File::create(summary_path)
+            .with_context(|| format!("Failed to create summary file: {}", summary_path.display()))?;
+        file.write_all(summary.as_bytes())?;
+        if is_terminal() {
+            println_to_stdout(&format!("Summary written to: {}", summary_path.display()));
+        }
+    } else {
+        println_to_stdout(&summary);
+    }
+
+    // Output Excel summary if requested
+    if let Some(excel_path) = &config.excel {
+        generate_three_way_excel(&diff_result, &summary_options, excel_path)
+            .with_context(|| format!("Failed to create Excel file: {}", excel_path.display()))?;
+        if is_terminal() {
+            println_to_stdout(&format!("Excel summary written to: {}", excel_path.display()));
+        }
+    }
+
+    // Save config file if requested
+    if let Some(save_config_path) = &config.save_config {
+        config.save_config_file(save_config_path)?;
+        if is_terminal() {
+            println_to_stdout(&format!("Config saved to: {}", save_config_path.display()));
+        }
+    }
+
+    if is_terminal() {
+        println_to_stdout("Done.");
+    }
+
+    // Return appropriate exit code
+    // 0: differences found, no conflicts
+    // 2: no differences
+    // 3: conflicts found
+    if !diff_result.has_differences() {
+        std::process::exit(2);
+    } else if diff_result.has_conflicts() {
+        std::process::exit(3);
     }
 
     Ok(())
@@ -1177,6 +1537,230 @@ fn compare_directories(
         target_count,
         common_count,
     })
+}
+
+// ============================================================================
+// Three-way comparison functions
+// ============================================================================
+
+/// Compare three directories (base, ours, theirs) and return three-way diff result
+fn compare_three_way_directories(
+    base_dir: &Path,
+    ours_dir: &Path,
+    theirs_dir: &Path,
+    exclude_patterns: &[Pattern],
+    verbose: bool,
+) -> Result<ThreeWayDiffResult> {
+    const TOTAL_PHASES: usize = 5;
+
+    // Phase 1: Scanning
+    print_phase(1, TOTAL_PHASES, "Scanning directories...");
+
+    let mut base_paths: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut ours_paths: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut theirs_paths: BTreeSet<PathBuf> = BTreeSet::new();
+
+    // Collect paths from all three directories
+    for entry in WalkDir::new(base_dir).min_depth(1) {
+        if let Ok(e) = entry {
+            let rel_path = e.path().strip_prefix(base_dir).unwrap().to_path_buf();
+            if !is_excluded(&rel_path, exclude_patterns) {
+                base_paths.insert(rel_path);
+            }
+        }
+    }
+
+    for entry in WalkDir::new(ours_dir).min_depth(1) {
+        if let Ok(e) = entry {
+            let rel_path = e.path().strip_prefix(ours_dir).unwrap().to_path_buf();
+            if !is_excluded(&rel_path, exclude_patterns) {
+                ours_paths.insert(rel_path);
+            }
+        }
+    }
+
+    for entry in WalkDir::new(theirs_dir).min_depth(1) {
+        if let Ok(e) = entry {
+            let rel_path = e.path().strip_prefix(theirs_dir).unwrap().to_path_buf();
+            if !is_excluded(&rel_path, exclude_patterns) {
+                theirs_paths.insert(rel_path);
+            }
+        }
+    }
+
+    // Get all unique paths across all three directories
+    let mut all_paths: BTreeSet<PathBuf> = BTreeSet::new();
+    all_paths.extend(base_paths.iter().cloned());
+    all_paths.extend(ours_paths.iter().cloned());
+    all_paths.extend(theirs_paths.iter().cloned());
+
+    let total_paths = all_paths.len();
+
+    if is_terminal() {
+        println_to_stdout(&format!("Found {} items.", total_paths));
+    }
+
+    // Phase 2: Comparing (parallel)
+    let progress_counter = AtomicUsize::new(0);
+    let all_paths_vec: Vec<_> = all_paths.iter().cloned().collect();
+
+    let entries: Vec<ThreeWayEntry> = all_paths_vec
+        .par_iter()
+        .map(|rel_path| {
+            let result = compare_three_way_single_file(
+                rel_path,
+                base_dir,
+                ours_dir,
+                theirs_dir,
+                &base_paths,
+                &ours_paths,
+                &theirs_paths,
+            );
+
+            let count = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            if count % 100 == 0 || count == total_paths {
+                print_progress_atomic(&progress_counter, total_paths, 2, TOTAL_PHASES, "Comparing");
+            }
+
+            result
+        })
+        .collect();
+
+    clear_progress_line();
+
+    if is_terminal() {
+        println_to_stdout(&format!("Compared {} items.", total_paths));
+    }
+
+    // Sort entries by path
+    let mut sorted_entries = entries;
+    sorted_entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+
+    Ok(ThreeWayDiffResult {
+        entries: sorted_entries,
+        base_dir: base_dir.to_path_buf(),
+        ours_dir: ours_dir.to_path_buf(),
+        theirs_dir: theirs_dir.to_path_buf(),
+        total_paths,
+    })
+}
+
+/// Compare a single file across three directories
+fn compare_three_way_single_file(
+    rel_path: &PathBuf,
+    base_dir: &Path,
+    ours_dir: &Path,
+    theirs_dir: &Path,
+    base_paths: &BTreeSet<PathBuf>,
+    ours_paths: &BTreeSet<PathBuf>,
+    theirs_paths: &BTreeSet<PathBuf>,
+) -> ThreeWayEntry {
+    let base_path = base_dir.join(rel_path);
+    let ours_path = ours_dir.join(rel_path);
+    let theirs_path = theirs_dir.join(rel_path);
+
+    let in_base = base_paths.contains(rel_path);
+    let in_ours = ours_paths.contains(rel_path);
+    let in_theirs = theirs_paths.contains(rel_path);
+
+    // Get file sizes
+    let base_size = if in_base { fs::metadata(&base_path).ok().map(|m| m.len()) } else { None };
+    let ours_size = if in_ours { fs::metadata(&ours_path).ok().map(|m| m.len()) } else { None };
+    let theirs_size = if in_theirs { fs::metadata(&theirs_path).ok().map(|m| m.len()) } else { None };
+
+    // Determine if it's a directory (check any existing path)
+    let is_dir = if in_base {
+        base_path.is_dir()
+    } else if in_ours {
+        ours_path.is_dir()
+    } else {
+        theirs_path.is_dir()
+    };
+
+    // Determine status based on existence and content
+    let status = match (in_base, in_ours, in_theirs) {
+        // File exists in all three
+        (true, true, true) => {
+            if is_dir {
+                ThreeWayStatus::Unchanged
+            } else {
+                let base_eq_ours = files_equal(&base_path, &ours_path);
+                let base_eq_theirs = files_equal(&base_path, &theirs_path);
+                let ours_eq_theirs = files_equal(&ours_path, &theirs_path);
+
+                match (base_eq_ours, base_eq_theirs, ours_eq_theirs) {
+                    (true, true, true) => ThreeWayStatus::Unchanged,
+                    (false, true, false) => ThreeWayStatus::OursOnly,
+                    (true, false, false) => ThreeWayStatus::TheirsOnly,
+                    (false, false, true) => ThreeWayStatus::BothSame,
+                    (false, false, false) => ThreeWayStatus::Conflict,
+                    // These cases shouldn't happen logically, but handle them
+                    _ => ThreeWayStatus::Unchanged,
+                }
+            }
+        }
+        // File only in base (deleted in both ours and theirs)
+        (true, false, false) => ThreeWayStatus::DeletedBoth,
+        // File in base and ours only (deleted in theirs)
+        (true, true, false) => {
+            if is_dir || files_equal(&base_path, &ours_path) {
+                ThreeWayStatus::DeletedTheirs
+            } else {
+                ThreeWayStatus::ModifyDelete
+            }
+        }
+        // File in base and theirs only (deleted in ours)
+        (true, false, true) => {
+            if is_dir || files_equal(&base_path, &theirs_path) {
+                ThreeWayStatus::DeletedOurs
+            } else {
+                ThreeWayStatus::DeleteModify
+            }
+        }
+        // File only in ours (added in ours)
+        (false, true, false) => ThreeWayStatus::AddedOurs,
+        // File only in theirs (added in theirs)
+        (false, false, true) => ThreeWayStatus::AddedTheirs,
+        // File in both ours and theirs but not in base (added in both)
+        (false, true, true) => {
+            if is_dir || files_equal(&ours_path, &theirs_path) {
+                ThreeWayStatus::AddedBothSame
+            } else {
+                ThreeWayStatus::AddedBothDiff
+            }
+        }
+        // File in none (shouldn't happen)
+        (false, false, false) => ThreeWayStatus::Unchanged,
+    };
+
+    ThreeWayEntry {
+        relative_path: rel_path.clone(),
+        is_dir,
+        status,
+        base_size,
+        ours_size,
+        theirs_size,
+    }
+}
+
+/// Check if two files have equal content
+fn files_equal(path1: &Path, path2: &Path) -> bool {
+    // Quick size check first
+    let size1 = fs::metadata(path1).map(|m| m.len()).unwrap_or(0);
+    let size2 = fs::metadata(path2).map(|m| m.len()).unwrap_or(0);
+
+    if size1 != size2 {
+        return false;
+    }
+
+    // Compare hashes
+    let hash1 = compute_file_hash(path1).ok();
+    let hash2 = compute_file_hash(path2).ok();
+
+    match (hash1, hash2) {
+        (Some(h1), Some(h2)) => h1 == h2,
+        _ => false,
+    }
 }
 
 fn is_excluded(path: &Path, patterns: &[Pattern]) -> bool {
@@ -1572,6 +2156,212 @@ fn copy_diff_files(diff_result: &DiffResult, output_dir: &Path, verbose: bool, b
         copied_count,
         errors: copy_errors,
     })
+}
+
+/// Copy files based on three-way diff result
+fn copy_three_way_files(
+    diff_result: &ThreeWayDiffResult,
+    output_dir: &Path,
+    merge_style: MergeStyle,
+    conflict_only: bool,
+    verbose: bool,
+) -> Result<ThreeWayCopyResult> {
+    fs::create_dir_all(output_dir)?;
+
+    let entries_to_copy = diff_result.get_copy_entries(conflict_only);
+    let total_files = entries_to_copy.len();
+
+    if total_files == 0 {
+        return Ok(ThreeWayCopyResult::default());
+    }
+
+    // Phase 3: Copying
+    print_phase(3, 5, "Copying files...");
+
+    let progress_counter = AtomicUsize::new(0);
+    let copied_ours = AtomicUsize::new(0);
+    let copied_theirs = AtomicUsize::new(0);
+    let copied_both_same = AtomicUsize::new(0);
+    let copied_conflicts = AtomicUsize::new(0);
+    let errors = Mutex::new(Vec::new());
+
+    entries_to_copy
+        .par_iter()
+        .for_each(|entry| {
+            let count = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            if count % 50 == 0 || count == total_files {
+                print_progress_atomic(&progress_counter, total_files, 3, 5, "Copying");
+            }
+
+            let result = copy_three_way_single_file(
+                entry,
+                &diff_result.base_dir,
+                &diff_result.ours_dir,
+                &diff_result.theirs_dir,
+                output_dir,
+                merge_style,
+            );
+
+            match result {
+                Ok(what_copied) => {
+                    match what_copied {
+                        ThreeWayCopied::Ours => { copied_ours.fetch_add(1, Ordering::Relaxed); }
+                        ThreeWayCopied::Theirs => { copied_theirs.fetch_add(1, Ordering::Relaxed); }
+                        ThreeWayCopied::BothSame => { copied_both_same.fetch_add(1, Ordering::Relaxed); }
+                        ThreeWayCopied::Conflict => { copied_conflicts.fetch_add(1, Ordering::Relaxed); }
+                        ThreeWayCopied::None => {}
+                    }
+                }
+                Err(e) => {
+                    let mut errs = errors.lock().unwrap();
+                    errs.push(CopyError {
+                        relative_path: entry.relative_path.clone(),
+                        error: e.to_string(),
+                    });
+                }
+            }
+        });
+
+    clear_progress_line();
+
+    let copy_errors = errors.into_inner().unwrap();
+    let total_copied = copied_ours.load(Ordering::Relaxed)
+        + copied_theirs.load(Ordering::Relaxed)
+        + copied_both_same.load(Ordering::Relaxed)
+        + copied_conflicts.load(Ordering::Relaxed);
+
+    if !copy_errors.is_empty() {
+        for err in &copy_errors {
+            eprintln!("Copy failed: {}: {}", err.relative_path.display(), err.error);
+        }
+    }
+
+    if is_terminal() {
+        if copy_errors.is_empty() {
+            println_to_stdout(&format!("Copied {} files.", total_copied));
+        } else {
+            println_to_stdout(&format!("Copied {} files ({} failed).", total_copied, copy_errors.len()));
+        }
+    }
+
+    Ok(ThreeWayCopyResult {
+        copied_ours: copied_ours.load(Ordering::Relaxed),
+        copied_theirs: copied_theirs.load(Ordering::Relaxed),
+        copied_both_same: copied_both_same.load(Ordering::Relaxed),
+        copied_conflicts: copied_conflicts.load(Ordering::Relaxed),
+        errors: copy_errors,
+    })
+}
+
+/// What was actually copied in three-way mode
+#[derive(Debug, Clone, Copy)]
+enum ThreeWayCopied {
+    Ours,
+    Theirs,
+    BothSame,
+    Conflict,
+    None,
+}
+
+/// Copy a single file in three-way mode
+fn copy_three_way_single_file(
+    entry: &ThreeWayEntry,
+    base_dir: &Path,
+    ours_dir: &Path,
+    theirs_dir: &Path,
+    output_dir: &Path,
+    merge_style: MergeStyle,
+) -> Result<ThreeWayCopied> {
+    let base_path = base_dir.join(&entry.relative_path);
+    let ours_path = ours_dir.join(&entry.relative_path);
+    let theirs_path = theirs_dir.join(&entry.relative_path);
+    let output_path = output_dir.join(&entry.relative_path);
+
+    // Create parent directory
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    // Handle directories
+    if entry.is_dir {
+        fs::create_dir_all(&output_path)?;
+        return Ok(ThreeWayCopied::None);
+    }
+
+    match &entry.status {
+        // Copy ours version
+        ThreeWayStatus::OursOnly | ThreeWayStatus::AddedOurs | ThreeWayStatus::DeletedTheirs => {
+            fs::copy(&ours_path, &output_path)?;
+            Ok(ThreeWayCopied::Ours)
+        }
+        // Copy theirs version
+        ThreeWayStatus::TheirsOnly | ThreeWayStatus::AddedTheirs | ThreeWayStatus::DeletedOurs => {
+            fs::copy(&theirs_path, &output_path)?;
+            Ok(ThreeWayCopied::Theirs)
+        }
+        // Both same - copy either (use ours)
+        ThreeWayStatus::BothSame | ThreeWayStatus::AddedBothSame => {
+            fs::copy(&ours_path, &output_path)?;
+            Ok(ThreeWayCopied::BothSame)
+        }
+        // Conflicts - depends on merge_style
+        ThreeWayStatus::Conflict | ThreeWayStatus::AddedBothDiff => {
+            match merge_style {
+                MergeStyle::All => {
+                    // Copy all three versions with extensions
+                    if base_path.exists() {
+                        fs::copy(&base_path, add_extension(&output_path, "base"))?;
+                    }
+                    fs::copy(&ours_path, add_extension(&output_path, "ours"))?;
+                    fs::copy(&theirs_path, add_extension(&output_path, "theirs"))?;
+                }
+                MergeStyle::Ours => {
+                    fs::copy(&ours_path, &output_path)?;
+                }
+                MergeStyle::Theirs => {
+                    fs::copy(&theirs_path, &output_path)?;
+                }
+            }
+            Ok(ThreeWayCopied::Conflict)
+        }
+        // Modify/Delete conflicts
+        ThreeWayStatus::ModifyDelete => {
+            match merge_style {
+                MergeStyle::All => {
+                    fs::copy(&base_path, add_extension(&output_path, "base"))?;
+                    fs::copy(&ours_path, add_extension(&output_path, "ours"))?;
+                    // theirs deleted, so no file to copy
+                }
+                MergeStyle::Ours => {
+                    fs::copy(&ours_path, &output_path)?;
+                }
+                MergeStyle::Theirs => {
+                    // theirs deleted the file, so don't copy anything
+                }
+            }
+            Ok(ThreeWayCopied::Conflict)
+        }
+        ThreeWayStatus::DeleteModify => {
+            match merge_style {
+                MergeStyle::All => {
+                    fs::copy(&base_path, add_extension(&output_path, "base"))?;
+                    // ours deleted, so no file to copy
+                    fs::copy(&theirs_path, add_extension(&output_path, "theirs"))?;
+                }
+                MergeStyle::Ours => {
+                    // ours deleted the file, so don't copy anything
+                }
+                MergeStyle::Theirs => {
+                    fs::copy(&theirs_path, &output_path)?;
+                }
+            }
+            Ok(ThreeWayCopied::Conflict)
+        }
+        // No action needed
+        ThreeWayStatus::Unchanged | ThreeWayStatus::DeletedBoth => {
+            Ok(ThreeWayCopied::None)
+        }
+    }
 }
 
 /// Add an extension suffix to a path (e.g., "file.txt" -> "file.txt.old")
@@ -2244,6 +3034,353 @@ fn generate_summary(diff_result: &DiffResult, options: &SummaryOptions) -> Strin
     }
 
     output
+}
+
+// ============================================================================
+// Three-way summary and Excel output
+// ============================================================================
+
+/// Options for three-way summary generation
+struct ThreeWaySummaryOptions {
+    exclude_patterns: Vec<String>,
+    dry_run: bool,
+    merge_style: MergeStyle,
+    conflict_only: bool,
+    config_file: Option<PathBuf>,
+    output_dir: PathBuf,
+    copy_result: Option<ThreeWayCopyResult>,
+}
+
+/// Generate three-way summary
+fn generate_three_way_summary(diff_result: &ThreeWayDiffResult, options: &ThreeWaySummaryOptions) -> String {
+    let mut output = String::new();
+    let now = Local::now();
+
+    output.push_str("rs_diffcopy Summary (Three-way)\n");
+    output.push_str("================================\n");
+    output.push_str(&format!("Base:   {}\n", diff_result.base_dir.display()));
+    output.push_str(&format!("Ours:   {}\n", diff_result.ours_dir.display()));
+    output.push_str(&format!("Theirs: {}\n", diff_result.theirs_dir.display()));
+    output.push_str(&format!("Output: {}\n", options.output_dir.display()));
+    output.push_str(&format!("Date:   {}\n", now.format("%Y-%m-%d %H:%M:%S")));
+    output.push('\n');
+
+    // Options section
+    if options.dry_run || options.conflict_only || options.merge_style != MergeStyle::All
+        || options.config_file.is_some() || !options.exclude_patterns.is_empty()
+    {
+        output.push_str("Options:\n");
+        if options.dry_run {
+            output.push_str("  Mode: Dry-run (no files copied)\n");
+        }
+        let merge_str = match options.merge_style {
+            MergeStyle::All => "all",
+            MergeStyle::Ours => "ours",
+            MergeStyle::Theirs => "theirs",
+        };
+        output.push_str(&format!("  Merge style: {}\n", merge_str));
+        if options.conflict_only {
+            output.push_str("  Conflict only: yes\n");
+        }
+        if let Some(ref config) = options.config_file {
+            output.push_str(&format!("  Config file: {}\n", config.display()));
+        }
+        if !options.exclude_patterns.is_empty() {
+            output.push_str("  Exclude patterns:\n");
+            for pattern in &options.exclude_patterns {
+                output.push_str(&format!("    - {}\n", pattern));
+            }
+        }
+        output.push('\n');
+    }
+
+    // Check if there are any differences
+    if !diff_result.has_differences() {
+        output.push_str("No differences found.\n");
+        return output;
+    }
+
+    // Change Matrix (statistics)
+    output.push_str("================\n");
+    output.push_str("Change Matrix\n");
+    output.push_str("================\n");
+    output.push_str("Status          | Count\n");
+    output.push_str("----------------|------\n");
+
+    let unchanged = diff_result.count_by_status(&ThreeWayStatus::Unchanged);
+    let ours_only = diff_result.count_by_status(&ThreeWayStatus::OursOnly);
+    let theirs_only = diff_result.count_by_status(&ThreeWayStatus::TheirsOnly);
+    let both_same = diff_result.count_by_status(&ThreeWayStatus::BothSame);
+    let conflict = diff_result.count_by_status(&ThreeWayStatus::Conflict);
+    let added_ours = diff_result.count_by_status(&ThreeWayStatus::AddedOurs);
+    let added_theirs = diff_result.count_by_status(&ThreeWayStatus::AddedTheirs);
+    let added_both_same = diff_result.count_by_status(&ThreeWayStatus::AddedBothSame);
+    let added_both_diff = diff_result.count_by_status(&ThreeWayStatus::AddedBothDiff);
+    let deleted_ours = diff_result.count_by_status(&ThreeWayStatus::DeletedOurs);
+    let deleted_theirs = diff_result.count_by_status(&ThreeWayStatus::DeletedTheirs);
+    let deleted_both = diff_result.count_by_status(&ThreeWayStatus::DeletedBoth);
+    let modify_delete = diff_result.count_by_status(&ThreeWayStatus::ModifyDelete);
+    let delete_modify = diff_result.count_by_status(&ThreeWayStatus::DeleteModify);
+
+    output.push_str(&format!("Unchanged       | {:>5}\n", unchanged));
+    output.push_str(&format!("Ours only       | {:>5}\n", ours_only));
+    output.push_str(&format!("Theirs only     | {:>5}\n", theirs_only));
+    output.push_str(&format!("Both same       | {:>5}\n", both_same));
+    output.push_str(&format!("Conflict        | {:>5}\n", conflict));
+    output.push_str(&format!("Added (ours)    | {:>5}\n", added_ours));
+    output.push_str(&format!("Added (theirs)  | {:>5}\n", added_theirs));
+    output.push_str(&format!("Added (both)    | {:>5}\n", added_both_same + added_both_diff));
+    output.push_str(&format!("Deleted (ours)  | {:>5}\n", deleted_ours));
+    output.push_str(&format!("Deleted (theirs)| {:>5}\n", deleted_theirs));
+    output.push_str(&format!("Deleted (both)  | {:>5}\n", deleted_both));
+    output.push_str(&format!("Modify/Delete   | {:>5}\n", modify_delete + delete_modify));
+    output.push_str("--------------------------\n");
+    output.push_str(&format!("Total           | {:>5}\n", diff_result.total_paths));
+    output.push_str(&format!("Conflicts       | {:>5}\n", diff_result.count_conflicts()));
+    output.push('\n');
+
+    // File Matrix
+    output.push_str("================\n");
+    output.push_str("File Matrix\n");
+    output.push_str("================\n");
+    output.push_str(&format!("{:<40} | {:^4} | {:^4} | {:^6} | {}\n", "File", "Base", "Ours", "Theirs", "Status"));
+    output.push_str(&format!("{:-<40}-|{:-^6}|{:-^6}|{:-^8}|{:-<20}\n", "", "", "", "", ""));
+
+    for entry in &diff_result.entries {
+        if entry.status == ThreeWayStatus::Unchanged {
+            continue; // Skip unchanged in matrix
+        }
+        let path_str = entry.relative_path.display().to_string();
+        let path_display = if path_str.len() > 40 {
+            format!("...{}", &path_str[path_str.len()-37..])
+        } else {
+            path_str
+        };
+        output.push_str(&format!(
+            "{:<40} | {:^4} | {:^4} | {:^6} | {}\n",
+            path_display,
+            entry.status.base_indicator(),
+            entry.status.ours_indicator(),
+            entry.status.theirs_indicator(),
+            entry.status.display_str()
+        ));
+    }
+    output.push('\n');
+    output.push_str("Legend: ○=exists, -=missing, ==same as base, M=modified, A=added, D=deleted\n");
+    output.push('\n');
+
+    // Conflict Details
+    let conflicts: Vec<_> = diff_result.entries.iter().filter(|e| e.status.is_conflict()).collect();
+    if !conflicts.is_empty() {
+        output.push_str("================\n");
+        output.push_str("Conflict Details\n");
+        output.push_str("================\n");
+
+        for (i, entry) in conflicts.iter().enumerate() {
+            output.push_str(&format!("{}. {}\n", i + 1, entry.relative_path.display()));
+            output.push_str(&format!("   Type: {}\n", entry.status.display_str()));
+            if let Some(size) = entry.base_size {
+                output.push_str(&format!("   Base: {} bytes\n", size));
+            }
+            if let Some(size) = entry.ours_size {
+                output.push_str(&format!("   Ours: {} bytes\n", size));
+            } else {
+                output.push_str("   Ours: deleted\n");
+            }
+            if let Some(size) = entry.theirs_size {
+                output.push_str(&format!("   Theirs: {} bytes\n", size));
+            } else {
+                output.push_str("   Theirs: deleted\n");
+            }
+            output.push('\n');
+        }
+    }
+
+    // Copy errors
+    if let Some(ref copy_result) = options.copy_result {
+        if !copy_result.errors.is_empty() {
+            output.push_str("================\n");
+            output.push_str("Copy Failed\n");
+            output.push_str("================\n");
+            output.push_str(&format!("Failed: {} files\n\n", copy_result.errors.len()));
+            for err in &copy_result.errors {
+                output.push_str(&format!("  {}: {}\n", err.relative_path.display(), err.error));
+            }
+            output.push('\n');
+        }
+    }
+
+    output
+}
+
+/// Generate Excel summary for three-way comparison
+fn generate_three_way_excel(diff_result: &ThreeWayDiffResult, options: &ThreeWaySummaryOptions, excel_path: &Path) -> Result<()> {
+    let mut workbook = Workbook::new();
+    let now = Local::now();
+
+    // Define formats
+    let title_format = Format::new()
+        .set_bold()
+        .set_font_size(16)
+        .set_align(FormatAlign::Left);
+
+    let header_format = Format::new()
+        .set_bold()
+        .set_font_size(12)
+        .set_background_color(Color::RGB(0x4472C4))
+        .set_font_color(Color::White);
+
+    let conflict_format = Format::new()
+        .set_bold()
+        .set_font_color(Color::RGB(0xCC0000));
+
+    let ours_format = Format::new()
+        .set_font_color(Color::RGB(0x008000));
+
+    let theirs_format = Format::new()
+        .set_font_color(Color::RGB(0x0066CC));
+
+    let both_same_format = Format::new()
+        .set_font_color(Color::RGB(0x00BFFF));
+
+    let unchanged_format = Format::new()
+        .set_font_color(Color::RGB(0x808080));
+
+    // ========== Summary Sheet ==========
+    let summary_sheet = workbook.add_worksheet();
+    summary_sheet.set_name("Summary")?;
+    summary_sheet.set_column_width(0, 20)?;
+    summary_sheet.set_column_width(1, 60)?;
+
+    let mut row = 0u32;
+    summary_sheet.write_with_format(row, 0, "rs_diffcopy Summary (Three-way)", &title_format)?;
+    row += 2;
+
+    // Basic info
+    summary_sheet.write(row, 0, "Base:")?;
+    summary_sheet.write(row, 1, diff_result.base_dir.display().to_string())?;
+    row += 1;
+    summary_sheet.write(row, 0, "Ours:")?;
+    summary_sheet.write(row, 1, diff_result.ours_dir.display().to_string())?;
+    row += 1;
+    summary_sheet.write(row, 0, "Theirs:")?;
+    summary_sheet.write(row, 1, diff_result.theirs_dir.display().to_string())?;
+    row += 1;
+    summary_sheet.write(row, 0, "Output:")?;
+    summary_sheet.write(row, 1, options.output_dir.display().to_string())?;
+    row += 1;
+    summary_sheet.write(row, 0, "Date:")?;
+    summary_sheet.write(row, 1, now.format("%Y-%m-%d %H:%M:%S").to_string())?;
+    row += 2;
+
+    // Statistics
+    summary_sheet.write_with_format(row, 0, "Statistics", &header_format)?;
+    summary_sheet.write_with_format(row, 1, "Count", &header_format)?;
+    row += 1;
+
+    let stats = [
+        ("Unchanged", diff_result.count_by_status(&ThreeWayStatus::Unchanged)),
+        ("Ours only", diff_result.count_by_status(&ThreeWayStatus::OursOnly)),
+        ("Theirs only", diff_result.count_by_status(&ThreeWayStatus::TheirsOnly)),
+        ("Both same", diff_result.count_by_status(&ThreeWayStatus::BothSame)),
+        ("Conflict", diff_result.count_by_status(&ThreeWayStatus::Conflict)),
+        ("Added (ours)", diff_result.count_by_status(&ThreeWayStatus::AddedOurs)),
+        ("Added (theirs)", diff_result.count_by_status(&ThreeWayStatus::AddedTheirs)),
+        ("Added (both)", diff_result.count_by_status(&ThreeWayStatus::AddedBothSame) + diff_result.count_by_status(&ThreeWayStatus::AddedBothDiff)),
+        ("Deleted (ours)", diff_result.count_by_status(&ThreeWayStatus::DeletedOurs)),
+        ("Deleted (theirs)", diff_result.count_by_status(&ThreeWayStatus::DeletedTheirs)),
+        ("Deleted (both)", diff_result.count_by_status(&ThreeWayStatus::DeletedBoth)),
+        ("Total", diff_result.total_paths),
+        ("Conflicts", diff_result.count_conflicts()),
+    ];
+
+    for (label, count) in stats {
+        summary_sheet.write(row, 0, label)?;
+        summary_sheet.write(row, 1, count as f64)?;
+        row += 1;
+    }
+
+    // ========== File Matrix Sheet ==========
+    let matrix_sheet = workbook.add_worksheet();
+    matrix_sheet.set_name("File Matrix")?;
+    matrix_sheet.set_column_width(0, 50)?;
+    matrix_sheet.set_column_width(1, 8)?;
+    matrix_sheet.set_column_width(2, 8)?;
+    matrix_sheet.set_column_width(3, 8)?;
+    matrix_sheet.set_column_width(4, 25)?;
+
+    row = 0;
+    matrix_sheet.write_with_format(row, 0, "File", &header_format)?;
+    matrix_sheet.write_with_format(row, 1, "Base", &header_format)?;
+    matrix_sheet.write_with_format(row, 2, "Ours", &header_format)?;
+    matrix_sheet.write_with_format(row, 3, "Theirs", &header_format)?;
+    matrix_sheet.write_with_format(row, 4, "Status", &header_format)?;
+    row += 1;
+
+    for entry in &diff_result.entries {
+        let format = if entry.status.is_conflict() {
+            &conflict_format
+        } else {
+            match &entry.status {
+                ThreeWayStatus::OursOnly | ThreeWayStatus::AddedOurs => &ours_format,
+                ThreeWayStatus::TheirsOnly | ThreeWayStatus::AddedTheirs => &theirs_format,
+                ThreeWayStatus::BothSame | ThreeWayStatus::AddedBothSame => &both_same_format,
+                ThreeWayStatus::Unchanged => &unchanged_format,
+                _ => &unchanged_format,
+            }
+        };
+
+        matrix_sheet.write_with_format(row, 0, entry.relative_path.display().to_string(), format)?;
+        matrix_sheet.write_with_format(row, 1, entry.status.base_indicator(), format)?;
+        matrix_sheet.write_with_format(row, 2, entry.status.ours_indicator(), format)?;
+        matrix_sheet.write_with_format(row, 3, entry.status.theirs_indicator(), format)?;
+        matrix_sheet.write_with_format(row, 4, entry.status.display_str(), format)?;
+        row += 1;
+    }
+
+    // ========== Conflicts Sheet ==========
+    let conflicts: Vec<_> = diff_result.entries.iter().filter(|e| e.status.is_conflict()).collect();
+    if !conflicts.is_empty() {
+        let conflict_sheet = workbook.add_worksheet();
+        conflict_sheet.set_name("Conflicts")?;
+        conflict_sheet.set_column_width(0, 50)?;
+        conflict_sheet.set_column_width(1, 25)?;
+        conflict_sheet.set_column_width(2, 15)?;
+        conflict_sheet.set_column_width(3, 15)?;
+        conflict_sheet.set_column_width(4, 15)?;
+
+        row = 0;
+        conflict_sheet.write_with_format(row, 0, "File", &header_format)?;
+        conflict_sheet.write_with_format(row, 1, "Type", &header_format)?;
+        conflict_sheet.write_with_format(row, 2, "Base Size", &header_format)?;
+        conflict_sheet.write_with_format(row, 3, "Ours Size", &header_format)?;
+        conflict_sheet.write_with_format(row, 4, "Theirs Size", &header_format)?;
+        row += 1;
+
+        for entry in &conflicts {
+            conflict_sheet.write_with_format(row, 0, entry.relative_path.display().to_string(), &conflict_format)?;
+            conflict_sheet.write_with_format(row, 1, entry.status.display_str(), &conflict_format)?;
+            if let Some(size) = entry.base_size {
+                conflict_sheet.write(row, 2, size as f64)?;
+            } else {
+                conflict_sheet.write(row, 2, "-")?;
+            }
+            if let Some(size) = entry.ours_size {
+                conflict_sheet.write(row, 3, size as f64)?;
+            } else {
+                conflict_sheet.write(row, 3, "deleted")?;
+            }
+            if let Some(size) = entry.theirs_size {
+                conflict_sheet.write(row, 4, size as f64)?;
+            } else {
+                conflict_sheet.write(row, 4, "deleted")?;
+            }
+            row += 1;
+        }
+    }
+
+    workbook.save(excel_path)?;
+    Ok(())
 }
 
 /// Generate Excel summary report
@@ -4798,6 +5935,10 @@ mod tests {
             excel_fold_level: None,
             show_unchanged: false,
             save_config: None,
+            three_way: false,
+            base_dir: None,
+            merge_style: MergeStyle::All,
+            conflict_only: false,
         };
 
         let content = config.generate_config_content();
@@ -4836,6 +5977,10 @@ mod tests {
             excel_fold_level: Some(2),
             show_unchanged: true,
             save_config: None,
+            three_way: false,
+            base_dir: None,
+            merge_style: MergeStyle::All,
+            conflict_only: false,
         };
 
         let content = config.generate_config_content();
@@ -4881,6 +6026,10 @@ mod tests {
             excel_fold_level: None,
             show_unchanged: false,
             save_config: None,
+            three_way: false,
+            base_dir: None,
+            merge_style: MergeStyle::All,
+            conflict_only: false,
         };
 
         let content = config.generate_config_content();
@@ -4911,6 +6060,10 @@ mod tests {
             excel_fold_level: None,
             show_unchanged: false,
             save_config: None,
+            three_way: false,
+            base_dir: None,
+            merge_style: MergeStyle::All,
+            conflict_only: false,
         };
         assert!(config_none.generate_config_content().contains("check_permissions = \"none\""));
 
@@ -4920,5 +6073,663 @@ mod tests {
             ..config_none
         };
         assert!(config_all.generate_config_content().contains("check_permissions = \"all\""));
+    }
+
+    // ==================== Three-way Comparison Tests ====================
+
+    #[test]
+    fn test_three_way_status_is_conflict() {
+        assert!(!ThreeWayStatus::Unchanged.is_conflict());
+        assert!(!ThreeWayStatus::OursOnly.is_conflict());
+        assert!(!ThreeWayStatus::TheirsOnly.is_conflict());
+        assert!(!ThreeWayStatus::BothSame.is_conflict());
+        assert!(ThreeWayStatus::Conflict.is_conflict());
+        assert!(!ThreeWayStatus::AddedOurs.is_conflict());
+        assert!(!ThreeWayStatus::AddedTheirs.is_conflict());
+        assert!(!ThreeWayStatus::AddedBothSame.is_conflict());
+        assert!(ThreeWayStatus::AddedBothDiff.is_conflict());
+        assert!(!ThreeWayStatus::DeletedOurs.is_conflict());
+        assert!(!ThreeWayStatus::DeletedTheirs.is_conflict());
+        assert!(!ThreeWayStatus::DeletedBoth.is_conflict());
+        assert!(ThreeWayStatus::ModifyDelete.is_conflict());
+        assert!(ThreeWayStatus::DeleteModify.is_conflict());
+    }
+
+    #[test]
+    fn test_three_way_status_display_str() {
+        assert_eq!(ThreeWayStatus::Unchanged.display_str(), "unchanged");
+        assert_eq!(ThreeWayStatus::OursOnly.display_str(), "ours-only");
+        assert_eq!(ThreeWayStatus::TheirsOnly.display_str(), "theirs-only");
+        assert_eq!(ThreeWayStatus::BothSame.display_str(), "both-same");
+        assert_eq!(ThreeWayStatus::Conflict.display_str(), "CONFLICT");
+        assert_eq!(ThreeWayStatus::AddedOurs.display_str(), "added-ours");
+        assert_eq!(ThreeWayStatus::AddedTheirs.display_str(), "added-theirs");
+        assert_eq!(ThreeWayStatus::AddedBothSame.display_str(), "added-both-same");
+        assert_eq!(ThreeWayStatus::AddedBothDiff.display_str(), "CONFLICT (added-both-diff)");
+        assert_eq!(ThreeWayStatus::DeletedOurs.display_str(), "deleted-ours");
+        assert_eq!(ThreeWayStatus::DeletedTheirs.display_str(), "deleted-theirs");
+        assert_eq!(ThreeWayStatus::DeletedBoth.display_str(), "deleted-both");
+        assert_eq!(ThreeWayStatus::ModifyDelete.display_str(), "CONFLICT (modify-delete)");
+        assert_eq!(ThreeWayStatus::DeleteModify.display_str(), "CONFLICT (delete-modify)");
+    }
+
+    #[test]
+    fn test_three_way_status_indicators() {
+        // Test base_indicator
+        assert_eq!(ThreeWayStatus::Unchanged.base_indicator(), "○");
+        assert_eq!(ThreeWayStatus::AddedOurs.base_indicator(), "-");
+        assert_eq!(ThreeWayStatus::AddedTheirs.base_indicator(), "-");
+        assert_eq!(ThreeWayStatus::AddedBothSame.base_indicator(), "-");
+        assert_eq!(ThreeWayStatus::AddedBothDiff.base_indicator(), "-");
+        assert_eq!(ThreeWayStatus::OursOnly.base_indicator(), "○");
+        assert_eq!(ThreeWayStatus::DeletedBoth.base_indicator(), "○");
+
+        // Test ours_indicator
+        assert_eq!(ThreeWayStatus::Unchanged.ours_indicator(), "=");
+        assert_eq!(ThreeWayStatus::OursOnly.ours_indicator(), "M");
+        assert_eq!(ThreeWayStatus::TheirsOnly.ours_indicator(), "=");
+        assert_eq!(ThreeWayStatus::AddedOurs.ours_indicator(), "A");
+        assert_eq!(ThreeWayStatus::DeletedOurs.ours_indicator(), "D");
+        assert_eq!(ThreeWayStatus::DeletedBoth.ours_indicator(), "D");
+        assert_eq!(ThreeWayStatus::DeleteModify.ours_indicator(), "D");
+
+        // Test theirs_indicator
+        assert_eq!(ThreeWayStatus::Unchanged.theirs_indicator(), "=");
+        assert_eq!(ThreeWayStatus::OursOnly.theirs_indicator(), "=");
+        assert_eq!(ThreeWayStatus::TheirsOnly.theirs_indicator(), "M");
+        assert_eq!(ThreeWayStatus::AddedTheirs.theirs_indicator(), "A");
+        assert_eq!(ThreeWayStatus::DeletedTheirs.theirs_indicator(), "D");
+        assert_eq!(ThreeWayStatus::DeletedBoth.theirs_indicator(), "D");
+        assert_eq!(ThreeWayStatus::ModifyDelete.theirs_indicator(), "D");
+    }
+
+    // Helper function to create ThreeWayEntry for tests
+    fn make_three_way_entry(path: &str, status: ThreeWayStatus) -> ThreeWayEntry {
+        ThreeWayEntry {
+            relative_path: PathBuf::from(path),
+            is_dir: false,
+            status,
+            base_size: Some(100),
+            ours_size: Some(100),
+            theirs_size: Some(100),
+        }
+    }
+
+    // Helper function to create ThreeWayDiffResult for tests
+    fn make_three_way_result(entries: Vec<ThreeWayEntry>) -> ThreeWayDiffResult {
+        let total = entries.len();
+        ThreeWayDiffResult {
+            entries,
+            base_dir: PathBuf::from("/base"),
+            ours_dir: PathBuf::from("/ours"),
+            theirs_dir: PathBuf::from("/theirs"),
+            total_paths: total,
+        }
+    }
+
+    #[test]
+    fn test_three_way_diff_result_has_differences() {
+        // No entries = no differences
+        let result = make_three_way_result(vec![]);
+        assert!(!result.has_differences());
+
+        // Only unchanged = no differences
+        let result = make_three_way_result(vec![
+            make_three_way_entry("file.txt", ThreeWayStatus::Unchanged),
+        ]);
+        assert!(!result.has_differences());
+
+        // Has ours-only = has differences
+        let result = make_three_way_result(vec![
+            make_three_way_entry("file.txt", ThreeWayStatus::OursOnly),
+        ]);
+        assert!(result.has_differences());
+
+        // Has conflict = has differences
+        let result = make_three_way_result(vec![
+            make_three_way_entry("file.txt", ThreeWayStatus::Conflict),
+        ]);
+        assert!(result.has_differences());
+    }
+
+    #[test]
+    fn test_three_way_diff_result_has_conflicts() {
+        // No entries = no conflicts
+        let result = make_three_way_result(vec![]);
+        assert!(!result.has_conflicts());
+
+        // Only unchanged = no conflicts
+        let result = make_three_way_result(vec![
+            make_three_way_entry("file.txt", ThreeWayStatus::Unchanged),
+        ]);
+        assert!(!result.has_conflicts());
+
+        // Has ours-only (not conflict) = no conflicts
+        let result = make_three_way_result(vec![
+            make_three_way_entry("file.txt", ThreeWayStatus::OursOnly),
+        ]);
+        assert!(!result.has_conflicts());
+
+        // Has Conflict = has conflicts
+        let result = make_three_way_result(vec![
+            make_three_way_entry("file.txt", ThreeWayStatus::Conflict),
+        ]);
+        assert!(result.has_conflicts());
+
+        // Has AddedBothDiff = has conflicts
+        let result = make_three_way_result(vec![
+            make_three_way_entry("file.txt", ThreeWayStatus::AddedBothDiff),
+        ]);
+        assert!(result.has_conflicts());
+
+        // Has ModifyDelete = has conflicts
+        let result = make_three_way_result(vec![
+            make_three_way_entry("file.txt", ThreeWayStatus::ModifyDelete),
+        ]);
+        assert!(result.has_conflicts());
+
+        // Has DeleteModify = has conflicts
+        let result = make_three_way_result(vec![
+            make_three_way_entry("file.txt", ThreeWayStatus::DeleteModify),
+        ]);
+        assert!(result.has_conflicts());
+    }
+
+    #[test]
+    fn test_three_way_diff_result_count_by_status() {
+        let result = make_three_way_result(vec![
+            make_three_way_entry("a.txt", ThreeWayStatus::Unchanged),
+            make_three_way_entry("b.txt", ThreeWayStatus::Unchanged),
+            make_three_way_entry("c.txt", ThreeWayStatus::OursOnly),
+            make_three_way_entry("d.txt", ThreeWayStatus::Conflict),
+            make_three_way_entry("e.txt", ThreeWayStatus::Conflict),
+            make_three_way_entry("f.txt", ThreeWayStatus::AddedBothDiff),
+        ]);
+
+        assert_eq!(result.count_by_status(&ThreeWayStatus::Unchanged), 2);
+        assert_eq!(result.count_by_status(&ThreeWayStatus::OursOnly), 1);
+        assert_eq!(result.count_by_status(&ThreeWayStatus::Conflict), 2);
+        assert_eq!(result.count_by_status(&ThreeWayStatus::AddedBothDiff), 1);
+        assert_eq!(result.count_by_status(&ThreeWayStatus::TheirsOnly), 0);
+    }
+
+    #[test]
+    fn test_three_way_diff_result_conflict_count() {
+        let result = make_three_way_result(vec![
+            make_three_way_entry("a.txt", ThreeWayStatus::Unchanged),
+            make_three_way_entry("b.txt", ThreeWayStatus::OursOnly),
+            make_three_way_entry("c.txt", ThreeWayStatus::Conflict),
+            make_three_way_entry("d.txt", ThreeWayStatus::AddedBothDiff),
+            make_three_way_entry("e.txt", ThreeWayStatus::ModifyDelete),
+            make_three_way_entry("f.txt", ThreeWayStatus::DeleteModify),
+        ]);
+
+        assert_eq!(result.count_conflicts(), 4);
+    }
+
+    #[test]
+    fn test_merge_style_default() {
+        assert_eq!(MergeStyle::default(), MergeStyle::All);
+    }
+
+    #[test]
+    fn test_files_equal_same_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = dir.path().join("file1.txt");
+        let file2 = dir.path().join("file2.txt");
+
+        fs::write(&file1, "same content").unwrap();
+        fs::write(&file2, "same content").unwrap();
+
+        assert!(files_equal(&file1, &file2));
+    }
+
+    #[test]
+    fn test_files_equal_different_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = dir.path().join("file1.txt");
+        let file2 = dir.path().join("file2.txt");
+
+        fs::write(&file1, "content A").unwrap();
+        fs::write(&file2, "content B").unwrap();
+
+        assert!(!files_equal(&file1, &file2));
+    }
+
+    #[test]
+    fn test_files_equal_different_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = dir.path().join("file1.txt");
+        let file2 = dir.path().join("file2.txt");
+
+        fs::write(&file1, "short").unwrap();
+        fs::write(&file2, "much longer content").unwrap();
+
+        assert!(!files_equal(&file1, &file2));
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_all_unchanged() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // Create identical files in all three directories
+        fs::write(base.path().join("file.txt"), "content").unwrap();
+        fs::write(ours.path().join("file.txt"), "content").unwrap();
+        fs::write(theirs.path().join("file.txt"), "content").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::Unchanged);
+        assert!(!result.has_differences());
+        assert!(!result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_ours_only() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // Base and theirs have same content, ours is different
+        fs::write(base.path().join("file.txt"), "base content").unwrap();
+        fs::write(ours.path().join("file.txt"), "ours modified").unwrap();
+        fs::write(theirs.path().join("file.txt"), "base content").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::OursOnly);
+        assert!(result.has_differences());
+        assert!(!result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_theirs_only() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // Base and ours have same content, theirs is different
+        fs::write(base.path().join("file.txt"), "base content").unwrap();
+        fs::write(ours.path().join("file.txt"), "base content").unwrap();
+        fs::write(theirs.path().join("file.txt"), "theirs modified").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::TheirsOnly);
+        assert!(result.has_differences());
+        assert!(!result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_both_same() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // Both modified to the same content
+        fs::write(base.path().join("file.txt"), "base content").unwrap();
+        fs::write(ours.path().join("file.txt"), "same modified").unwrap();
+        fs::write(theirs.path().join("file.txt"), "same modified").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::BothSame);
+        assert!(result.has_differences());
+        assert!(!result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_conflict() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // Both modified to different content
+        fs::write(base.path().join("file.txt"), "base content").unwrap();
+        fs::write(ours.path().join("file.txt"), "ours modified").unwrap();
+        fs::write(theirs.path().join("file.txt"), "theirs modified").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::Conflict);
+        assert!(result.has_differences());
+        assert!(result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_added_ours() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // File added only in ours
+        fs::write(ours.path().join("new_file.txt"), "new content").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::AddedOurs);
+        assert!(result.has_differences());
+        assert!(!result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_added_theirs() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // File added only in theirs
+        fs::write(theirs.path().join("new_file.txt"), "new content").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::AddedTheirs);
+        assert!(result.has_differences());
+        assert!(!result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_added_both_same() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // Same file added in both
+        fs::write(ours.path().join("new_file.txt"), "same content").unwrap();
+        fs::write(theirs.path().join("new_file.txt"), "same content").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::AddedBothSame);
+        assert!(result.has_differences());
+        assert!(!result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_added_both_diff() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // Different content added in both
+        fs::write(ours.path().join("new_file.txt"), "ours content").unwrap();
+        fs::write(theirs.path().join("new_file.txt"), "theirs content").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::AddedBothDiff);
+        assert!(result.has_differences());
+        assert!(result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_deleted_ours() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // File in base and theirs, deleted in ours
+        fs::write(base.path().join("file.txt"), "content").unwrap();
+        fs::write(theirs.path().join("file.txt"), "content").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::DeletedOurs);
+        assert!(result.has_differences());
+        assert!(!result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_deleted_theirs() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // File in base and ours, deleted in theirs
+        fs::write(base.path().join("file.txt"), "content").unwrap();
+        fs::write(ours.path().join("file.txt"), "content").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::DeletedTheirs);
+        assert!(result.has_differences());
+        assert!(!result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_deleted_both() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // File in base, deleted in both
+        fs::write(base.path().join("file.txt"), "content").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::DeletedBoth);
+        assert!(result.has_differences());
+        assert!(!result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_modify_delete() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // File modified in ours, deleted in theirs
+        fs::write(base.path().join("file.txt"), "base content").unwrap();
+        fs::write(ours.path().join("file.txt"), "modified content").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::ModifyDelete);
+        assert!(result.has_differences());
+        assert!(result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_directories_delete_modify() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // File deleted in ours, modified in theirs
+        fs::write(base.path().join("file.txt"), "base content").unwrap();
+        fs::write(theirs.path().join("file.txt"), "modified content").unwrap();
+
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].status, ThreeWayStatus::DeleteModify);
+        assert!(result.has_differences());
+        assert!(result.has_conflicts());
+    }
+
+    #[test]
+    fn test_compare_three_way_with_exclude() {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+
+        // Create files including one that should be excluded
+        fs::write(base.path().join("file.txt"), "base").unwrap();
+        fs::write(ours.path().join("file.txt"), "ours").unwrap();
+        fs::write(theirs.path().join("file.txt"), "theirs").unwrap();
+
+        fs::write(base.path().join("file.log"), "base log").unwrap();
+        fs::write(ours.path().join("file.log"), "ours log").unwrap();
+        fs::write(theirs.path().join("file.log"), "theirs log").unwrap();
+
+        let exclude_patterns = vec![Pattern::new("*.log").unwrap()];
+        let result = compare_three_way_directories(
+            base.path(),
+            ours.path(),
+            theirs.path(),
+            &exclude_patterns,
+            false,
+        ).unwrap();
+
+        // Only file.txt should be compared (file.log is excluded)
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].relative_path, PathBuf::from("file.txt"));
+    }
+
+    #[test]
+    fn test_generate_three_way_summary_no_differences() {
+        let result = ThreeWayDiffResult {
+            entries: vec![],
+            base_dir: PathBuf::from("/base"),
+            ours_dir: PathBuf::from("/ours"),
+            theirs_dir: PathBuf::from("/theirs"),
+            total_paths: 0,
+        };
+
+        let options = ThreeWaySummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            merge_style: MergeStyle::All,
+            conflict_only: false,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            copy_result: None,
+        };
+
+        let summary = generate_three_way_summary(&result, &options);
+
+        assert!(summary.contains("rs_diffcopy Summary (Three-way)"));
+        assert!(summary.contains("No differences found."));
+    }
+
+    #[test]
+    fn test_generate_three_way_summary_with_conflicts() {
+        let result = ThreeWayDiffResult {
+            entries: vec![
+                make_three_way_entry("file1.txt", ThreeWayStatus::OursOnly),
+                make_three_way_entry("file2.txt", ThreeWayStatus::Conflict),
+                make_three_way_entry("file3.txt", ThreeWayStatus::AddedBothDiff),
+            ],
+            base_dir: PathBuf::from("/base"),
+            ours_dir: PathBuf::from("/ours"),
+            theirs_dir: PathBuf::from("/theirs"),
+            total_paths: 3,
+        };
+
+        let options = ThreeWaySummaryOptions {
+            exclude_patterns: vec![],
+            dry_run: false,
+            merge_style: MergeStyle::All,
+            conflict_only: false,
+            config_file: None,
+            output_dir: PathBuf::from("/output"),
+            copy_result: None,
+        };
+
+        let summary = generate_three_way_summary(&result, &options);
+
+        assert!(summary.contains("rs_diffcopy Summary (Three-way)"));
+        assert!(summary.contains("Change Matrix"));
+        assert!(summary.contains("Conflicts"));
+        assert!(summary.contains("CONFLICT"));
     }
 }

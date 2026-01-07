@@ -2742,3 +2742,727 @@ fn test_save_config_with_options() {
     assert!(config_content.contains("check_permissions = \"scripts\""), "Should contain check_permissions");
     assert!(config_content.contains("show_unchanged = true"), "Should contain show_unchanged = true");
 }
+
+// ============================================================================
+// Three-way Comparison Tests
+// ============================================================================
+
+/// Helper struct for three-way test setup
+struct ThreeWayTestEnv {
+    base: TempDir,
+    ours: TempDir,
+    theirs: TempDir,
+    output: PathBuf,
+    _output_parent: TempDir,
+}
+
+impl ThreeWayTestEnv {
+    fn new() -> Self {
+        let base = tempfile::tempdir().unwrap();
+        let ours = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+        let output_parent = tempfile::tempdir().unwrap();
+        let output = output_parent.path().join("output");
+
+        ThreeWayTestEnv {
+            base,
+            ours,
+            theirs,
+            output,
+            _output_parent: output_parent,
+        }
+    }
+
+    fn base_path(&self) -> &Path {
+        self.base.path()
+    }
+
+    fn ours_path(&self) -> &Path {
+        self.ours.path()
+    }
+
+    fn theirs_path(&self) -> &Path {
+        self.theirs.path()
+    }
+
+    fn output_path(&self) -> &Path {
+        &self.output
+    }
+}
+
+/// Run three-way diffcopy command
+fn run_three_way_diffcopy(base: &Path, ours: &Path, theirs: &Path, output: &Path) -> Output {
+    run_diffcopy(&[
+        "--three-way",
+        "-B", base.to_str().unwrap(),
+        "-S", ours.to_str().unwrap(),
+        "-T", theirs.to_str().unwrap(),
+        "-O", output.to_str().unwrap(),
+    ])
+}
+
+/// Run three-way diffcopy with additional options
+fn run_three_way_with_opts(base: &Path, ours: &Path, theirs: &Path, output: &Path, opts: &[&str]) -> Output {
+    let mut args = vec![
+        "--three-way",
+        "-B", base.to_str().unwrap(),
+        "-S", ours.to_str().unwrap(),
+        "-T", theirs.to_str().unwrap(),
+        "-O", output.to_str().unwrap(),
+    ];
+    args.extend(opts);
+    run_diffcopy(&args)
+}
+
+/// IT-3001: Three-way basic comparison - no differences
+#[test]
+fn test_three_way_no_differences() {
+    let env = ThreeWayTestEnv::new();
+
+    // All three directories have identical files
+    create_file(env.base_path(), "file.txt", "same content");
+    create_file(env.ours_path(), "file.txt", "same content");
+    create_file(env.theirs_path(), "file.txt", "same content");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert_eq!(output.status.code(), Some(2), "Exit code should be 2 for no differences");
+    assert!(stdout_str(&output).contains("No differences found."));
+}
+
+/// IT-3002: Three-way ours-only modification
+#[test]
+fn test_three_way_ours_only() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.base_path(), "file.txt", "base content");
+    create_file(env.ours_path(), "file.txt", "ours modified");
+    create_file(env.theirs_path(), "file.txt", "base content");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert!(output.status.success(), "Exit code should be 0 for differences without conflict");
+    assert!(stdout_str(&output).contains("ours-only"));
+    assert!(env.output_path().join("file.txt").exists());
+
+    let content = fs::read_to_string(env.output_path().join("file.txt")).unwrap();
+    assert_eq!(content, "ours modified");
+}
+
+/// IT-3003: Three-way theirs-only modification
+#[test]
+fn test_three_way_theirs_only() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.base_path(), "file.txt", "base content");
+    create_file(env.ours_path(), "file.txt", "base content");
+    create_file(env.theirs_path(), "file.txt", "theirs modified");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert!(output.status.success(), "Exit code should be 0 for differences without conflict");
+    assert!(stdout_str(&output).contains("theirs-only"));
+    assert!(env.output_path().join("file.txt").exists());
+
+    let content = fs::read_to_string(env.output_path().join("file.txt")).unwrap();
+    assert_eq!(content, "theirs modified");
+}
+
+/// IT-3004: Three-way both-same modification
+#[test]
+fn test_three_way_both_same() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.base_path(), "file.txt", "base content");
+    create_file(env.ours_path(), "file.txt", "same change");
+    create_file(env.theirs_path(), "file.txt", "same change");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert!(output.status.success(), "Exit code should be 0 for differences without conflict");
+    assert!(stdout_str(&output).contains("both-same"));
+    assert!(env.output_path().join("file.txt").exists());
+}
+
+/// IT-3005: Three-way conflict detection
+#[test]
+fn test_three_way_conflict() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.base_path(), "file.txt", "base content");
+    create_file(env.ours_path(), "file.txt", "ours change");
+    create_file(env.theirs_path(), "file.txt", "theirs change");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+    assert!(stdout_str(&output).contains("CONFLICT"));
+
+    // With merge-style=all, all three versions should be copied
+    assert!(env.output_path().join("file.txt.base").exists());
+    assert!(env.output_path().join("file.txt.ours").exists());
+    assert!(env.output_path().join("file.txt.theirs").exists());
+}
+
+/// IT-3006: Three-way added-ours
+#[test]
+fn test_three_way_added_ours() {
+    let env = ThreeWayTestEnv::new();
+
+    // File only in ours
+    create_file(env.ours_path(), "new_file.txt", "new content");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert!(output.status.success());
+    assert!(stdout_str(&output).contains("added-ours"));
+    assert!(env.output_path().join("new_file.txt").exists());
+}
+
+/// IT-3007: Three-way added-theirs
+#[test]
+fn test_three_way_added_theirs() {
+    let env = ThreeWayTestEnv::new();
+
+    // File only in theirs
+    create_file(env.theirs_path(), "new_file.txt", "new content");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert!(output.status.success());
+    assert!(stdout_str(&output).contains("added-theirs"));
+    assert!(env.output_path().join("new_file.txt").exists());
+}
+
+/// IT-3008: Three-way added-both-same
+#[test]
+fn test_three_way_added_both_same() {
+    let env = ThreeWayTestEnv::new();
+
+    // Same file added in both ours and theirs
+    create_file(env.ours_path(), "new_file.txt", "same content");
+    create_file(env.theirs_path(), "new_file.txt", "same content");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert!(output.status.success());
+    assert!(stdout_str(&output).contains("added-both-same"));
+    assert!(env.output_path().join("new_file.txt").exists());
+}
+
+/// IT-3009: Three-way added-both-diff (conflict)
+#[test]
+fn test_three_way_added_both_diff() {
+    let env = ThreeWayTestEnv::new();
+
+    // Different files added in both ours and theirs
+    create_file(env.ours_path(), "new_file.txt", "ours content");
+    create_file(env.theirs_path(), "new_file.txt", "theirs content");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+    assert!(stdout_str(&output).contains("CONFLICT"));
+    assert!(stdout_str(&output).contains("added-both-diff"));
+
+    // Both versions should be copied
+    assert!(env.output_path().join("new_file.txt.ours").exists());
+    assert!(env.output_path().join("new_file.txt.theirs").exists());
+}
+
+/// IT-3010: Three-way deleted-ours
+#[test]
+fn test_three_way_deleted_ours() {
+    let env = ThreeWayTestEnv::new();
+
+    // File in base and theirs, but deleted in ours
+    create_file(env.base_path(), "file.txt", "content");
+    create_file(env.theirs_path(), "file.txt", "content");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert!(output.status.success());
+    assert!(stdout_str(&output).contains("deleted-ours"));
+}
+
+/// IT-3011: Three-way deleted-theirs
+#[test]
+fn test_three_way_deleted_theirs() {
+    let env = ThreeWayTestEnv::new();
+
+    // File in base and ours, but deleted in theirs
+    create_file(env.base_path(), "file.txt", "content");
+    create_file(env.ours_path(), "file.txt", "content");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert!(output.status.success());
+    assert!(stdout_str(&output).contains("deleted-theirs"));
+}
+
+/// IT-3012: Three-way deleted-both
+#[test]
+fn test_three_way_deleted_both() {
+    let env = ThreeWayTestEnv::new();
+
+    // File only in base, deleted in both ours and theirs
+    create_file(env.base_path(), "file.txt", "content");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert!(output.status.success());
+    assert!(stdout_str(&output).contains("deleted-both"));
+}
+
+/// IT-3013: Three-way modify-delete conflict
+#[test]
+fn test_three_way_modify_delete() {
+    let env = ThreeWayTestEnv::new();
+
+    // File modified in ours, deleted in theirs
+    create_file(env.base_path(), "file.txt", "base content");
+    create_file(env.ours_path(), "file.txt", "modified content");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+    assert!(stdout_str(&output).contains("CONFLICT"));
+    assert!(stdout_str(&output).contains("modify-delete"));
+}
+
+/// IT-3014: Three-way delete-modify conflict
+#[test]
+fn test_three_way_delete_modify() {
+    let env = ThreeWayTestEnv::new();
+
+    // File deleted in ours, modified in theirs
+    create_file(env.base_path(), "file.txt", "base content");
+    create_file(env.theirs_path(), "file.txt", "modified content");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+    assert!(stdout_str(&output).contains("CONFLICT"));
+    assert!(stdout_str(&output).contains("delete-modify"));
+}
+
+/// IT-3015: Three-way with merge-style=ours
+#[test]
+fn test_three_way_merge_style_ours() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.base_path(), "file.txt", "base content");
+    create_file(env.ours_path(), "file.txt", "ours change");
+    create_file(env.theirs_path(), "file.txt", "theirs change");
+
+    let output = run_three_way_with_opts(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+        &["--merge-style", "ours"],
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+
+    // With merge-style=ours, only ours version should be copied (without .ours extension)
+    assert!(env.output_path().join("file.txt").exists());
+    let content = fs::read_to_string(env.output_path().join("file.txt")).unwrap();
+    assert_eq!(content, "ours change");
+}
+
+/// IT-3016: Three-way with merge-style=theirs
+#[test]
+fn test_three_way_merge_style_theirs() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.base_path(), "file.txt", "base content");
+    create_file(env.ours_path(), "file.txt", "ours change");
+    create_file(env.theirs_path(), "file.txt", "theirs change");
+
+    let output = run_three_way_with_opts(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+        &["--merge-style", "theirs"],
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+
+    // With merge-style=theirs, only theirs version should be copied (without .theirs extension)
+    assert!(env.output_path().join("file.txt").exists());
+    let content = fs::read_to_string(env.output_path().join("file.txt")).unwrap();
+    assert_eq!(content, "theirs change");
+}
+
+/// IT-3017: Three-way with --conflict-only
+#[test]
+fn test_three_way_conflict_only() {
+    let env = ThreeWayTestEnv::new();
+
+    // Create one conflict and one non-conflict
+    create_file(env.base_path(), "conflict.txt", "base");
+    create_file(env.ours_path(), "conflict.txt", "ours");
+    create_file(env.theirs_path(), "conflict.txt", "theirs");
+
+    create_file(env.base_path(), "ours_only.txt", "base");
+    create_file(env.ours_path(), "ours_only.txt", "ours");
+    create_file(env.theirs_path(), "ours_only.txt", "base");
+
+    let output = run_three_way_with_opts(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+        &["--conflict-only"],
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+
+    // Only conflict file should be copied
+    assert!(env.output_path().join("conflict.txt.base").exists() ||
+            env.output_path().join("conflict.txt.ours").exists() ||
+            env.output_path().join("conflict.txt.theirs").exists());
+
+    // Non-conflict file should not be copied
+    assert!(!env.output_path().join("ours_only.txt").exists());
+}
+
+/// IT-3018: Three-way with --dry-run
+#[test]
+fn test_three_way_dry_run() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.base_path(), "file.txt", "base");
+    create_file(env.ours_path(), "file.txt", "ours");
+    create_file(env.theirs_path(), "file.txt", "theirs");
+
+    let output = run_three_way_with_opts(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+        &["--dry-run"],
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+    assert!(stdout_str(&output).contains("Dry-run"));
+
+    // No files should be created
+    assert!(!env.output_path().exists());
+}
+
+/// IT-3019: Three-way with exclude patterns
+#[test]
+fn test_three_way_exclude() {
+    let env = ThreeWayTestEnv::new();
+
+    // Create files including one that should be excluded
+    create_file(env.base_path(), "file.txt", "base");
+    create_file(env.ours_path(), "file.txt", "ours");
+    create_file(env.theirs_path(), "file.txt", "theirs");
+
+    create_file(env.base_path(), "file.log", "base log");
+    create_file(env.ours_path(), "file.log", "ours log");
+    create_file(env.theirs_path(), "file.log", "theirs log");
+
+    let output = run_three_way_with_opts(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+        &["-e", "*.log"],
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+
+    // file.txt should be processed (conflict)
+    assert!(env.output_path().join("file.txt.base").exists() ||
+            env.output_path().join("file.txt.ours").exists() ||
+            env.output_path().join("file.txt.theirs").exists());
+
+    // file.log should be excluded
+    assert!(!env.output_path().join("file.log.base").exists());
+    assert!(!env.output_path().join("file.log.ours").exists());
+    assert!(!env.output_path().join("file.log.theirs").exists());
+}
+
+/// IT-3020: Three-way with Excel output
+#[test]
+fn test_three_way_excel_output() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.base_path(), "file.txt", "base");
+    create_file(env.ours_path(), "file.txt", "ours");
+    create_file(env.theirs_path(), "file.txt", "theirs");
+
+    let excel_path = env.output_path().parent().unwrap().join("report.xlsx");
+
+    let output = run_three_way_with_opts(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+        &["-E", excel_path.to_str().unwrap()],
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+    assert!(excel_path.exists(), "Excel file should be created");
+}
+
+/// IT-3021: Three-way with summary file
+#[test]
+fn test_three_way_summary_file() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.base_path(), "file.txt", "base");
+    create_file(env.ours_path(), "file.txt", "ours");
+    create_file(env.theirs_path(), "file.txt", "theirs");
+
+    let summary_path = env.output_path().parent().unwrap().join("summary.txt");
+
+    let output = run_three_way_with_opts(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+        &["-s", summary_path.to_str().unwrap()],
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+    assert!(summary_path.exists(), "Summary file should be created");
+
+    let summary_content = fs::read_to_string(&summary_path).unwrap();
+    assert!(summary_content.contains("rs_diffcopy Summary (Three-way)"));
+    assert!(summary_content.contains("Base:"));
+    assert!(summary_content.contains("Ours:"));
+    assert!(summary_content.contains("Theirs:"));
+}
+
+/// IT-3022: Three-way missing base directory
+#[test]
+fn test_three_way_missing_base() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.ours_path(), "file.txt", "ours");
+    create_file(env.theirs_path(), "file.txt", "theirs");
+
+    let output = run_diffcopy(&[
+        "--three-way",
+        "-B", "/nonexistent/base",
+        "-S", env.ours_path().to_str().unwrap(),
+        "-T", env.theirs_path().to_str().unwrap(),
+        "-O", env.output_path().to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "Exit code should be 1 for error");
+}
+
+/// IT-3023: Three-way mode requires base directory
+#[test]
+fn test_three_way_requires_base() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.ours_path(), "file.txt", "ours");
+    create_file(env.theirs_path(), "file.txt", "theirs");
+
+    // Run with --three-way but without --base
+    let output = run_diffcopy(&[
+        "--three-way",
+        "-S", env.ours_path().to_str().unwrap(),
+        "-T", env.theirs_path().to_str().unwrap(),
+        "-O", env.output_path().to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "Exit code should be 1 for error");
+    let err = stderr_str(&output);
+    assert!(err.contains("base") || err.contains("Base"), "Error should mention base directory");
+}
+
+/// IT-3024: Three-way with subdirectories
+#[test]
+fn test_three_way_subdirectories() {
+    let env = ThreeWayTestEnv::new();
+
+    // Create files in subdirectories
+    create_file(env.base_path(), "src/main.rs", "base main");
+    create_file(env.ours_path(), "src/main.rs", "ours main");
+    create_file(env.theirs_path(), "src/main.rs", "theirs main");
+
+    create_file(env.base_path(), "src/lib.rs", "base lib");
+    create_file(env.ours_path(), "src/lib.rs", "ours lib");
+    create_file(env.theirs_path(), "src/lib.rs", "base lib");  // Same as base
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Should have conflicts");
+
+    // main.rs should have conflict (all three different)
+    assert!(env.output_path().join("src/main.rs.base").exists() ||
+            env.output_path().join("src/main.rs.ours").exists() ||
+            env.output_path().join("src/main.rs.theirs").exists());
+
+    // lib.rs should have ours-only change
+    assert!(env.output_path().join("src/lib.rs").exists());
+}
+
+/// IT-3025: Three-way config file
+#[test]
+fn test_three_way_config_file() {
+    let env = ThreeWayTestEnv::new();
+
+    create_file(env.base_path(), "file.txt", "base");
+    create_file(env.ours_path(), "file.txt", "ours");
+    create_file(env.theirs_path(), "file.txt", "theirs");
+
+    // Create config file
+    let config_content = format!(
+        r#"
+three_way = true
+base = "{}"
+source = "{}"
+target = "{}"
+output = "{}"
+merge_style = "all"
+"#,
+        env.base_path().display(),
+        env.ours_path().display(),
+        env.theirs_path().display(),
+        env.output_path().display()
+    );
+
+    let config_path = env.output_path().parent().unwrap().join("config.toml");
+    fs::write(&config_path, config_content).unwrap();
+
+    let output = run_diffcopy(&[
+        "--config", config_path.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(3), "Exit code should be 3 for conflicts");
+    assert!(stdout_str(&output).contains("CONFLICT"));
+}
+
+/// IT-3026: Three-way mixed scenarios
+#[test]
+fn test_three_way_mixed_scenarios() {
+    let env = ThreeWayTestEnv::new();
+
+    // Unchanged file
+    create_file(env.base_path(), "unchanged.txt", "same");
+    create_file(env.ours_path(), "unchanged.txt", "same");
+    create_file(env.theirs_path(), "unchanged.txt", "same");
+
+    // Ours-only change
+    create_file(env.base_path(), "ours_change.txt", "base");
+    create_file(env.ours_path(), "ours_change.txt", "ours");
+    create_file(env.theirs_path(), "ours_change.txt", "base");
+
+    // Theirs-only change
+    create_file(env.base_path(), "theirs_change.txt", "base");
+    create_file(env.ours_path(), "theirs_change.txt", "base");
+    create_file(env.theirs_path(), "theirs_change.txt", "theirs");
+
+    // Conflict
+    create_file(env.base_path(), "conflict.txt", "base");
+    create_file(env.ours_path(), "conflict.txt", "ours");
+    create_file(env.theirs_path(), "conflict.txt", "theirs");
+
+    // Added in ours only
+    create_file(env.ours_path(), "new_ours.txt", "new");
+
+    // Deleted in both
+    create_file(env.base_path(), "deleted.txt", "will be deleted");
+
+    let output = run_three_way_diffcopy(
+        env.base_path(),
+        env.ours_path(),
+        env.theirs_path(),
+        env.output_path(),
+    );
+
+    assert_eq!(output.status.code(), Some(3), "Should have conflicts");
+
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("Unchanged"));  // Capital U in Change Matrix
+    assert!(stdout.contains("ours-only") || stdout.contains("Ours only"));
+    assert!(stdout.contains("theirs-only") || stdout.contains("Theirs only"));
+    assert!(stdout.contains("CONFLICT"));
+    assert!(stdout.contains("added-ours") || stdout.contains("Added (ours)"));
+    assert!(stdout.contains("deleted-both") || stdout.contains("Deleted (both)"));
+}

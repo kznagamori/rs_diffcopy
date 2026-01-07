@@ -8,6 +8,7 @@ A CLI tool that compares two directories and extracts only the files with differ
 
 - Extracts diff files while maintaining directory structure
 - Fast and accurate file comparison using BLAKE3 hash
+- **Three-way diff**: Compare base/ours/theirs directories and detect conflicts
 - **Parallel processing** for fast comparison and copying (using rayon)
 - Phase-based progress display for visibility into processing status
 - Displays added, modified, and deleted files in tree format
@@ -89,8 +90,16 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-L, --excel-fold-level <LEVEL>` | Excel file tree fold level |
 | `-u, --show-unchanged` | Show unchanged files in summary details |
 | `-C, --save-config <PATH>` | Save current options to a config file (TOML format) |
+| `-3, --three-way` | Enable three-way comparison mode |
+| `-B, --base <PATH>` | Base (common ancestor) directory (required in three-way mode) |
+| `-M, --merge-style <STYLE>` | Copy style for conflicts (all/ours/theirs) |
+| `--conflict-only` | Output only files with conflicts |
 | `-h, --help` | Show help |
 | `-V, --version` | Show version |
+
+> **Note for Three-way Comparison Mode:**
+> - In three-way mode (`-3`), `-S/--source` is treated as "ours" (your changes) and `-T/--target` as "theirs" (their changes)
+> - In three-way mode, `-S`, `-T`, and `-O` are still required, plus `-B/--base` becomes required
 
 ### Examples
 
@@ -186,8 +195,8 @@ exclude = [
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `source` | string | Yes | Source directory |
-| `target` | string | Yes | Target directory |
+| `source` | string | Yes | Source directory (ours in three-way mode) |
+| `target` | string | Yes | Target directory (theirs in three-way mode) |
 | `output` | string | Yes | Output directory |
 | `exclude` | array | - | List of exclude patterns |
 | `force` | bool | - | Delete output and re-run |
@@ -201,6 +210,12 @@ exclude = [
 | `excel` | string | - | Excel report output path |
 | `excel_fold_level` | integer | - | Excel file tree fold level |
 | `show_unchanged` | bool | - | Show unchanged files in summary details |
+| `three_way` | bool | - | Enable three-way comparison mode |
+| `base` | string | * | Base (common ancestor) directory (required in three-way mode) |
+| `merge_style` | string | - | Copy style for conflicts (all/ours/theirs) |
+| `conflict_only` | bool | - | Output only files with conflicts |
+
+> **Note:** `base` is required only when `three_way = true`
 
 ### Priority
 
@@ -463,6 +478,7 @@ Note: Phase 4 is only shown when `--patch` or `--patch-file` is specified
 | 0 | Success (with differences) |
 | 1 | Error |
 | 2 | Success (no differences) |
+| 3 | Success (with conflicts) - Three-way mode only |
 
 ### Error Handling
 
@@ -485,6 +501,144 @@ This allows large directory comparisons to continue even when some files have er
 | Summary file (-s) | UTF-8 |
 
 Japanese paths are handled correctly without garbled characters on Windows console.
+
+## Three-way Comparison Mode
+
+Three-way comparison mode compares a common ancestor (base) with two derived versions (ours/theirs) to assist with merge operations.
+
+### Required Options
+
+In three-way comparison mode, **all four** directory specifications are required:
+
+| Option | Role | Description |
+|--------|------|-------------|
+| `-B, --base` | Base | Common ancestor (original state) |
+| `-S, --source` | Ours | Your changes |
+| `-T, --target` | Theirs | Their changes |
+| `-O, --output` | Output | Destination for results |
+
+> **Note:** In regular two-way comparison mode, only `-S`, `-T`, and `-O` are required. In three-way mode, `-B` is additionally required.
+
+### Use Cases
+
+- Pre-merge conflict detection before branch merging
+- Reviewing parallel development changes
+- Understanding differences in forked projects
+
+### Basic Usage
+
+```bash
+# Run three-way comparison
+rs_diffcopy --three-way -B base_dir -S my_changes -T their_changes -O output
+
+# Short options
+rs_diffcopy -3 -B base -S ours -T theirs -O output
+
+# Extract only conflict candidates
+rs_diffcopy -3 -B base -S ours -T theirs -O output --conflict-only
+
+# With Excel report
+rs_diffcopy -3 -B base -S ours -T theirs -O output -E report.xlsx
+```
+
+### File Status Classification
+
+In three-way comparison, each file is classified into the following states:
+
+| Status | Base | Ours | Theirs | Description |
+|--------|:----:|:----:|:------:|-------------|
+| `unchanged` | ○ | = | = | All three identical (no change) |
+| `ours-only` | ○ | ≠ | = | Only ours modified |
+| `theirs-only` | ○ | = | ≠ | Only theirs modified |
+| `both-same` | ○ | ≠ | ≠(=ours) | Both made same change |
+| `conflict` | ○ | ≠ | ≠ | Both made different changes (conflict) |
+| `added-ours` | - | ○ | - | Added only in ours |
+| `added-theirs` | - | - | ○ | Added only in theirs |
+| `added-both-same` | - | ○ | ○(=ours) | Same file added in both |
+| `added-both-diff` | - | ○ | ○ | Different files added in both (conflict) |
+| `deleted-ours` | ○ | - | ○ | Deleted in ours |
+| `deleted-theirs` | ○ | ○ | - | Deleted in theirs |
+| `deleted-both` | ○ | - | - | Deleted in both |
+| `modify-delete` | ○ | ≠ | - | Modified in ours, deleted in theirs (conflict) |
+| `delete-modify` | ○ | - | ≠ | Deleted in ours, modified in theirs (conflict) |
+
+Note: `○` = exists, `-` = not exists, `=` = same as base, `≠` = different from base
+
+### Conflict Detection
+
+The following states are marked as **conflict candidates**:
+
+| Conflict Type | Status | Description |
+|---------------|--------|-------------|
+| Content conflict | `conflict` | Same file modified differently |
+| Add conflict | `added-both-diff` | Same-named file added with different content |
+| Modify/Delete conflict | `modify-delete` | One modified, other deleted |
+| Delete/Modify conflict | `delete-modify` | One deleted, other modified |
+
+### Merge Style (--merge-style)
+
+| Style | Description |
+|-------|-------------|
+| `all` (default) | Copy all versions with `.base`/`.ours`/`.theirs` extensions for conflicts |
+| `ours` | Prefer ours side for conflicts |
+| `theirs` | Prefer theirs side for conflicts |
+
+### Output Example
+
+```
+output_dir/
+├── src/
+│   ├── main.rs                    # ours-only: copy ours change
+│   ├── utils.rs                   # theirs-only: copy theirs change
+│   ├── handler.rs.base            # conflict: copy base
+│   ├── handler.rs.ours            # conflict: copy ours
+│   └── handler.rs.theirs          # conflict: copy theirs
+└── docs/
+    └── readme.md                  # added-theirs: copy theirs
+```
+
+### Summary Output Example
+
+```
+rs_diffcopy Summary (Three-way)
+================================
+Base:   /path/to/base
+Ours:   /path/to/ours
+Theirs: /path/to/theirs
+Output: /path/to/output
+Date:   2025-12-18 10:30:00
+
+================
+Change Matrix
+================
+Status          | Count
+----------------|------
+Unchanged       |   50
+Ours only       |    8
+Theirs only     |    5
+Both same       |    3
+Conflict        |    2
+...
+--------------------------
+Total           |   78
+Conflicts       |    4
+```
+
+### Config File (Three-way Mode)
+
+```toml
+# Three-way comparison settings
+three_way = true
+base = "./base_version"
+source = "./my_changes"      # ours
+target = "./their_changes"   # theirs
+output = "./merge_output"
+
+# Options
+merge_style = "all"          # all / ours / theirs
+conflict_only = false
+exclude = ["*.log", ".git/**"]
+```
 
 ## License
 

@@ -8,6 +8,7 @@
 
 - 差分ファイルを階層構造を維持したまま別フォルダへ抽出
 - BLAKE3ハッシュによる高速かつ正確なファイル比較
+- **三者間比較（Three-way diff）**: base/ours/theirsの3ディレクトリを比較してコンフリクト検出
 - **並列処理**による高速な比較・コピー（rayon使用）
 - フェーズ別進捗表示で処理状況を可視化
 - 追加・変更・削除ファイルをツリー形式で表示
@@ -89,8 +90,16 @@ rs_diffcopy --source old_version --target new_version --output output
 | `-L, --excel-fold-level <LEVEL>` | Excelファイルツリーの折りたたみレベル |
 | `-u, --show-unchanged` | 変更がないファイルをサマリー詳細に表示 |
 | `-C, --save-config <PATH>` | 現在のオプションを設定ファイル(TOML形式)に保存 |
+| `-3, --three-way` | 三者間比較モードを有効化 |
+| `-B, --base <PATH>` | 共通祖先ディレクトリ（三者間モード時必須） |
+| `-M, --merge-style <STYLE>` | コンフリクト時のコピー方式（all/ours/theirs） |
+| `--conflict-only` | コンフリクトのあるファイルのみ出力 |
 | `-h, --help` | ヘルプ表示 |
 | `-V, --version` | バージョン表示 |
+
+> **三者間比較モード時の注意:**
+> - 三者間比較モード（`-3`）では、`-S/--source` が「ours」（自分の変更）、`-T/--target` が「theirs」（相手の変更）として扱われます
+> - 三者間比較モードでも `-S`、`-T`、`-O` は引き続き必須です。加えて `-B/--base` も必須となります
 
 ### 使用例
 
@@ -186,8 +195,8 @@ exclude = [
 
 | 項目 | 型 | 必須 | 説明 |
 |------|------|------|------|
-| `source` | string | ✅ | 比較元ディレクトリ |
-| `target` | string | ✅ | 比較先ディレクトリ |
+| `source` | string | ✅ | 比較元ディレクトリ（三者間モードではours） |
+| `target` | string | ✅ | 比較先ディレクトリ（三者間モードではtheirs） |
 | `output` | string | ✅ | 出力先ディレクトリ |
 | `exclude` | array | - | 除外パターンのリスト |
 | `force` | bool | - | 出力先を削除して再実行 |
@@ -201,6 +210,12 @@ exclude = [
 | `excel` | string | - | Excelレポート出力パス |
 | `excel_fold_level` | integer | - | Excelファイルツリーの折りたたみレベル |
 | `show_unchanged` | bool | - | 変更がないファイルをサマリー詳細に表示 |
+| `three_way` | bool | - | 三者間比較モードを有効化 |
+| `base` | string | ※ | 共通祖先ディレクトリ（三者間モード時は必須） |
+| `merge_style` | string | - | コンフリクト時のコピー方式（all/ours/theirs） |
+| `conflict_only` | bool | - | コンフリクトのあるファイルのみ出力 |
+
+> **注:** `base` は `three_way = true` の場合のみ必須です
 
 ### 優先順位
 
@@ -463,6 +478,7 @@ Done.
 | 0 | 正常終了（差分あり） |
 | 1 | エラー終了 |
 | 2 | 正常終了（差分なし） |
+| 3 | 正常終了（コンフリクトあり）※三者間モードのみ |
 
 ### エラーハンドリング
 
@@ -485,6 +501,144 @@ Done.
 | サマリーファイル (-s) | UTF-8 |
 
 日本語パスを正しく処理し、Windowsコンソールでも文字化けしません。
+
+## 三者間比較モード（Three-way diff）
+
+三者間比較モードは、共通の祖先（base）と2つの派生バージョン（ours/theirs）を比較し、マージ作業を支援します。
+
+### 必須オプション
+
+三者間比較モードでは、以下の4つのディレクトリ指定が**すべて必須**です：
+
+| オプション | 役割 | 説明 |
+|-----------|------|------|
+| `-B, --base` | Base | 共通の祖先（変更前の状態） |
+| `-S, --source` | Ours | 自分の変更版 |
+| `-T, --target` | Theirs | 相手の変更版 |
+| `-O, --output` | Output | 結果の出力先 |
+
+> **注:** 通常の二者間比較モードでは `-S`、`-T`、`-O` の3つが必須ですが、三者間比較モードではさらに `-B` が必要です。
+
+### ユースケース
+
+- ブランチマージ前のコンフリクト事前確認
+- 複数人で並行開発した変更の統合確認
+- フォークしたプロジェクトの差分把握
+
+### 基本的な使い方
+
+```bash
+# 三者間比較を実行
+rs_diffcopy --three-way -B base_dir -S my_changes -T their_changes -O output
+
+# 短いオプション
+rs_diffcopy -3 -B base -S ours -T theirs -O output
+
+# コンフリクト候補のみ抽出
+rs_diffcopy -3 -B base -S ours -T theirs -O output --conflict-only
+
+# Excelレポート付き
+rs_diffcopy -3 -B base -S ours -T theirs -O output -E report.xlsx
+```
+
+### ファイル状態の判定
+
+三者間比較では、各ファイルを以下の状態に分類します：
+
+| 状態 | Base | Ours | Theirs | 説明 |
+|------|:----:|:----:|:------:|------|
+| `unchanged` | ○ | = | = | 3つとも同一（変更なし） |
+| `ours-only` | ○ | ≠ | = | oursのみ変更 |
+| `theirs-only` | ○ | = | ≠ | theirsのみ変更 |
+| `both-same` | ○ | ≠ | ≠(=ours) | 両方が同じ変更 |
+| `conflict` | ○ | ≠ | ≠ | 両方が異なる変更（コンフリクト候補） |
+| `added-ours` | - | ○ | - | oursでのみ追加 |
+| `added-theirs` | - | - | ○ | theirsでのみ追加 |
+| `added-both-same` | - | ○ | ○(=ours) | 両方で同じファイルを追加 |
+| `added-both-diff` | - | ○ | ○ | 両方で異なるファイルを追加（コンフリクト） |
+| `deleted-ours` | ○ | - | ○ | oursで削除 |
+| `deleted-theirs` | ○ | ○ | - | theirsで削除 |
+| `deleted-both` | ○ | - | - | 両方で削除 |
+| `modify-delete` | ○ | ≠ | - | oursで変更、theirsで削除（コンフリクト） |
+| `delete-modify` | ○ | - | ≠ | oursで削除、theirsで変更（コンフリクト） |
+
+※ `○` = 存在、`-` = 存在しない、`=` = baseと同一、`≠` = baseと異なる
+
+### コンフリクト判定
+
+以下の状態は**コンフリクト候補**として特別にマークされます：
+
+| コンフリクト種別 | 状態 | 説明 |
+|-----------------|------|------|
+| 内容コンフリクト | `conflict` | 同じファイルを異なる内容に変更 |
+| 追加コンフリクト | `added-both-diff` | 同名ファイルを異なる内容で追加 |
+| 変更/削除コンフリクト | `modify-delete` | 一方が変更、他方が削除 |
+| 削除/変更コンフリクト | `delete-modify` | 一方が削除、他方が変更 |
+
+### マージスタイル（--merge-style）
+
+| スタイル | 説明 |
+|----------|------|
+| `all`（デフォルト） | コンフリクト時は全バージョンを`.base`/`.ours`/`.theirs`拡張子付きでコピー |
+| `ours` | コンフリクト時はours側を優先 |
+| `theirs` | コンフリクト時はtheirs側を優先 |
+
+### 出力例
+
+```
+output_dir/
+├── src/
+│   ├── main.rs                    # ours-only: oursの変更をコピー
+│   ├── utils.rs                   # theirs-only: theirsの変更をコピー
+│   ├── handler.rs.base            # conflict: baseをコピー
+│   ├── handler.rs.ours            # conflict: oursをコピー
+│   └── handler.rs.theirs          # conflict: theirsをコピー
+└── docs/
+    └── readme.md                  # added-theirs: theirsをコピー
+```
+
+### サマリー出力例
+
+```
+rs_diffcopy Summary (Three-way)
+================================
+Base:   /path/to/base
+Ours:   /path/to/ours
+Theirs: /path/to/theirs
+Output: /path/to/output
+Date:   2025-12-18 10:30:00
+
+================
+Change Matrix
+================
+Status          | Count
+----------------|------
+Unchanged       |   50
+Ours only       |    8
+Theirs only     |    5
+Both same       |    3
+Conflict        |    2
+...
+--------------------------
+Total           |   78
+Conflicts       |    4
+```
+
+### 設定ファイル（三者間モード）
+
+```toml
+# 三者間比較の設定
+three_way = true
+base = "./base_version"
+source = "./my_changes"      # ours
+target = "./their_changes"   # theirs
+output = "./merge_output"
+
+# オプション
+merge_style = "all"          # all / ours / theirs
+conflict_only = false
+exclude = ["*.log", ".git/**"]
+```
 
 ## ライセンス
 
