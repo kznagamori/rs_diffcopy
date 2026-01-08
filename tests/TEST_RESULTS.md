@@ -1,0 +1,414 @@
+# rs_diffcopy テスト結果
+
+## 最新テスト実行結果
+
+| 項目 | 内容 |
+|-----|------|
+| 実施日 | 2026-01-08 |
+| 実施時刻 | 22:15 JST |
+| 実行環境 | Linux (WSL2) |
+| Rustバージョン | stable |
+| 結果 | **全テストPASS** |
+
+## テスト結果サマリー
+
+| カテゴリ | テスト数 | PASS | FAIL | スキップ |
+|---------|---------|------|------|---------|
+| ユニットテスト | 89 | 89 | 0 | 0 |
+| 結合テスト | 119 | 119 | 0 | 0 |
+| **合計** | **208** | **208** | **0** | **0** |
+
+---
+
+## 結合テスト詳細結果
+
+### 1. 基本動作テスト (4テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| BASIC-001 | test_help_option | PASS | |
+| BASIC-002 | test_help_short_option | PASS | |
+| BASIC-003 | test_version_option | PASS | |
+| BASIC-004 | test_version_short_option | PASS | |
+
+### 2. 二方向比較テスト (7テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| TWO-001 | test_added_file_detection | PASS | |
+| TWO-002 | test_modified_file_detection | PASS | |
+| TWO-003 | test_deleted_file_detection | PASS | |
+| TWO-004 | test_unchanged_file_detection | PASS | |
+| TWO-005 | test_directory_structure_preserved | PASS | |
+| TWO-006 | test_no_differences_exit_code | PASS | |
+| TWO-007 | test_differences_exit_code | PASS | |
+
+### 3. 三方向比較テスト (4テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| THREE-001 | test_three_way_basic | PASS | |
+| THREE-002 | test_three_way_conflict | PASS | |
+| THREE-003 | test_three_way_both_same_change | PASS | |
+| THREE-004 | test_three_way_requires_base | PASS | |
+
+### 4. オプションテスト (11テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| OPT-001 | test_dry_run | PASS | |
+| OPT-002 | test_both_versions | PASS | |
+| OPT-003 | test_copy_deleted | PASS | |
+| OPT-004 | test_preserve_timestamps | PASS | |
+| OPT-005 | test_exclude_pattern | PASS | |
+| OPT-006 | test_multiple_exclude_patterns | PASS | |
+| OPT-007 | test_patch_generation | PASS | |
+| OPT-008 | test_combined_patch_file | PASS | |
+| OPT-009 | test_excel_report | PASS | |
+| OPT-010 | test_summary_file | PASS | |
+| OPT-011 | test_verbose_mode | PASS | |
+
+### 5. 日本語パステスト (11テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| JP-001 | test_japanese_directory_names | PASS | |
+| JP-002 | test_japanese_file_names | PASS | |
+| JP-003 | test_japanese_nested_path | PASS | |
+| JP-004 | test_mixed_japanese_english_path | PASS | |
+| JP-005 | test_japanese_in_summary_output | PASS | |
+| JP-006 | test_japanese_both_versions | PASS | |
+| JP-007 | test_japanese_copy_deleted | PASS | |
+| JP-008 | test_japanese_patch_generation | PASS | |
+| JP-009 | test_japanese_excel_report | PASS | |
+| JP-010 | test_japanese_summary_file | PASS | |
+| JP-011 | test_japanese_three_way | PASS | |
+
+### 6. エラーハンドリングテスト (4テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| ERR-001 | test_nonexistent_source | PASS | |
+| ERR-002 | test_nonexistent_target | PASS | |
+| ERR-003 | test_output_exists_without_force | PASS | |
+| ERR-004 | test_invalid_glob_pattern | PASS | |
+
+### 7. 準正常系テスト (23テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| SEMI-001 | test_empty_directories | PASS | |
+| SEMI-002 | test_large_file_comparison | PASS | 1MB+ |
+| SEMI-003 | test_binary_file_detection | PASS | |
+| SEMI-004 | test_symlink_handling | PASS | Unix |
+| SEMI-005 | test_special_characters_in_filename | PASS | |
+| SEMI-006 | test_deeply_nested_directories | PASS | 12階層 |
+| SEMI-007 | test_many_files | PASS | 150ファイル |
+| SEMI-008 | test_empty_file | PASS | |
+| SEMI-009 | test_three_way_ours_only_change | PASS | |
+| SEMI-010 | test_three_way_theirs_only_change | PASS | |
+| SEMI-011 | test_three_way_file_added_both | PASS | |
+| SEMI-012 | test_three_way_file_deleted_both | PASS | |
+| SEMI-013 | test_stats_only | PASS | |
+| SEMI-014 | test_filter_status_added | PASS | |
+| SEMI-015 | test_filter_status_modified | PASS | |
+| SEMI-016 | test_force_option_with_dry_run | PASS | |
+| SEMI-017 | test_no_tree_option | PASS | |
+| SEMI-018 | test_no_details_option | PASS | |
+| SEMI-019 | test_workers_option | PASS | |
+| SEMI-020 | test_missing_required_args | PASS | |
+| SEMI-021 | test_japanese_content_in_file | PASS | |
+| SEMI-022 | test_hiragana_katakana_kanji_mixed | PASS | |
+| SEMI-023 | test_long_japanese_filename | PASS | |
+
+### 8. 終了コードテスト (4テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| EXIT-001 | test_exit_code_0_with_differences | PASS | |
+| EXIT-002 | test_exit_code_1_on_error | PASS | |
+| EXIT-003 | test_exit_code_2_no_differences | PASS | |
+| EXIT-004 | test_exit_code_3_conflicts | PASS | |
+
+### 9. エッジケーステスト (6テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| EDGE-001 | test_empty_directory_detection | PASS | |
+| EDGE-002 | test_empty_directories_both_sides | PASS | |
+| EDGE-003 | test_same_size_different_content | PASS | |
+| EDGE-004 | test_unicode_russian_filenames | PASS | |
+| EDGE-005 | test_exclude_pycache_pattern | PASS | |
+| EDGE-006 | test_both_versions_added_files_unchanged | PASS | |
+
+### 10. 設定ファイルテスト (4テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| CFG-001 | test_config_file_basic | PASS | |
+| CFG-002 | test_config_file_with_exclude | PASS | |
+| CFG-003 | test_config_file_with_both_versions | PASS | |
+| CFG-004 | test_cli_overrides_config | PASS | |
+
+### 11. show_unchangedテスト (3テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| SHOW-001 | test_show_unchanged_option | PASS | |
+| SHOW-002 | test_show_unchanged_short_option | PASS | |
+| SHOW-003 | test_unchanged_count_in_statistics | PASS | |
+
+### 12. シンボリックリンクテスト (3テスト - Unix only)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| SYM-001 | test_symlink_added_detection | PASS | |
+| SYM-002 | test_symlink_deleted_detection | PASS | |
+| SYM-003 | test_broken_symlink_detection | PASS | |
+
+### 13. パーミッションテスト (2テスト - Unix only)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| PERM-001 | test_permission_check_scripts_mode | PASS | |
+| PERM-002 | test_permission_check_default_disabled | PASS | |
+
+### 14. 拡張三方向比較テスト (9テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| EXT3-001 | test_three_way_added_ours | PASS | |
+| EXT3-002 | test_three_way_added_theirs | PASS | |
+| EXT3-003 | test_three_way_deleted_ours | PASS | |
+| EXT3-004 | test_three_way_deleted_theirs | PASS | |
+| EXT3-005 | test_three_way_deleted_both | PASS | |
+| EXT3-006 | test_three_way_modify_delete_conflict | PASS | |
+| EXT3-007 | test_three_way_merge_style_ours | PASS | |
+| EXT3-008 | test_three_way_merge_style_theirs | PASS | |
+| EXT3-009 | test_three_way_conflict_only | PASS | |
+
+### 15. Excelファイル内容検証テスト (6テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| EXCEL-001 | test_excel_has_correct_sheets | PASS | |
+| EXCEL-002 | test_excel_summary_statistics | PASS | |
+| EXCEL-003 | test_excel_file_tree_entries | PASS | |
+| EXCEL-004 | test_excel_details_sections | PASS | |
+| EXCEL-005 | test_excel_japanese_filenames | PASS | |
+| EXCEL-006 | test_excel_subdirectory_structure | PASS | |
+
+### 16. サマリーファイル内容検証テスト (8テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| SUM-001 | test_summary_contains_header | PASS | |
+| SUM-002 | test_summary_statistics_accuracy | PASS | |
+| SUM-003 | test_summary_contains_file_tree | PASS | |
+| SUM-004 | test_summary_contains_details | PASS | |
+| SUM-005 | test_summary_japanese_paths | PASS | |
+| SUM-006 | test_summary_options_section | PASS | |
+| SUM-007 | test_summary_no_differences | PASS | |
+| SUM-008 | test_summary_subdirectory_tree | PASS | |
+
+### 17. パッチファイル内容検証テスト (10テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| PATCH-001 | test_patch_file_unified_format | PASS | |
+| PATCH-002 | test_combined_patch_file | PASS | |
+| PATCH-003 | test_patch_addition_only | PASS | |
+| PATCH-004 | test_patch_deletion_only | PASS | |
+| PATCH-005 | test_patch_multiple_hunks | PASS | |
+| PATCH-006 | test_patch_subdirectory | PASS | |
+| PATCH-007 | test_patch_japanese_content | PASS | |
+| PATCH-008 | test_patch_binary_skipped | PASS | |
+| PATCH-009 | test_patch_and_patch_file_together | PASS | |
+| PATCH-010 | test_patch_hunk_header_format | PASS | |
+
+---
+
+## ユニットテスト詳細結果 (89テスト)
+
+### src/types.rs (22テスト)
+
+| テスト名 | 結果 |
+|---------|------|
+| test_file_status_as_str | PASS |
+| test_file_status_from_str | PASS |
+| test_three_way_status_is_conflict | PASS |
+| test_three_way_status_from_str | PASS |
+| test_special_file_type_as_str | PASS |
+| test_file_entry_new | PASS |
+| test_three_way_entry_new | PASS |
+| test_comparison_stats_total_changes | PASS |
+| test_comparison_stats_has_differences | PASS |
+| test_three_way_stats_total_conflicts | PASS |
+| test_three_way_stats_has_conflicts | PASS |
+| test_three_way_stats_has_differences | PASS |
+| test_comparison_result_new | PASS |
+| test_three_way_result_new | PASS |
+| test_status_filter_empty | PASS |
+| test_status_filter_included | PASS |
+| test_status_filter_excluded | PASS |
+| test_status_filter_three_way | PASS |
+| test_check_permissions_mode | PASS |
+| test_color_mode | PASS |
+| test_log_level | PASS |
+| test_merge_style | PASS |
+
+### src/scanner.rs (15テスト)
+
+| テスト名 | 結果 |
+|---------|------|
+| test_scanner_new_empty_patterns | PASS |
+| test_scanner_new_invalid_pattern | PASS |
+| test_scanner_scan_empty_directory | PASS |
+| test_scanner_scan_basic | PASS |
+| test_scanner_scan_identifies_directories | PASS |
+| test_scanner_scan_nested_directories | PASS |
+| test_scanner_exclusion_glob_patterns | PASS |
+| test_scanner_exclusion_multiple_extensions | PASS |
+| test_scanner_exclusion_directory_pattern | PASS |
+| test_scanner_scan_union_basic | PASS |
+| test_scanner_scan_union_with_nonexistent | PASS |
+| test_get_symlink_target | PASS |
+| test_get_symlink_target_unix | PASS |
+| test_is_symlink_broken_regular_file | PASS |
+| test_is_symlink_broken_unix | PASS |
+
+### src/utils.rs (14テスト)
+
+| テスト名 | 結果 |
+|---------|------|
+| test_hash_file | PASS |
+| test_hash_file_empty | PASS |
+| test_hash_file_nonexistent | PASS |
+| test_is_binary_file_text | PASS |
+| test_is_binary_file_binary | PASS |
+| test_is_binary_file_empty | PASS |
+| test_format_size | PASS |
+| test_count_directory_contents | PASS |
+| test_count_directory_contents_empty | PASS |
+| test_count_directory_contents_nonexistent | PASS |
+| test_display_width | PASS |
+| test_pad_to_width | PASS |
+| test_is_script_file | PASS |
+| test_get_file_mode | PASS |
+
+### src/safety.rs (14テスト)
+
+| テスト名 | 結果 |
+|---------|------|
+| test_is_protected_path_unix_root | PASS |
+| test_is_protected_path_unix_system_dirs | PASS |
+| test_is_protected_path_unix_safe_paths | PASS |
+| test_validate_directories_all_exist | PASS |
+| test_validate_directories_with_base | PASS |
+| test_validate_directories_source_missing | PASS |
+| test_validate_directories_target_missing | PASS |
+| test_validate_directories_base_missing | PASS |
+| test_check_output_directory_not_exists | PASS |
+| test_check_output_directory_exists_no_force | PASS |
+| test_check_output_directory_exists_dry_run | PASS |
+| test_check_output_protected_path | PASS |
+| test_home_dir | PASS |
+| test_get_protected_paths_not_empty | PASS |
+
+### src/copier.rs (13テスト)
+
+| テスト名 | 結果 |
+|---------|------|
+| test_copier_new | PASS |
+| test_should_copy_added | PASS |
+| test_should_copy_modified | PASS |
+| test_should_copy_deleted_without_flag | PASS |
+| test_should_copy_deleted_with_flag | PASS |
+| test_should_copy_unchanged | PASS |
+| test_should_copy_with_filter | PASS |
+| test_copy_directory | PASS |
+| test_copy_file_single | PASS |
+| test_copy_file_both_versions | PASS |
+| test_copy_file_deleted | PASS |
+| test_copy_with_subdirectory | PASS |
+| test_preserve_timestamp | PASS |
+
+### src/patch.rs (11テスト)
+
+| テスト名 | 結果 |
+|---------|------|
+| test_patch_generator_new | PASS |
+| test_create_unified_diff_simple | PASS |
+| test_create_unified_diff_addition | PASS |
+| test_create_unified_diff_deletion | PASS |
+| test_create_unified_diff_no_changes | PASS |
+| test_create_unified_diff_empty_to_content | PASS |
+| test_generate_patch_text_file | PASS |
+| test_generate_patch_binary_file | PASS |
+| test_write_patch_file | PASS |
+| test_write_patch_file_with_subdirectory | PASS |
+| test_write_combined_patch | PASS |
+
+---
+
+## テスト実行履歴
+
+| 日付 | 時刻 | Unit | Integration | 結果 | 備考 |
+|------|------|------|-------------|------|------|
+| 2026-01-08 | 21:40 | 89/89 | 68/68 | PASS | 初回実行、準正常系追加 |
+| 2026-01-08 | 22:15 | 89/89 | 95/95 | PASS | 実運用不具合対応テスト追加 |
+| 2026-01-08 | 23:30 | 89/89 | 119/119 | PASS | 出力ファイル内容検証テスト追加（Excel/Summary/Patch） |
+
+---
+
+## テスト実行方法
+
+```bash
+# すべてのテストを実行
+cargo test
+
+# ユニットテストのみ
+cargo test --lib
+
+# 結合テストのみ
+cargo test --test integration_tests
+
+# 特定のテストを実行
+cargo test --test integration_tests test_japanese
+
+# 詳細出力付き
+cargo test -- --nocapture
+
+# テスト結果をファイルに保存
+cargo test 2>&1 | tee test_output.txt
+```
+
+---
+
+## 注意事項
+
+- 保護ディレクトリテスト（PROT-001〜006）はユニットテスト（src/safety.rs）でのみ実行
+- システムディレクトリへの誤操作を防ぐため、結合テストでは保護ディレクトリの実際の削除テストは行わない
+- 日本語パステストは UTF-8 対応環境で実行すること
+- シンボリックリンクテスト、パーミッションテストはUnix環境でのみ実行
+
+---
+
+## 実運用不具合対応テスト
+
+以下のテストケースは実運用時の不具合対応から追加されたものです：
+
+- **エッジケーステスト**: 空ディレクトリ、同サイズ異内容、ロシア語ファイル名
+- **設定ファイルテスト**: TOML設定ファイルの読み込み、CLI引数オーバーライド
+- **show_unchangedテスト**: 未変更ファイルの表示オプション
+- **シンボリックリンクテスト**: リンク追加・削除・壊れたリンク検出
+- **パーミッションテスト**: スクリプトファイルの権限チェック
+- **拡張三方向比較テスト**: 追加・削除・modify-delete競合、マージスタイル
+
+## 出力ファイル内容検証テスト
+
+以下のテストは実際に生成されたファイルの内容を読み取り、正確性を検証します：
+
+- **Excelファイル検証** (calamine使用): シート構成、統計値、ファイルエントリ、日本語
+- **サマリーファイル検証**: ヘッダー、統計、ファイルツリー、詳細セクション
+- **パッチファイル検証**: unified diff形式、ハンク構造、日本語内容、バイナリスキップ
