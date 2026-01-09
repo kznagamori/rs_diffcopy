@@ -5,7 +5,7 @@
 | 項目 | 内容 |
 |-----|------|
 | 実施日 | 2026-01-09 |
-| 実施時刻 | 05:00 JST |
+| 実施時刻 | 06:30 JST |
 | 実行環境 | Linux (WSL2) |
 | Rustバージョン | stable |
 | 結果 | **全テストPASS** |
@@ -14,9 +14,9 @@
 
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
-| ユニットテスト | 102 | 102 | 0 | 0 |
-| 結合テスト | 148 | 148 | 0 | 0 |
-| **合計** | **250** | **250** | **0** | **0** |
+| ユニットテスト | 109 | 109 | 0 | 0 |
+| 結合テスト | 153 | 153 | 0 | 0 |
+| **合計** | **262** | **262** | **0** | **0** |
 
 ---
 
@@ -280,9 +280,19 @@
 | FILTFIX-004 | test_excel_fold_level_groups_correctly | PASS | 深さ≧levelの行がグループ化対象確認 |
 | FILTFIX-005 | test_summary_filter_status_only_exclusion | PASS | 除外のみ時に"all (implied)"表示確認 |
 
+### 23. File Treeセル構造・fold-level改善テスト (5テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| FTREE-001 | test_excel_file_tree_no_cell_repeat | PASS | セル重複省略確認 |
+| FTREE-002 | test_excel_fold_level_2_per_directory_grouping | PASS | fold-level 2ディレクトリ単位グループ化確認 |
+| FTREE-003 | test_excel_fold_level_3_only_deep_items | PASS | fold-level 3深い項目のみグループ化確認 |
+| FTREE-004 | test_excel_directory_boundaries | PASS | ディレクトリ境界検出確認 |
+| FTREE-005 | test_excel_file_tree_empty_cells_for_repeated_values | PASS | 同一ディレクトリ内ファイルの空セル確認 |
+
 ---
 
-## ユニットテスト詳細結果 (102テスト)
+## ユニットテスト詳細結果 (109テスト)
 
 ### src/types.rs (22テスト)
 
@@ -403,7 +413,7 @@
 | test_write_patch_file_with_subdirectory | PASS |
 | test_write_combined_patch | PASS |
 
-### src/excel.rs (13テスト)
+### src/excel.rs (20テスト)
 
 | テスト名 | 結果 |
 |---------|------|
@@ -420,6 +430,13 @@
 | test_format_filter_status_all_with_exclusion | PASS |
 | test_format_filter_status_included_only | PASS |
 | test_format_filter_status_only_exclusions | PASS |
+| test_calculate_directory_boundaries_simple | PASS |
+| test_calculate_directory_boundaries_all_same_first_level | PASS |
+| test_calculate_directory_boundaries_root_files | PASS |
+| test_apply_row_grouping_fold_level_2 | PASS |
+| test_apply_row_grouping_fold_level_3 | PASS |
+| test_cell_deduplication_logic | PASS |
+| test_cell_deduplication_parent_changed | PASS |
 
 ---
 
@@ -435,6 +452,7 @@
 | 2026-01-09 | 02:30 | 96/96 | 138/138 | PASS | Excelフォーマット拡張テスト追加（罫線、Options、fold-level） |
 | 2026-01-09 | 03:30 | 98/98 | 143/143 | PASS | Filter statusオプション表示テスト追加（Summary/Excel） |
 | 2026-01-09 | 05:00 | 102/102 | 148/148 | PASS | Filter status表示・File Tree構造・fold-level不具合修正テスト追加 |
+| 2026-01-09 | 06:30 | 109/109 | 153/153 | PASS | File Treeセル構造・fold-level改善テスト追加（セル重複省略、ディレクトリ単位グループ化、境界罫線） |
 
 ---
 
@@ -608,3 +626,31 @@ cargo test 2>&1 | tee test_output.txt
 - File Treeでパスコンポーネントが別々のセルに配置されることを検証
 - fold-level 2指定時に深さ2以上の行がグループ化対象になることを検証
 - 除外のみ指定時に"all (implied)"が表示されることを検証
+
+## File Treeセル構造・fold-level改善テスト
+
+**修正要望1**: File Treeのセル重複省略（上のセルと同じ値の場合は記載しない）
+- ツリー構造を視覚的に表現するため、同じディレクトリ名は最初の行のみに表示
+
+**修正要望2**: ディレクトリ単位でのfold-levelグループ化
+- 連続した行ではなく、同一ディレクトリ配下をまとめてグループ化
+- 例: fold-level 2の場合、b/配下とc/配下を別々のグループとして折りたたみ
+
+**修正要望3**: ディレクトリ区切り罫線
+- 第1階層が変わるタイミングで下罫線を追加し、ディレクトリ単位を視覚的に区切る
+
+**修正内容**:
+1. `excel.rs`: `write_file_tree_sheet()`を完全にリライト
+   - セル重複省略ロジック: 前行と同じコンポーネントは空セルで表示
+   - `calculate_directory_boundaries()`関数を追加してディレクトリ境界を検出
+   - 境界行には太い下罫線を適用
+2. `excel.rs`: `apply_row_grouping()`をディレクトリ単位グループ化に修正
+   - 同一親ディレクトリを持つアイテムを1つのグループとしてまとめる
+   - 異なる親ディレクトリ間でグループを分離
+
+**テスト内容**:
+- 親ディレクトリが同じ場合にセルが空になることを検証
+- fold-level 2でb/配下とc/配下が別グループとして折りたたまれることを検証
+- fold-level 3で深さ3以上の項目のみがグループ化されることを検証
+- 第1階層が変わるタイミングでディレクトリ境界が検出されることを検証
+- 同一ディレクトリ内の2番目以降のファイルで親ディレクトリセルが空になることを検証

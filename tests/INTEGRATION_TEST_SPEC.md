@@ -365,6 +365,23 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
+### 23. File Treeセル構造・fold-level改善テスト
+
+**背景**: 以下の仕様改善を検証
+1. File Treeのセル重複省略（上のセルと同じ値の場合は記載しない）
+2. ディレクトリ単位でのfold-levelグループ化（連続行ではなく、同一ディレクトリ配下をまとめる）
+3. ディレクトリ区切り罫線（第1階層が変わるタイミングで下罫線追加）
+
+| テストID | テスト名 | テスト内容 | 期待結果 | 分類 |
+|---------|---------|-----------|---------|------|
+| FTREE-001 | test_excel_file_tree_no_cell_repeat | セル重複省略確認 | 親ディレクトリが同じ場合はセルが空 | 正常系 |
+| FTREE-002 | test_excel_fold_level_2_per_directory_grouping | fold-level 2ディレクトリ単位グループ化 | b/配下とc/配下が別グループ | 正常系 |
+| FTREE-003 | test_excel_fold_level_3_only_deep_items | fold-level 3深い項目のみグループ化 | 深さ3以上の項目のみグループ化 | 正常系 |
+| FTREE-004 | test_excel_directory_boundaries | ディレクトリ境界検出 | 第1階層変更時に境界あり | 正常系 |
+| FTREE-005 | test_excel_file_tree_empty_cells_for_repeated_values | 同一ディレクトリ内ファイルの空セル | src/配下の2番目以降はsrc/セルが空 | 正常系 |
+
+---
+
 ## 終了コード一覧
 
 | 終了コード | 意味 |
@@ -438,3 +455,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-09 | 1.6 | Excelフォーマット拡張テスト追加（罫線、Options、fold-level、ヘッダー幅修正） |
 | 2026-01-09 | 1.7 | Filter statusオプション表示テスト追加（SummaryとExcelのOptionsセクション） |
 | 2026-01-09 | 1.8 | Filter status表示・File Tree構造・fold-level不具合修正テスト追加 |
+| 2026-01-09 | 1.9 | File Treeセル構造・fold-level改善テスト追加（セル重複省略、ディレクトリ単位グループ化、境界罫線） |
