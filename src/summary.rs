@@ -652,6 +652,12 @@ impl<'a> SummaryWriter<'a> {
                 let type_str = if info.is_directory { "directory" } else { "file" };
                 let status_str = if info.is_broken { "BROKEN" } else { "OK" };
                 output.push_str(&format!("    Type: {} | Status: {}\n", type_str, status_str));
+            } else {
+                // symlink_info が取得できなかった場合もパスを表示
+                output.push_str(&format!(
+                    "  {} (symlink info unavailable)\n",
+                    entry.relative_path.display()
+                ));
             }
         }
 

@@ -3238,3 +3238,273 @@ mod patch_content_tests {
         assert!(hunk_regex.is_match(&content), "Hunk header format incorrect: {}", content);
     }
 }
+
+// ============================================================================
+// 18. Symlink Bug Fix Tests (Issue: Statistics showed symlinks but no details)
+// ============================================================================
+
+#[cfg(unix)]
+mod symlink_bug_fix_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    // IT-1801: Unchanged symlinks should NOT be counted in statistics
+    #[test]
+    fn test_unchanged_symlinks_not_counted() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create the same symlink in both source and target
+        fs::write(source.join("real_file.txt"), "content").unwrap();
+        fs::write(target.join("real_file.txt"), "content").unwrap();
+
+        // Create identical symlinks pointing to the same target
+        symlink("real_file.txt", source.join("link.txt")).unwrap();
+        symlink("real_file.txt", target.join("link.txt")).unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+        ]);
+
+        let stdout = String::from_utf8_lossy(&result.stdout);
+
+        // Symlinks: 0 files (or no "Symlinks:" line at all) since unchanged
+        // Should NOT have "Symlinks: 1" or "Symlinks: 2"
+        let symlink_count_regex = regex::Regex::new(r"Symlinks:\s+(\d+)").unwrap();
+        if let Some(caps) = symlink_count_regex.captures(&stdout) {
+            let count: i32 = caps[1].parse().unwrap();
+            assert_eq!(count, 0, "Unchanged symlinks should not be counted. Got: {}", count);
+        }
+
+        // Also verify no Symlink Details section exists
+        assert!(!stdout.contains("Symlink Details"),
+            "Symlink Details section should not appear for unchanged symlinks");
+    }
+
+    // IT-1802: Changed symlinks should be counted and have details
+    #[test]
+    fn test_changed_symlinks_counted_with_details() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create files that symlinks will point to
+        fs::write(source.join("old_target.txt"), "old").unwrap();
+        fs::write(target.join("new_target.txt"), "new").unwrap();
+
+        // Create symlinks pointing to different targets
+        symlink("old_target.txt", source.join("link.txt")).unwrap();
+        symlink("new_target.txt", target.join("link.txt")).unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let summary = fs::read_to_string(&summary_path).unwrap();
+
+        // Should have Symlinks: 1 (changed symlink)
+        let symlink_count_regex = regex::Regex::new(r"Symlinks:\s+(\d+)").unwrap();
+        let caps = symlink_count_regex.captures(&summary).expect("Symlinks count not found");
+        let count: i32 = caps[1].parse().unwrap();
+        assert!(count >= 1, "Changed symlink should be counted. Got: {}", count);
+
+        // Should have Symlink Details section
+        assert!(summary.contains("Symlink Details"),
+            "Symlink Details section should appear for changed symlinks");
+
+        // Should show the symlink path in details
+        assert!(summary.contains("link.txt") || summary.contains("link"),
+            "Symlink path should appear in details");
+    }
+
+    // IT-1803: Statistics symlink count should match Symlink Details entries
+    #[test]
+    fn test_symlink_statistics_match_details_count() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create multiple symlink scenarios
+        // 1. Added symlink
+        fs::write(target.join("target1.txt"), "content1").unwrap();
+        symlink("target1.txt", target.join("added_link.txt")).unwrap();
+
+        // 2. Deleted symlink
+        fs::write(source.join("target2.txt"), "content2").unwrap();
+        symlink("target2.txt", source.join("deleted_link.txt")).unwrap();
+
+        // 3. Changed symlink
+        fs::write(source.join("old_target.txt"), "old").unwrap();
+        fs::write(target.join("new_target.txt"), "new").unwrap();
+        symlink("old_target.txt", source.join("changed_link.txt")).unwrap();
+        symlink("new_target.txt", target.join("changed_link.txt")).unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let summary = fs::read_to_string(&summary_path).unwrap();
+
+        // Get symlink count from statistics
+        let symlink_count_regex = regex::Regex::new(r"Symlinks:\s+(\d+)").unwrap();
+        let caps = symlink_count_regex.captures(&summary).expect("Symlinks count not found");
+        let stats_count: i32 = caps[1].parse().unwrap();
+
+        // Count entries in Symlink Details section
+        // The section contains entries for added, deleted, and changed symlinks
+        let details_start = summary.find("Symlink Details");
+        assert!(details_start.is_some(), "Symlink Details section must exist");
+
+        // Count how many symlink paths appear in the details
+        // Looking for patterns like "added_link.txt", "deleted_link.txt", "changed_link.txt"
+        let details_section = &summary[details_start.unwrap()..];
+        let mut details_count = 0;
+        if details_section.contains("added_link") { details_count += 1; }
+        if details_section.contains("deleted_link") { details_count += 1; }
+        if details_section.contains("changed_link") { details_count += 1; }
+
+        assert_eq!(stats_count, details_count,
+            "Statistics count ({}) should match details entries ({})",
+            stats_count, details_count);
+    }
+
+    // IT-1804: Symlink info should always be set for reported symlinks
+    #[test]
+    fn test_symlink_info_always_set() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create an added symlink
+        fs::write(target.join("real.txt"), "content").unwrap();
+        symlink("real.txt", target.join("new_link.txt")).unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let summary = fs::read_to_string(&summary_path).unwrap();
+
+        // If symlink count > 0, Symlink Details must exist
+        let symlink_count_regex = regex::Regex::new(r"Symlinks:\s+(\d+)").unwrap();
+        if let Some(caps) = symlink_count_regex.captures(&summary) {
+            let count: i32 = caps[1].parse().unwrap();
+            if count > 0 {
+                assert!(summary.contains("Symlink Details"),
+                    "When symlink count is {}, Symlink Details section must exist", count);
+
+                // Should NOT have "(symlink info unavailable)" for normal cases
+                assert!(!summary.contains("symlink info unavailable"),
+                    "Symlink info should be properly set, not unavailable");
+            }
+        }
+    }
+
+    // IT-1805: Multiple unchanged symlinks should all be ignored
+    #[test]
+    fn test_multiple_unchanged_symlinks_ignored() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create 3 identical symlinks in both source and target
+        for i in 1..=3 {
+            let target_file = format!("target{}.txt", i);
+            let link_file = format!("link{}.txt", i);
+
+            fs::write(source.join(&target_file), format!("content{}", i)).unwrap();
+            fs::write(target.join(&target_file), format!("content{}", i)).unwrap();
+
+            symlink(&target_file, source.join(&link_file)).unwrap();
+            symlink(&target_file, target.join(&link_file)).unwrap();
+        }
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+        ]);
+
+        let stdout = String::from_utf8_lossy(&result.stdout);
+
+        // All 3 symlinks are unchanged, so none should be counted
+        let symlink_count_regex = regex::Regex::new(r"Symlinks:\s+(\d+)").unwrap();
+        if let Some(caps) = symlink_count_regex.captures(&stdout) {
+            let count: i32 = caps[1].parse().unwrap();
+            assert_eq!(count, 0,
+                "All unchanged symlinks should not be counted. Got: {}", count);
+        }
+
+        // No Symlink Details section
+        assert!(!stdout.contains("Symlink Details"),
+            "Symlink Details section should not appear when all symlinks are unchanged");
+    }
+
+    // IT-1806: Mix of changed and unchanged symlinks - only changed counted
+    #[test]
+    fn test_mixed_changed_unchanged_symlinks() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create 2 unchanged symlinks
+        for i in 1..=2 {
+            let target_file = format!("unchanged_target{}.txt", i);
+            let link_file = format!("unchanged_link{}.txt", i);
+
+            fs::write(source.join(&target_file), format!("content{}", i)).unwrap();
+            fs::write(target.join(&target_file), format!("content{}", i)).unwrap();
+
+            symlink(&target_file, source.join(&link_file)).unwrap();
+            symlink(&target_file, target.join(&link_file)).unwrap();
+        }
+
+        // Create 1 changed symlink
+        fs::write(source.join("old.txt"), "old").unwrap();
+        fs::write(target.join("new.txt"), "new").unwrap();
+        symlink("old.txt", source.join("changed_link.txt")).unwrap();
+        symlink("new.txt", target.join("changed_link.txt")).unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let summary = fs::read_to_string(&summary_path).unwrap();
+
+        // Only the 1 changed symlink should be counted
+        let symlink_count_regex = regex::Regex::new(r"Symlinks:\s+(\d+)").unwrap();
+        let caps = symlink_count_regex.captures(&summary).expect("Symlinks count not found");
+        let count: i32 = caps[1].parse().unwrap();
+        assert_eq!(count, 1,
+            "Only changed symlinks should be counted. Expected 1, got: {}", count);
+
+        // Symlink Details should only show the changed one
+        assert!(summary.contains("Symlink Details"),
+            "Symlink Details section should appear");
+        assert!(summary.contains("changed_link"),
+            "Changed symlink should appear in details");
+        assert!(!summary.contains("unchanged_link1") && !summary.contains("unchanged_link2"),
+            "Unchanged symlinks should not appear in details");
+    }
+}

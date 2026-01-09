@@ -288,6 +288,21 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
+### 18. シンボリックリンク不具合修正テスト
+
+**背景**: 統計で「Symlinks: N files」と表示されるのに「Symlink Details」セクションが空になる不具合の修正を検証
+
+| テストID | テスト名 | テスト内容 | 期待結果 | 分類 |
+|---------|---------|-----------|---------|------|
+| SYMFIX-001 | test_unchanged_symlinks_not_counted | 変更なしシンボリックリンク | 統計でカウントされない、Symlink Details表示なし | 正常系 |
+| SYMFIX-002 | test_changed_symlinks_counted_with_details | 変更ありシンボリックリンク | 統計でカウント、Symlink Detailsに詳細表示 | 正常系 |
+| SYMFIX-003 | test_symlink_statistics_match_details_count | 統計とDetails一致 | 統計の件数とSymlink Detailsのエントリ数が一致 | 正常系 |
+| SYMFIX-004 | test_symlink_info_always_set | symlink_info設定確認 | カウント>0時にSymlink Details必須、"unavailable"なし | 正常系 |
+| SYMFIX-005 | test_multiple_unchanged_symlinks_ignored | 複数の変更なしシンボリックリンク | すべて無視、統計0、Details表示なし | 正常系 |
+| SYMFIX-006 | test_mixed_changed_unchanged_symlinks | 変更あり/なし混在 | 変更ありのみカウント、変更なしはDetailsに表示なし | 正常系 |
+
+---
+
 ## 終了コード一覧
 
 | 終了コード | 意味 |
@@ -356,3 +371,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-08 | 1.1 | 準正常系テスト追加、テスト結果ファイル形式定義 |
 | 2026-01-08 | 1.2 | 実運用不具合対応テスト追加（エッジケース、設定ファイル、show_unchanged、シンボリックリンク、パーミッション、拡張三方向比較） |
 | 2026-01-08 | 1.3 | 出力ファイル内容検証テスト追加（Excel、サマリー、パッチ）、calamineクレート使用 |
+| 2026-01-09 | 1.4 | シンボリックリンク不具合修正テスト追加（統計とSymlink Details不一致問題） |

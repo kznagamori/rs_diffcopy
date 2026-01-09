@@ -214,39 +214,43 @@ impl<'a> Comparator<'a> {
         match (in_source && source_path.is_symlink(), in_target && target_path.is_symlink()) {
             (false, true) => {
                 // Added symlink
-                if let Some(target) = get_symlink_target(target_path) {
-                    entry.symlink_info = Some(SymlinkInfo {
-                        path: relative_path.to_path_buf(),
-                        target,
-                        is_directory: target_path.is_dir(),
-                        is_broken: is_symlink_broken(target_path),
-                    });
-                }
+                let target = get_symlink_target(target_path)
+                    .unwrap_or_else(|| PathBuf::from("(unknown target)"));
+                entry.symlink_info = Some(SymlinkInfo {
+                    path: relative_path.to_path_buf(),
+                    target,
+                    is_directory: target_path.is_dir(),
+                    is_broken: is_symlink_broken(target_path),
+                });
             }
             (true, false) => {
                 // Deleted symlink
-                if let Some(target) = get_symlink_target(source_path) {
-                    entry.symlink_info = Some(SymlinkInfo {
-                        path: relative_path.to_path_buf(),
-                        target,
-                        is_directory: source_path.is_dir(),
-                        is_broken: is_symlink_broken(source_path),
-                    });
-                }
+                let target = get_symlink_target(source_path)
+                    .unwrap_or_else(|| PathBuf::from("(unknown target)"));
+                entry.symlink_info = Some(SymlinkInfo {
+                    path: relative_path.to_path_buf(),
+                    target,
+                    is_directory: source_path.is_dir(),
+                    is_broken: is_symlink_broken(source_path),
+                });
             }
             (true, true) => {
                 // Both are symlinks - check if target changed
                 let source_target = get_symlink_target(source_path);
                 let target_target = get_symlink_target(target_path);
                 if source_target != target_target {
-                    if let Some(target) = target_target {
-                        entry.symlink_info = Some(SymlinkInfo {
-                            path: relative_path.to_path_buf(),
-                            target,
-                            is_directory: target_path.is_dir(),
-                            is_broken: is_symlink_broken(target_path),
-                        });
-                    }
+                    // Symlink target changed
+                    let target = target_target
+                        .unwrap_or_else(|| PathBuf::from("(unknown target)"));
+                    entry.symlink_info = Some(SymlinkInfo {
+                        path: relative_path.to_path_buf(),
+                        target,
+                        is_directory: target_path.is_dir(),
+                        is_broken: is_symlink_broken(target_path),
+                    });
+                } else {
+                    // Symlink unchanged - don't report
+                    return None;
                 }
             }
             _ => return None,
