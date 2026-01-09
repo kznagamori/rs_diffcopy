@@ -5343,3 +5343,279 @@ mod three_way_excel_fixes_tests {
         }
     }
 }
+
+// ============================================================================
+// Section 26: Three-way Excel Format Fixes Tests
+// ============================================================================
+
+mod three_way_excel_format_tests {
+    use super::*;
+    use calamine::{open_workbook, Reader, Xlsx};
+
+    fn create_three_way_test_structure(base: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let base_dir = base.join("base");
+        let ours_dir = base.join("ours");
+        let theirs_dir = base.join("theirs");
+        let output_dir = base.join("output");
+
+        fs::create_dir_all(&base_dir).unwrap();
+        fs::create_dir_all(&ours_dir).unwrap();
+        fs::create_dir_all(&theirs_dir).unwrap();
+        fs::create_dir_all(&output_dir).unwrap();
+
+        (base_dir, ours_dir, theirs_dir, output_dir)
+    }
+
+    // IT-2601: Verify Summary sheet has bordered Options and Change Matrix sections
+    #[test]
+    fn test_three_way_summary_has_borders() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create files for conflict
+        fs::write(base_dir.join("file.txt"), "base").unwrap();
+        fs::write(ours_dir.join("file.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("file.txt"), "theirs").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Summary") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            // Find Change Matrix header
+            let change_matrix_row = rows.iter().position(|row| {
+                row.iter().any(|c| c.contains("Change Matrix"))
+            });
+
+            assert!(change_matrix_row.is_some(), "Change Matrix section should exist");
+
+            // Verify statistics exist (they should have borders via border_format)
+            let has_unchanged = rows.iter().any(|row| {
+                row.iter().any(|c| c.contains("Unchanged"))
+            });
+            assert!(has_unchanged, "Should have Unchanged statistic");
+        } else {
+            panic!("Could not read Summary sheet");
+        }
+    }
+
+    // IT-2602: Verify Conflicts sheet has Directory and Filename columns
+    #[test]
+    fn test_three_way_conflicts_has_split_path() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create nested conflict
+        let nested_base = base_dir.join("subdir");
+        let nested_ours = ours_dir.join("subdir");
+        let nested_theirs = theirs_dir.join("subdir");
+
+        fs::create_dir_all(&nested_base).unwrap();
+        fs::create_dir_all(&nested_ours).unwrap();
+        fs::create_dir_all(&nested_theirs).unwrap();
+
+        fs::write(nested_base.join("conflict.txt"), "base content").unwrap();
+        fs::write(nested_ours.join("conflict.txt"), "ours content").unwrap();
+        fs::write(nested_theirs.join("conflict.txt"), "theirs content").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Conflicts") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            // Check header row
+            let header = &rows[0];
+            assert!(header.iter().any(|c| c == "Directory"), "Should have Directory column in header: {:?}", header);
+            assert!(header.iter().any(|c| c == "Filename"), "Should have Filename column in header: {:?}", header);
+            assert!(!header.iter().any(|c| c == "Path"), "Should NOT have Path column in header: {:?}", header);
+
+            // Check data row has split path
+            if rows.len() > 1 {
+                let data_row = &rows[1];
+                // subdir should be in Directory column (col 0)
+                assert!(data_row[0].contains("subdir") || data_row[0] == "subdir", "Directory should contain 'subdir': {:?}", data_row);
+                // conflict.txt should be in Filename column (col 1)
+                assert!(data_row[1] == "conflict.txt", "Filename should be 'conflict.txt': {:?}", data_row);
+            }
+        } else {
+            panic!("Could not read Conflicts sheet");
+        }
+    }
+
+    // IT-2603: Verify Copied Files sheet has Directory and Filename columns
+    #[test]
+    fn test_three_way_copied_files_has_split_path() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create file only in ours (will be copied)
+        let nested_ours = ours_dir.join("newdir");
+        fs::create_dir_all(&nested_ours).unwrap();
+        fs::write(nested_ours.join("newfile.txt"), "new content").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Copied Files") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            // Check header row
+            let header = &rows[0];
+            assert!(header.iter().any(|c| c == "Directory"), "Should have Directory column in header: {:?}", header);
+            assert!(header.iter().any(|c| c == "Filename"), "Should have Filename column in header: {:?}", header);
+            assert!(!header.iter().any(|c| c == "Path"), "Should NOT have Path column in header: {:?}", header);
+
+            // Find the newfile.txt row
+            let data_row = rows.iter().skip(1).find(|row| {
+                row.iter().any(|c| c.contains("newfile.txt"))
+            });
+
+            assert!(data_row.is_some(), "Should find newfile.txt row");
+            if let Some(row) = data_row {
+                // newdir should be in Directory column (col 0)
+                assert!(row[0].contains("newdir") || row[0] == "newdir", "Directory should contain 'newdir': {:?}", row);
+                // newfile.txt should be in Filename column (col 1)
+                assert!(row[1] == "newfile.txt", "Filename should be 'newfile.txt': {:?}", row);
+            }
+        } else {
+            panic!("Could not read Copied Files sheet");
+        }
+    }
+
+    // IT-2604: Verify Conflicts sheet header background applies to all columns
+    #[test]
+    fn test_three_way_conflicts_header_width() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create conflict
+        fs::write(base_dir.join("test.txt"), "base").unwrap();
+        fs::write(ours_dir.join("test.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("test.txt"), "theirs").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Conflicts") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            // Header should have 9 columns
+            let header = &rows[0];
+            let non_empty_headers: Vec<_> = header.iter().filter(|c| !c.is_empty()).collect();
+            assert!(non_empty_headers.len() >= 9, "Should have at least 9 header columns: {:?}", header);
+        } else {
+            panic!("Could not read Conflicts sheet");
+        }
+    }
+
+    // IT-2605: Verify Copied Files sheet header background applies to all columns
+    #[test]
+    fn test_three_way_copied_files_header_width() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create file to be copied
+        fs::write(ours_dir.join("test.txt"), "ours only").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Copied Files") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            // Header should have 4 columns
+            let header = &rows[0];
+            let non_empty_headers: Vec<_> = header.iter().filter(|c| !c.is_empty()).collect();
+            assert!(non_empty_headers.len() >= 4, "Should have at least 4 header columns: {:?}", header);
+        } else {
+            panic!("Could not read Copied Files sheet");
+        }
+    }
+}

@@ -63,6 +63,10 @@ impl<'a> ThreeWayExcelWriter<'a> {
 
         let label_format = Format::new().set_bold();
 
+        // Border formats for sections
+        let border_format = Format::new().set_border(FormatBorder::Thin);
+        let label_border_format = Format::new().set_bold().set_border(FormatBorder::Thin);
+
         // Title
         worksheet.write_string(0, 0, "rs_diffcopy Summary (Three-way)").ok();
         worksheet.set_row_format(0, &title_format).ok();
@@ -106,33 +110,33 @@ impl<'a> ThreeWayExcelWriter<'a> {
             row += 1;
 
             if self.config.dry_run {
-                worksheet.write_string_with_format(row, 0, "Mode:", &label_format).ok();
-                worksheet.write_string(row, 1, "Dry run (no files copied)").ok();
+                worksheet.write_string_with_format(row, 0, "Mode:", &label_border_format).ok();
+                worksheet.write_string_with_format(row, 1, "Dry run (no files copied)", &border_format).ok();
                 row += 1;
             }
 
-            worksheet.write_string_with_format(row, 0, "Merge style:", &label_format).ok();
-            worksheet.write_string(row, 1, self.config.merge_style.as_str()).ok();
+            worksheet.write_string_with_format(row, 0, "Merge style:", &label_border_format).ok();
+            worksheet.write_string_with_format(row, 1, self.config.merge_style.as_str(), &border_format).ok();
             row += 1;
 
             if self.config.conflict_only {
-                worksheet.write_string_with_format(row, 0, "Conflict only:", &label_format).ok();
-                worksheet.write_string(row, 1, "Yes").ok();
+                worksheet.write_string_with_format(row, 0, "Conflict only:", &label_border_format).ok();
+                worksheet.write_string_with_format(row, 1, "Yes", &border_format).ok();
                 row += 1;
             }
 
             // Filter status
             if !self.config.filter_status.is_empty() {
-                worksheet.write_string_with_format(row, 0, "Filter status:", &label_format).ok();
+                worksheet.write_string_with_format(row, 0, "Filter status:", &label_border_format).ok();
                 let filter_str = self.config.filter_status.to_display_string();
-                worksheet.write_string(row, 1, &filter_str).ok();
+                worksheet.write_string_with_format(row, 1, &filter_str, &border_format).ok();
                 row += 1;
             }
 
             // Exclude patterns
             if !self.config.exclude.is_empty() {
-                worksheet.write_string_with_format(row, 0, "Exclude patterns:", &label_format).ok();
-                worksheet.write_string(row, 1, &self.config.exclude.join(", ")).ok();
+                worksheet.write_string_with_format(row, 0, "Exclude patterns:", &label_border_format).ok();
+                worksheet.write_string_with_format(row, 1, &self.config.exclude.join(", "), &border_format).ok();
                 row += 1;
             }
 
@@ -165,8 +169,8 @@ impl<'a> ThreeWayExcelWriter<'a> {
         ];
 
         for (label, value) in stats_data {
-            worksheet.write_string(row, 0, label).ok();
-            worksheet.write_number(row, 1, value as f64).ok();
+            worksheet.write_string_with_format(row, 0, label, &border_format).ok();
+            worksheet.write_number_with_format(row, 1, value as f64, &border_format).ok();
             row += 1;
         }
 
@@ -615,16 +619,16 @@ impl<'a> ThreeWayExcelWriter<'a> {
         let conflict_format = Format::new()
             .set_font_color(Color::RGB(0xCC0000));
 
-        // Headers
-        worksheet.write_string(0, 0, "Path").ok();
-        worksheet.write_string(0, 1, "Type").ok();
-        worksheet.write_string(0, 2, "Base Hash").ok();
-        worksheet.write_string(0, 3, "Ours Hash").ok();
-        worksheet.write_string(0, 4, "Theirs Hash").ok();
-        worksheet.write_string(0, 5, "Base Size").ok();
-        worksheet.write_string(0, 6, "Ours Size").ok();
-        worksheet.write_string(0, 7, "Theirs Size").ok();
-        worksheet.set_row_format(0, &header_format).ok();
+        // Headers - write individually with format to each column (9 columns total)
+        worksheet.write_string_with_format(0, 0, "Directory", &header_format).ok();
+        worksheet.write_string_with_format(0, 1, "Filename", &header_format).ok();
+        worksheet.write_string_with_format(0, 2, "Type", &header_format).ok();
+        worksheet.write_string_with_format(0, 3, "Base Hash", &header_format).ok();
+        worksheet.write_string_with_format(0, 4, "Ours Hash", &header_format).ok();
+        worksheet.write_string_with_format(0, 5, "Theirs Hash", &header_format).ok();
+        worksheet.write_string_with_format(0, 6, "Base Size", &header_format).ok();
+        worksheet.write_string_with_format(0, 7, "Ours Size", &header_format).ok();
+        worksheet.write_string_with_format(0, 8, "Theirs Size", &header_format).ok();
 
         let conflicts: Vec<&ThreeWayEntry> = entries
             .iter()
@@ -642,37 +646,55 @@ impl<'a> ThreeWayExcelWriter<'a> {
                 _ => "Unknown",
             };
 
-            worksheet.write_string_with_format(row, 0, &entry.relative_path.display().to_string(), &conflict_format).ok();
-            worksheet.write_string_with_format(row, 1, conflict_type, &conflict_format).ok();
+            // Split path into directory and filename
+            let path_str = entry.relative_path.display().to_string();
+            let (directory, filename) = if let Some(parent) = entry.relative_path.parent() {
+                let parent_str = parent.display().to_string();
+                let file_str = entry.relative_path.file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if parent_str.is_empty() {
+                    ("".to_string(), file_str)
+                } else {
+                    (parent_str, file_str)
+                }
+            } else {
+                ("".to_string(), path_str)
+            };
+
+            worksheet.write_string_with_format(row, 0, &directory, &conflict_format).ok();
+            worksheet.write_string_with_format(row, 1, &filename, &conflict_format).ok();
+            worksheet.write_string_with_format(row, 2, conflict_type, &conflict_format).ok();
 
             let base_hash = entry.base_hash.as_ref().map(|h| &h[..8.min(h.len())]).unwrap_or("-");
             let ours_hash = entry.ours_hash.as_ref().map(|h| &h[..8.min(h.len())]).unwrap_or("-");
             let theirs_hash = entry.theirs_hash.as_ref().map(|h| &h[..8.min(h.len())]).unwrap_or("-");
 
-            worksheet.write_string(row, 2, base_hash).ok();
-            worksheet.write_string(row, 3, ours_hash).ok();
-            worksheet.write_string(row, 4, theirs_hash).ok();
+            worksheet.write_string(row, 3, base_hash).ok();
+            worksheet.write_string(row, 4, ours_hash).ok();
+            worksheet.write_string(row, 5, theirs_hash).ok();
 
             let base_size = entry.base_size.map(|s| s.to_string()).unwrap_or("-".to_string());
             let ours_size = entry.ours_size.map(|s| s.to_string()).unwrap_or("-".to_string());
             let theirs_size = entry.theirs_size.map(|s| s.to_string()).unwrap_or("-".to_string());
 
-            worksheet.write_string(row, 5, &base_size).ok();
-            worksheet.write_string(row, 6, &ours_size).ok();
-            worksheet.write_string(row, 7, &theirs_size).ok();
+            worksheet.write_string(row, 6, &base_size).ok();
+            worksheet.write_string(row, 7, &ours_size).ok();
+            worksheet.write_string(row, 8, &theirs_size).ok();
 
             row += 1;
         }
 
         // Set column widths
-        worksheet.set_column_width(0, 50.0).ok();
-        worksheet.set_column_width(1, 20.0).ok();
-        worksheet.set_column_width(2, 15.0).ok();
-        worksheet.set_column_width(3, 15.0).ok();
-        worksheet.set_column_width(4, 15.0).ok();
-        worksheet.set_column_width(5, 12.0).ok();
-        worksheet.set_column_width(6, 12.0).ok();
-        worksheet.set_column_width(7, 12.0).ok();
+        worksheet.set_column_width(0, 30.0).ok();  // Directory
+        worksheet.set_column_width(1, 25.0).ok();  // Filename
+        worksheet.set_column_width(2, 20.0).ok();  // Type
+        worksheet.set_column_width(3, 15.0).ok();  // Base Hash
+        worksheet.set_column_width(4, 15.0).ok();  // Ours Hash
+        worksheet.set_column_width(5, 15.0).ok();  // Theirs Hash
+        worksheet.set_column_width(6, 12.0).ok();  // Base Size
+        worksheet.set_column_width(7, 12.0).ok();  // Ours Size
+        worksheet.set_column_width(8, 12.0).ok();  // Theirs Size
 
         Ok(())
     }
@@ -691,11 +713,11 @@ impl<'a> ThreeWayExcelWriter<'a> {
             .set_background_color(Color::RGB(0x4472C4))
             .set_font_color(Color::White);
 
-        // Headers
-        worksheet.write_string(0, 0, "Path").ok();
-        worksheet.write_string(0, 1, "Status").ok();
-        worksheet.write_string(0, 2, "Source").ok();
-        worksheet.set_row_format(0, &header_format).ok();
+        // Headers - write individually with format to each column (4 columns total)
+        worksheet.write_string_with_format(0, 0, "Directory", &header_format).ok();
+        worksheet.write_string_with_format(0, 1, "Filename", &header_format).ok();
+        worksheet.write_string_with_format(0, 2, "Status", &header_format).ok();
+        worksheet.write_string_with_format(0, 3, "Source", &header_format).ok();
 
         let mut row = 1u32;
 
@@ -738,17 +760,35 @@ impl<'a> ThreeWayExcelWriter<'a> {
                 _ => "unknown",
             };
 
-            worksheet.write_string(row, 0, &entry.relative_path.display().to_string()).ok();
-            worksheet.write_string(row, 1, entry.status.as_str()).ok();
-            worksheet.write_string(row, 2, source).ok();
+            // Split path into directory and filename
+            let path_str = entry.relative_path.display().to_string();
+            let (directory, filename) = if let Some(parent) = entry.relative_path.parent() {
+                let parent_str = parent.display().to_string();
+                let file_str = entry.relative_path.file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if parent_str.is_empty() {
+                    ("".to_string(), file_str)
+                } else {
+                    (parent_str, file_str)
+                }
+            } else {
+                ("".to_string(), path_str)
+            };
+
+            worksheet.write_string(row, 0, &directory).ok();
+            worksheet.write_string(row, 1, &filename).ok();
+            worksheet.write_string(row, 2, entry.status.as_str()).ok();
+            worksheet.write_string(row, 3, source).ok();
 
             row += 1;
         }
 
         // Set column widths
-        worksheet.set_column_width(0, 50.0).ok();
-        worksheet.set_column_width(1, 20.0).ok();
-        worksheet.set_column_width(2, 25.0).ok();
+        worksheet.set_column_width(0, 30.0).ok();  // Directory
+        worksheet.set_column_width(1, 25.0).ok();  // Filename
+        worksheet.set_column_width(2, 20.0).ok();  // Status
+        worksheet.set_column_width(3, 25.0).ok();  // Source
 
         Ok(())
     }

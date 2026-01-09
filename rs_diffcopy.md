@@ -1718,13 +1718,15 @@ Conflict Details
 | Conflicts | コンフリクト候補の詳細一覧 |
 | Copied Files | コピーされたファイルの一覧 |
 
-#### Summaryシートのオプション表示
+#### Summaryシート詳細
 
-三者間モードでも以下のオプションがOptionsセクションに表示される：
-- `--filter-status`: フィルタリングするステータス
-- `--merge-style`: マージスタイル
-- `--conflict-only`: コンフリクトのみ出力
-- `--exclude`: 除外パターン
+- **Options**: オプションセクションには外枠罫線を適用
+- **Change Matrix**: 統計情報セクションには外枠罫線を適用
+- 三者間モードでも以下のオプションがOptionsセクションに表示される：
+  - `--filter-status`: フィルタリングするステータス
+  - `--merge-style`: マージスタイル
+  - `--conflict-only`: コンフリクトのみ出力
+  - `--exclude`: 除外パターン
 
 #### File Treeシート
 
@@ -1733,6 +1735,35 @@ Conflict Details
 - Status列に三者間ステータス（unchanged, ours-only, theirs-only, conflict等）を表示
 - `--excel-fold-level`オプションで折りたたみレベルを指定可能
 - ディレクトリ区切り罫線、パス展開機能も二者間と同様に動作
+
+#### Conflictsシート詳細
+
+| 列 | 内容 |
+|----|------|
+| Directory | ディレクトリパス |
+| Filename | ファイル名 |
+| Type | コンフリクトタイプ |
+| Base Hash | Baseのハッシュ（先頭8文字） |
+| Ours Hash | Oursのハッシュ（先頭8文字） |
+| Theirs Hash | Theirsのハッシュ（先頭8文字） |
+| Base Size | Baseのサイズ |
+| Ours Size | Oursのサイズ |
+| Theirs Size | Theirsのサイズ |
+
+- ヘッダー行の背景色は全列（9列）に適用
+- パスは「Directory」と「Filename」に分離して表示
+
+#### Copied Filesシート詳細
+
+| 列 | 内容 |
+|----|------|
+| Directory | ディレクトリパス |
+| Filename | ファイル名 |
+| Status | ステータス |
+| Source | コピー元 |
+
+- ヘッダー行の背景色は全列（4列）に適用
+- パスは「Directory」と「Filename」に分離して表示
 
 #### ステータスの色分け
 

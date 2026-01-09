@@ -15,8 +15,8 @@
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
 | ユニットテスト | 109 | 109 | 0 | 0 |
-| 結合テスト | 163 | 163 | 0 | 0 |
-| **合計** | **272** | **272** | **0** | **0** |
+| 結合テスト | 168 | 168 | 0 | 0 |
+| **合計** | **277** | **277** | **0** | **0** |
 
 ---
 
@@ -455,6 +455,7 @@
 | 2026-01-09 | 06:30 | 109/109 | 153/153 | PASS | File Treeセル構造・fold-level改善テスト追加（セル重複省略、ディレクトリ単位グループ化、境界罫線） |
 | 2026-01-09 | 08:00 | 109/109 | 157/157 | PASS | パス展開テスト追加 |
 | 2026-01-09 | 12:00 | 109/109 | 163/163 | PASS | 三者間比較Excel修正テスト追加（File Tree形式、filter-status、fold-level） |
+| 2026-01-09 | 14:00 | 109/109 | 168/168 | PASS | 三者間比較Excelフォーマット修正テスト追加（Summary罫線、Conflicts/Copied Filesパス分割・ヘッダー幅） |
 
 ---
 
@@ -679,6 +680,16 @@ cargo test 2>&1 | tee test_output.txt
 | IT-2505 | test_three_way_excel_fold_level | PASS | --excel-fold-level 2で深いファイルがグループ化対象になることを確認 |
 | IT-2506 | test_three_way_file_tree_cell_structure | PASS | パスコンポーネントが別々のセルに配置されることを確認 |
 
+### 26. 三者間比較Excelフォーマット修正テスト (5テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| IT-2601 | test_three_way_summary_has_borders | PASS | Change Matrixセクションが存在し、Unchanged統計があることを確認 |
+| IT-2602 | test_three_way_conflicts_has_split_path | PASS | DirectoryとFilenameヘッダーがあり、Pathは存在しないことを確認 |
+| IT-2603 | test_three_way_copied_files_has_split_path | PASS | DirectoryとFilenameヘッダーがあり、Pathは存在しないことを確認 |
+| IT-2604 | test_three_way_conflicts_header_width | PASS | 9列すべてにヘッダーが存在することを確認 |
+| IT-2605 | test_three_way_copied_files_header_width | PASS | 4列すべてにヘッダーが存在することを確認 |
+
 ## パス展開機能の不具合修正
 
 **不具合**: 最初のパスが`a/b/c/d/e/f.txt`のように深い場合、`--excel-fold-level 2`指定でも全体が折りたたまれてしまう
@@ -758,3 +769,38 @@ cargo test 2>&1 | tee test_output.txt
 - 三者間ExcelのSummaryシートにFilter statusが表示されることを検証
 - `--excel-fold-level 2`で深いファイルがグループ化対象になることを検証
 - パスコンポーネントが別々のセルに配置されることを検証
+
+## 三者間比較Excelフォーマット修正テスト
+
+**修正要望**:
+1. SummaryシートのOptionグループと、Change Matrixグループに罫線を追加
+2. Conflictsシートの先頭行の背景色の幅が結果表示の領域にあっていない問題を修正
+3. ConflictsシートのPathの行をディレクトリパスとファイル名に分割
+4. Copied Filesシートの先頭行の背景色の幅が結果表示の領域にあっていない問題を修正
+5. Copied FilesシートのPathの行をディレクトリパスとファイル名に分割
+
+**修正内容**:
+1. `three_way_excel.rs`: Summaryシートに罫線フォーマットを追加
+   - `border_format`と`label_border_format`を定義（FormatBorder::Thin）
+   - Options、Change Matrix各行に罫線を適用
+
+2. `three_way_excel.rs`: Conflictsシートのヘッダーとパス分割
+   - ヘッダーを`set_row_format`から個別の`write_string_with_format`に変更
+   - 9列すべて（Directory, Filename, Type, Base, Ours, Theirs, Ours Hash, Theirs Hash, Sizes）に背景色適用
+   - `Path`列を`Directory`と`Filename`に分割
+
+3. `three_way_excel.rs`: Copied Filesシートのヘッダーとパス分割
+   - ヘッダーを`set_row_format`から個別の`write_string_with_format`に変更
+   - 4列すべて（Directory, Filename, Status, Source）に背景色適用
+   - `Path`列を`Directory`と`Filename`に分割
+
+4. `rs_diffcopy.md`: 要件定義を更新
+   - Conflictsシート詳細にDirectory/Filename分割を記載
+   - Copied Filesシート詳細にDirectory/Filename分割を記載
+
+**テスト内容**:
+- SummaryシートにChange Matrixセクションが存在し、Unchanged統計があることを検証
+- ConflictsシートにDirectoryとFilenameヘッダーがあり、Pathは存在しないことを検証
+- Copied FilesシートにDirectoryとFilenameヘッダーがあり、Pathは存在しないことを検証
+- Conflictsシートのヘッダーに9列すべて存在することを検証
+- Copied Filesシートのヘッダーに4列すべて存在することを検証

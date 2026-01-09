@@ -412,6 +412,25 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
+### Section 26: 三者間比較Excelフォーマット修正テスト（three_way_excel_format_tests）
+
+**背景**: 以下のフォーマット修正を検証
+1. Summaryシートの「Options」と「Change Matrix」セクションに罫線を追加
+2. Conflictsシートのヘッダー背景色が全列に適用されること
+3. Conflictsシートの「Path」を「Directory」と「Filename」に分割
+4. Copied Filesシートのヘッダー背景色が全列に適用されること
+5. Copied Filesシートの「Path」を「Directory」と「Filename」に分割
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| IT-2601 | test_three_way_summary_has_borders | Summaryシートに罫線セクション | Change Matrixセクションが存在し、Unchanged統計がある | 正常系 |
+| IT-2602 | test_three_way_conflicts_has_split_path | Conflictsシートパス分割 | DirectoryとFilenameヘッダーがあり、Pathは存在しない | 正常系 |
+| IT-2603 | test_three_way_copied_files_has_split_path | Copied Filesシートパス分割 | DirectoryとFilenameヘッダーがあり、Pathは存在しない | 正常系 |
+| IT-2604 | test_three_way_conflicts_header_width | Conflictsヘッダー幅 | 9列すべてにヘッダーが存在 | 正常系 |
+| IT-2605 | test_three_way_copied_files_header_width | Copied Filesヘッダー幅 | 4列すべてにヘッダーが存在 | 正常系 |
+
+---
+
 ## 終了コード一覧
 
 | 終了コード | 意味 |
