@@ -162,7 +162,7 @@ dependencies = [
  "log",
  "quick-xml",
  "serde",
- "zip",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -433,6 +433,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfe33edd8e85a12a67454e37f8c75e730830d83e313556ab9ebf9ee7fbeb3bfb"
 dependencies = [
  "crc32fast",
+ "libz-rs-sys",
  "miniz_oxide",
 ]
 
@@ -580,6 +581,15 @@ dependencies = [
  "bitflags",
  "libc",
  "redox_syscall 0.7.0",
+]
+
+[[package]]
+name = "libz-rs-sys"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c10501e7805cee23da17c7790e59df2870c0d4043ec6d03f67d31e2b53e77415"
+dependencies = [
+ "zlib-rs",
 ]
 
 [[package]]
@@ -824,11 +834,11 @@ dependencies = [
 
 [[package]]
 name = "rust_xlsxwriter"
-version = "0.79.4"
+version = "0.92.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c743cb9f2a4524676020e26ee5f298445a82d882b09956811b1e78ca7e42b440"
+checksum = "0733a44f344e900c4221f33a16aa92a59e3e7c7ad37d39a1c753afecb1f2bd02"
 dependencies = [
- "zip",
+ "zip 6.0.0",
 ]
 
 [[package]]
@@ -1458,6 +1468,26 @@ dependencies = [
  "thiserror 2.0.17",
  "zopfli",
 ]
+
+[[package]]
+name = "zip"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb2a05c7c36fde6c09b08576c9f7fb4cda705990f73b58fe011abf7dfb24168b"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "zopfli",
+]
+
+[[package]]
+name = "zlib-rs"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40990edd51aae2c2b6907af74ffb635029d5788228222c4bb811e9351c0caad3"
 
 [[package]]
 name = "zopfli"

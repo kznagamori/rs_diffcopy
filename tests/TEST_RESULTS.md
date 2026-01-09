@@ -5,7 +5,7 @@
 | 項目 | 内容 |
 |-----|------|
 | 実施日 | 2026-01-09 |
-| 実施時刻 | 00:30 JST |
+| 実施時刻 | 03:30 JST |
 | 実行環境 | Linux (WSL2) |
 | Rustバージョン | stable |
 | 結果 | **全テストPASS** |
@@ -14,9 +14,9 @@
 
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
-| ユニットテスト | 89 | 89 | 0 | 0 |
-| 結合テスト | 131 | 131 | 0 | 0 |
-| **合計** | **220** | **220** | **0** | **0** |
+| ユニットテスト | 98 | 98 | 0 | 0 |
+| 結合テスト | 143 | 143 | 0 | 0 |
+| **合計** | **241** | **241** | **0** | **0** |
 
 ---
 
@@ -248,9 +248,31 @@
 | STATS-005 | test_unchanged_count_same_with_or_without_option | PASS | --show-unchanged有無でUnchangedカウントが同じであることを確認 |
 | STATS-006 | test_unchanged_directories_counted | PASS | 変更なしディレクトリが正しくカウントされることを確認 |
 
+### 20. Excelフォーマット拡張テスト (7テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| EXFMT-001 | test_excel_summary_has_options_section | PASS | Optionsセクションの存在確認 |
+| EXFMT-002 | test_excel_summary_has_statistics_section | PASS | Statisticsセクションの存在確認 |
+| EXFMT-003 | test_excel_fold_level_option | PASS | --excel-fold-levelオプション動作確認 |
+| EXFMT-004 | test_excel_details_has_header | PASS | Detailsシートヘッダー4列確認 |
+| EXFMT-005 | test_excel_summary_has_labels | PASS | Source:, Target:, Output:ラベル確認 |
+| EXFMT-006 | test_excel_fold_level_zero_default | PASS | デフォルト（fold-level 0）動作確認 |
+| EXFMT-007 | test_excel_file_tree_cell_structure | PASS | ディレクトリ構造がセルで表現されることを確認 |
+
+### 21. Filter statusオプション表示テスト (5テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| FILT-001 | test_summary_contains_filter_status_option | PASS | Summary Optionsにfilter_status表示確認 |
+| FILT-002 | test_excel_contains_filter_status_option | PASS | Excel Optionsにfilter_status表示確認 |
+| FILT-003 | test_filter_status_multiple_values | PASS | 複数ステータス（added,modified）表示確認 |
+| FILT-004 | test_no_filter_status_when_not_specified | PASS | 未指定時にSummaryにFilter statusなし |
+| FILT-005 | test_excel_no_filter_status_when_not_specified | PASS | 未指定時にExcelにFilter statusなし |
+
 ---
 
-## ユニットテスト詳細結果 (89テスト)
+## ユニットテスト詳細結果 (98テスト)
 
 ### src/types.rs (22テスト)
 
@@ -371,6 +393,20 @@
 | test_write_patch_file_with_subdirectory | PASS |
 | test_write_combined_patch | PASS |
 
+### src/excel.rs (9テスト)
+
+| テスト名 | 結果 |
+|---------|------|
+| test_collect_options_all_enabled | PASS |
+| test_collect_options_minimal | PASS |
+| test_collect_options_permission_check_all | PASS |
+| test_collect_options_filter_status | PASS |
+| test_collect_options_filter_status_empty | PASS |
+| test_create_formats | PASS |
+| test_get_entry_details_modified | PASS |
+| test_get_entry_details_error | PASS |
+| test_apply_row_grouping | PASS |
+
 ---
 
 ## テスト実行履歴
@@ -382,6 +418,8 @@
 | 2026-01-08 | 23:30 | 89/89 | 119/119 | PASS | 出力ファイル内容検証テスト追加（Excel/Summary/Patch） |
 | 2026-01-09 | 00:30 | 89/89 | 125/125 | PASS | シンボリックリンク不具合修正テスト追加（統計とDetails不一致問題） |
 | 2026-01-09 | 01:30 | 89/89 | 131/131 | PASS | Unchanged/Total統計不具合修正テスト追加 |
+| 2026-01-09 | 02:30 | 96/96 | 138/138 | PASS | Excelフォーマット拡張テスト追加（罫線、Options、fold-level） |
+| 2026-01-09 | 03:30 | 98/98 | 143/143 | PASS | Filter statusオプション表示テスト追加（Summary/Excel） |
 
 ---
 
@@ -480,3 +518,42 @@ cargo test 2>&1 | tee test_output.txt
 - 多数のファイルがある場合のUnchangedカウントの正確性を検証
 - `--show-unchanged`有無でUnchangedカウントが同じ値になることを検証
 - 変更なしディレクトリが正しくカウントされることを検証
+
+## Excelフォーマット拡張テスト
+
+**不具合**: Excelファイル出力の視認性が低い問題
+- セルに罫線がない
+- Optionsセクションがない
+- Statistics/Detailsのヘッダー幅が不正
+- --excel-fold-levelオプションが動作しない
+
+**修正内容**:
+1. `excel.rs`: 全データセルに`FormatBorder::Thin`を適用
+2. `ExcelFormats`構造体を作成し、共通フォーマットを管理
+3. Optionsセクションを追加（使用オプション一覧を表示）
+4. Statisticsヘッダーを2列に適用
+5. Detailsヘッダーを各列個別に適用（merge_rangeではなく個別設定）
+6. `apply_row_grouping()`関数を実装、`worksheet.group_rows()`を使用
+7. rust_xlsxwriterを0.79から0.92に更新（group_rows対応）
+
+**テスト内容**:
+- SummaryシートにOptionsセクションが存在することを検証
+- SummaryシートにStatisticsセクションが存在することを検証
+- --excel-fold-levelオプションが正常に動作することを検証
+- Detailsシートヘッダーが4列存在することを検証
+- Source:, Target:, Output:ラベルが存在することを検証
+- File Treeのセル構造が正しいことを検証
+
+## Filter statusオプション表示テスト
+
+**要望**: --filter-statusオプションをOptionsセクションに表示
+
+**修正内容**:
+1. `excel.rs`: `collect_options()`に`filter_status`を追加
+2. Summaryファイルには既に実装済み（`summary.rs`）
+
+**テスト内容**:
+- --filter-status指定時にSummaryファイルのOptionsセクションに表示されることを検証
+- --filter-status指定時にExcelのOptionsセクションに表示されることを検証
+- 複数ステータス（added,modified等）がカンマ区切りで表示されることを検証
+- --filter-status未指定時にFilter status行が表示されないことを検証

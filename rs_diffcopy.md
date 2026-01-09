@@ -1082,21 +1082,47 @@ Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=dele
 | シート名 | 内容 |
 |----------|------|
 | Summary | 基本情報、オプション、統計情報 |
-| File Tree | ツリー形式のファイル一覧（セルでインデント表示） |
+| File Tree | ツリー形式のファイル一覧（セルでインデント表示、折りたたみ対応） |
 | Details | 追加/変更/削除ファイル、シンボリックリンク、権限変更、パッチの詳細一覧 |
 
-#### 書式設定
+#### 共通書式設定
 
+- **罫線**: 全てのデータ領域には外枠罫線（細線）を設定し、視認性を向上
 - **タイトル**: 青色太字、16pt、左揃え
-- **セクションヘッダー**: 青背景、白文字、12pt
+- **セクションヘッダー**: 青背景（#4472C4）、白文字、太字、12pt
+- **ラベル列**: 太字で表示（`Source:`、`Target:`等）
 - **ステータス色分け**:
   - 追加（Added）: 緑色 (#008000)
   - 変更（Modified）: 青色 (#0066CC)
   - 削除（Deleted）: 赤色 (#CC0000)
   - シンボリックリンク: 紫色 (#9933FF)
   - 変更なし（Unchanged）: グレー (#808080)
-- **File Tree**: 等幅フォント（Consolas）で表示、行の折りたたみに対応（`-L`オプション使用時）
-- **Details**: パスを「Directory」と「File」の2列に分離して表示
+
+#### Summaryシート詳細
+
+| セクション | 内容 | 書式 |
+|-----------|------|------|
+| タイトル | "rs_diffcopy Summary" | 16pt、青色太字 |
+| 基本情報 | Source, Target, Output, Date | ラベル列は太字 |
+| Options | 使用したオプション一覧（dry_run, both_versions, copy_deleted, preserve_timestamps, check_permissions, patch, patch_file, show_unchanged, filter_status, exclude, stats_only, no_tree, no_details） | ラベル列は太字、セクションヘッダーは青背景 |
+| Statistics | 統計情報（Added, Modified, Deleted等） | セクションヘッダーは青背景、ヘッダーの幅は2列に適用 |
+
+#### File Treeシート詳細
+
+- **ツリー構造**: 各パスコンポーネント（ディレクトリ階層）をセル単位で分離して表示
+  - 例: `src/main.rs` は A列に深さに応じたインデント、B列にファイル名、C列にステータス
+- **フォント**: 等幅フォント（Consolas）を使用
+- **行グループ化（折りたたみ）**: `-L, --excel-fold-level <LEVEL>` オプションで指定した深さ以上の行をグループ化
+  - 例: `-L 2` の場合、深さ3以上のディレクトリ内のファイルは折りたたみ可能
+  - Excelの行グループ化機能（`group_rows`）を使用
+- **ヘッダー行**: Path, Status の2列、青背景
+
+#### Detailsシート詳細
+
+- **ヘッダー行**: Status, Directory, File, Details の4列
+  - ヘッダーの背景色幅は全4列に適用（merge_rangeではなく個別セル設定）
+- **セクション分離**: ステータス別にセクションを分け、セクションヘッダー行を挿入
+- **パス分離**: フルパスを「Directory」列と「File」列に分離して表示
 
 ### 10.7 出力フィルター機能
 

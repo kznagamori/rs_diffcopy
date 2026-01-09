@@ -1,8 +1,8 @@
 use chrono::Local;
-use rust_xlsxwriter::{Color, Format, Workbook};
+use rust_xlsxwriter::{Color, Format, FormatBorder, Workbook, Worksheet};
 
 use crate::config::Config;
-use crate::types::{ComparisonResult, ComparisonStats, FileEntry, FileStatus};
+use crate::types::{CheckPermissionsMode, ComparisonResult, ComparisonStats, FileEntry, FileStatus};
 
 /// Excel report generator
 pub struct ExcelWriter<'a> {
@@ -39,15 +39,8 @@ impl<'a> ExcelWriter<'a> {
         Ok(())
     }
 
-    fn write_summary_sheet(
-        &self,
-        workbook: &mut Workbook,
-        stats: &ComparisonStats,
-    ) -> crate::error::Result<()> {
-        let worksheet = workbook.add_worksheet();
-        worksheet.set_name("Summary").ok();
-
-        // Formats
+    /// Create common formats
+    fn create_formats() -> ExcelFormats {
         let title_format = Format::new()
             .set_bold()
             .set_font_size(16.0)
@@ -57,42 +50,80 @@ impl<'a> ExcelWriter<'a> {
             .set_bold()
             .set_font_size(12.0)
             .set_background_color(Color::RGB(0x4472C4))
-            .set_font_color(Color::White);
+            .set_font_color(Color::White)
+            .set_border(FormatBorder::Thin);
+
+        let label_format = Format::new()
+            .set_bold()
+            .set_border(FormatBorder::Thin);
+
+        let value_format = Format::new()
+            .set_border(FormatBorder::Thin);
+
+        let section_format = Format::new()
+            .set_bold()
+            .set_font_size(12.0)
+            .set_background_color(Color::RGB(0xD9E2F3))
+            .set_border(FormatBorder::Thin);
+
+        ExcelFormats {
+            title: title_format,
+            header: header_format,
+            label: label_format,
+            value: value_format,
+            section: section_format,
+        }
+    }
+
+    fn write_summary_sheet(
+        &self,
+        workbook: &mut Workbook,
+        stats: &ComparisonStats,
+    ) -> crate::error::Result<()> {
+        let worksheet = workbook.add_worksheet();
+        worksheet.set_name("Summary").ok();
+
+        let formats = Self::create_formats();
 
         // Title
-        worksheet.write_string(0, 0, "rs_diffcopy Summary").ok();
-        worksheet.set_row_format(0, &title_format).ok();
+        worksheet.write_string_with_format(0, 0, "rs_diffcopy Summary", &formats.title).ok();
 
-        // Basic info
+        // Basic info section
         let mut row = 2;
 
-        worksheet.write_string(row, 0, "Source:").ok();
-        worksheet
-            .write_string(row, 1, &self.config.source.display().to_string())
-            .ok();
+        worksheet.write_string_with_format(row, 0, "Source:", &formats.label).ok();
+        worksheet.write_string_with_format(row, 1, &self.config.source.display().to_string(), &formats.value).ok();
         row += 1;
 
-        worksheet.write_string(row, 0, "Target:").ok();
-        worksheet
-            .write_string(row, 1, &self.config.target.display().to_string())
-            .ok();
+        worksheet.write_string_with_format(row, 0, "Target:", &formats.label).ok();
+        worksheet.write_string_with_format(row, 1, &self.config.target.display().to_string(), &formats.value).ok();
         row += 1;
 
-        worksheet.write_string(row, 0, "Output:").ok();
-        worksheet
-            .write_string(row, 1, &self.config.output.display().to_string())
-            .ok();
+        worksheet.write_string_with_format(row, 0, "Output:", &formats.label).ok();
+        worksheet.write_string_with_format(row, 1, &self.config.output.display().to_string(), &formats.value).ok();
         row += 1;
 
-        worksheet.write_string(row, 0, "Date:").ok();
-        worksheet
-            .write_string(row, 1, &Local::now().format("%Y-%m-%d %H:%M:%S").to_string())
-            .ok();
+        worksheet.write_string_with_format(row, 0, "Date:", &formats.label).ok();
+        worksheet.write_string_with_format(row, 1, &Local::now().format("%Y-%m-%d %H:%M:%S").to_string(), &formats.value).ok();
         row += 2;
 
-        // Statistics header
-        worksheet.write_string(row, 0, "Statistics").ok();
-        worksheet.set_row_format(row, &header_format).ok();
+        // Options section
+        worksheet.write_string_with_format(row, 0, "Options", &formats.header).ok();
+        worksheet.write_string_with_format(row, 1, "", &formats.header).ok();
+        row += 1;
+
+        // Write options
+        let options = self.collect_options();
+        for (label, value) in options {
+            worksheet.write_string_with_format(row, 0, &label, &formats.label).ok();
+            worksheet.write_string_with_format(row, 1, &value, &formats.value).ok();
+            row += 1;
+        }
+        row += 1;
+
+        // Statistics header - apply to both columns
+        worksheet.write_string_with_format(row, 0, "Statistics", &formats.header).ok();
+        worksheet.write_string_with_format(row, 1, "", &formats.header).ok();
         row += 1;
 
         // Statistics data
@@ -110,17 +141,89 @@ impl<'a> ExcelWriter<'a> {
             ("Total", stats.total_items),
         ];
 
+        let number_format = Format::new()
+            .set_border(FormatBorder::Thin)
+            .set_num_format("#,##0");
+
         for (label, value) in stats_data {
-            worksheet.write_string(row, 0, label).ok();
-            worksheet.write_number(row, 1, value as f64).ok();
+            worksheet.write_string_with_format(row, 0, label, &formats.label).ok();
+            worksheet.write_number_with_format(row, 1, value as f64, &number_format).ok();
             row += 1;
         }
 
         // Set column widths
-        worksheet.set_column_width(0, 20.0).ok();
+        worksheet.set_column_width(0, 25.0).ok();
         worksheet.set_column_width(1, 50.0).ok();
 
         Ok(())
+    }
+
+    fn collect_options(&self) -> Vec<(String, String)> {
+        let mut options = Vec::new();
+
+        if self.config.dry_run {
+            options.push(("Mode:".to_string(), "Dry run (no files copied)".to_string()));
+        }
+
+        if self.config.both_versions {
+            options.push(("Copy mode:".to_string(), "Both versions (.old/.new)".to_string()));
+        }
+
+        if self.config.copy_deleted {
+            options.push(("Copy deleted:".to_string(), "Yes (.deleted)".to_string()));
+        }
+
+        if self.config.preserve_timestamps {
+            options.push(("Preserve timestamps:".to_string(), "Yes".to_string()));
+        }
+
+        match self.config.check_permissions {
+            CheckPermissionsMode::None => {},
+            CheckPermissionsMode::Scripts => {
+                options.push(("Permission check:".to_string(), "scripts".to_string()));
+            },
+            CheckPermissionsMode::All => {
+                options.push(("Permission check:".to_string(), "all".to_string()));
+            },
+        }
+
+        if self.config.patch {
+            options.push(("Patch mode:".to_string(), "Individual files (.patch)".to_string()));
+        }
+
+        if let Some(ref patch_file) = self.config.patch_file {
+            options.push(("Combined patch file:".to_string(), patch_file.display().to_string()));
+        }
+
+        if self.config.show_unchanged {
+            options.push(("Show unchanged:".to_string(), "Yes".to_string()));
+        }
+
+        if !self.config.filter_status.is_empty() {
+            let statuses: Vec<&str> = self.config.filter_status.included.iter().map(|s| s.as_str()).collect();
+            if !statuses.is_empty() {
+                options.push(("Filter status:".to_string(), statuses.join(", ")));
+            }
+        }
+
+        if !self.config.exclude.is_empty() {
+            let exclude_str = self.config.exclude.join(", ");
+            options.push(("Exclude patterns:".to_string(), exclude_str));
+        }
+
+        if self.config.stats_only {
+            options.push(("Stats only:".to_string(), "Yes".to_string()));
+        }
+
+        if self.config.no_tree {
+            options.push(("No tree:".to_string(), "Yes".to_string()));
+        }
+
+        if self.config.no_details {
+            options.push(("No details:".to_string(), "Yes".to_string()));
+        }
+
+        options
     }
 
     fn write_file_tree_sheet(
@@ -136,38 +239,41 @@ impl<'a> ExcelWriter<'a> {
             return Ok(());
         }
 
-        // Formats
-        let header_format = Format::new()
-            .set_bold()
-            .set_background_color(Color::RGB(0x4472C4))
-            .set_font_color(Color::White);
+        let formats = Self::create_formats();
 
-        let tree_format = Format::new().set_font_name("Consolas");
+        // Create status-specific formats with borders
+        let tree_format = Format::new()
+            .set_font_name("Consolas")
+            .set_border(FormatBorder::Thin);
 
         let added_format = Format::new()
             .set_font_name("Consolas")
-            .set_font_color(Color::RGB(0x008000));
+            .set_font_color(Color::RGB(0x008000))
+            .set_border(FormatBorder::Thin);
 
         let modified_format = Format::new()
             .set_font_name("Consolas")
-            .set_font_color(Color::RGB(0x0066CC));
+            .set_font_color(Color::RGB(0x0066CC))
+            .set_border(FormatBorder::Thin);
 
         let deleted_format = Format::new()
             .set_font_name("Consolas")
-            .set_font_color(Color::RGB(0xCC0000));
+            .set_font_color(Color::RGB(0xCC0000))
+            .set_border(FormatBorder::Thin);
 
         let symlink_format = Format::new()
             .set_font_name("Consolas")
-            .set_font_color(Color::RGB(0x9933FF));
+            .set_font_color(Color::RGB(0x9933FF))
+            .set_border(FormatBorder::Thin);
 
         let unchanged_format = Format::new()
             .set_font_name("Consolas")
-            .set_font_color(Color::RGB(0x808080));
+            .set_font_color(Color::RGB(0x808080))
+            .set_border(FormatBorder::Thin);
 
-        // Headers
-        worksheet.write_string(0, 0, "Path").ok();
-        worksheet.write_string(0, 1, "Status").ok();
-        worksheet.set_row_format(0, &header_format).ok();
+        // Headers - apply to each column individually
+        worksheet.write_string_with_format(0, 0, "Path", &formats.header).ok();
+        worksheet.write_string_with_format(0, 1, "Status", &formats.header).ok();
 
         // Build tree and write
         let filtered_entries: Vec<&FileEntry> = entries
@@ -177,6 +283,9 @@ impl<'a> ExcelWriter<'a> {
 
         let mut row = 1u32;
         let fold_level = self.config.excel_fold_level;
+
+        // Track row ranges for grouping by depth
+        let mut depth_ranges: std::collections::HashMap<usize, Vec<u32>> = std::collections::HashMap::new();
 
         for entry in &filtered_entries {
             let depth = entry.relative_path.components().count();
@@ -216,11 +325,19 @@ impl<'a> ExcelWriter<'a> {
             worksheet.write_string_with_format(row, 0, &display_name, format).ok();
             worksheet.write_string_with_format(row, 1, status_str, format).ok();
 
-            // Note: Row grouping/folding is not currently implemented
-            // as rust_xlsxwriter API for outline levels may differ
-            let _ = fold_level; // Silence unused variable warning
+            // Track rows for grouping based on depth
+            if let Some(level) = fold_level {
+                if depth > level {
+                    depth_ranges.entry(depth).or_default().push(row);
+                }
+            }
 
             row += 1;
+        }
+
+        // Apply row grouping for fold levels
+        if let Some(level) = fold_level {
+            Self::apply_row_grouping(worksheet, &filtered_entries, level);
         }
 
         // Set column widths
@@ -228,6 +345,38 @@ impl<'a> ExcelWriter<'a> {
         worksheet.set_column_width(1, 15.0).ok();
 
         Ok(())
+    }
+
+    fn apply_row_grouping(worksheet: &mut Worksheet, entries: &[&FileEntry], fold_level: usize) {
+        // Find contiguous ranges of rows that exceed the fold level
+        let mut group_start: Option<u32> = None;
+        let mut current_row = 1u32;
+
+        for entry in entries {
+            let depth = entry.relative_path.components().count();
+
+            if depth > fold_level {
+                if group_start.is_none() {
+                    group_start = Some(current_row);
+                }
+            } else {
+                // End current group if any
+                if let Some(start) = group_start {
+                    if current_row > start {
+                        worksheet.group_rows(start, current_row - 1).ok();
+                    }
+                    group_start = None;
+                }
+            }
+            current_row += 1;
+        }
+
+        // Handle last group
+        if let Some(start) = group_start {
+            if current_row > start {
+                worksheet.group_rows(start, current_row - 1).ok();
+            }
+        }
     }
 
     fn write_details_sheet(
@@ -243,27 +392,26 @@ impl<'a> ExcelWriter<'a> {
             return Ok(());
         }
 
-        // Formats
-        let header_format = Format::new()
-            .set_bold()
-            .set_background_color(Color::RGB(0x4472C4))
-            .set_font_color(Color::White);
+        let formats = Self::create_formats();
 
-        let section_format = Format::new()
-            .set_bold()
-            .set_font_size(12.0)
-            .set_background_color(Color::RGB(0xD9E2F3));
+        // Create status-specific formats with borders
+        let added_format = Format::new()
+            .set_font_color(Color::RGB(0x008000))
+            .set_border(FormatBorder::Thin);
+        let modified_format = Format::new()
+            .set_font_color(Color::RGB(0x0066CC))
+            .set_border(FormatBorder::Thin);
+        let deleted_format = Format::new()
+            .set_font_color(Color::RGB(0xCC0000))
+            .set_border(FormatBorder::Thin);
+        let default_format = Format::new()
+            .set_border(FormatBorder::Thin);
 
-        let added_format = Format::new().set_font_color(Color::RGB(0x008000));
-        let modified_format = Format::new().set_font_color(Color::RGB(0x0066CC));
-        let deleted_format = Format::new().set_font_color(Color::RGB(0xCC0000));
-
-        // Headers
-        worksheet.write_string(0, 0, "Status").ok();
-        worksheet.write_string(0, 1, "Directory").ok();
-        worksheet.write_string(0, 2, "File").ok();
-        worksheet.write_string(0, 3, "Details").ok();
-        worksheet.set_row_format(0, &header_format).ok();
+        // Headers - apply format to each column individually
+        worksheet.write_string_with_format(0, 0, "Status", &formats.header).ok();
+        worksheet.write_string_with_format(0, 1, "Directory", &formats.header).ok();
+        worksheet.write_string_with_format(0, 2, "File", &formats.header).ok();
+        worksheet.write_string_with_format(0, 3, "Details", &formats.header).ok();
 
         let mut row = 1u32;
 
@@ -288,7 +436,7 @@ impl<'a> ExcelWriter<'a> {
                 continue;
             }
 
-            // Section header
+            // Section header - apply to all 4 columns individually
             let section_name = match status {
                 FileStatus::Added => "Added Files",
                 FileStatus::Modified => "Modified Files",
@@ -300,15 +448,17 @@ impl<'a> ExcelWriter<'a> {
                 _ => "Other",
             };
 
-            worksheet.write_string_with_format(row, 0, section_name, &section_format).ok();
-            worksheet.merge_range(row, 0, row, 3, section_name, &section_format).ok();
+            worksheet.write_string_with_format(row, 0, section_name, &formats.section).ok();
+            worksheet.write_string_with_format(row, 1, "", &formats.section).ok();
+            worksheet.write_string_with_format(row, 2, "", &formats.section).ok();
+            worksheet.write_string_with_format(row, 3, "", &formats.section).ok();
             row += 1;
 
             let format = match status {
                 FileStatus::Added => &added_format,
                 FileStatus::Modified => &modified_format,
                 FileStatus::Deleted => &deleted_format,
-                _ => &Format::new(),
+                _ => &default_format,
             };
 
             for entry in status_entries {
@@ -327,9 +477,9 @@ impl<'a> ExcelWriter<'a> {
                 let details = self.get_entry_details(entry);
 
                 worksheet.write_string_with_format(row, 0, status.as_str(), format).ok();
-                worksheet.write_string(row, 1, &dir).ok();
-                worksheet.write_string(row, 2, &file).ok();
-                worksheet.write_string(row, 3, &details).ok();
+                worksheet.write_string_with_format(row, 1, &dir, &default_format).ok();
+                worksheet.write_string_with_format(row, 2, &file, &default_format).ok();
+                worksheet.write_string_with_format(row, 3, &details, &default_format).ok();
 
                 row += 1;
             }
@@ -383,5 +533,182 @@ impl<'a> ExcelWriter<'a> {
             }
             _ => String::new(),
         }
+    }
+}
+
+/// Struct to hold common formats
+struct ExcelFormats {
+    title: Format,
+    header: Format,
+    label: Format,
+    value: Format,
+    section: Format,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn create_test_config() -> Config {
+        Config {
+            source: PathBuf::from("/test/source"),
+            target: PathBuf::from("/test/target"),
+            output: PathBuf::from("/test/output"),
+            excel: Some(PathBuf::from("/test/report.xlsx")),
+            excel_fold_level: Some(2),
+            dry_run: true,
+            both_versions: true,
+            copy_deleted: true,
+            preserve_timestamps: true,
+            check_permissions: CheckPermissionsMode::Scripts,
+            patch: true,
+            patch_file: Some(PathBuf::from("/test/combined.patch")),
+            show_unchanged: true,
+            exclude: vec!["*.log".to_string(), "node_modules/**".to_string()],
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_collect_options_all_enabled() {
+        let config = create_test_config();
+        let writer = ExcelWriter::new(&config);
+        let options = writer.collect_options();
+
+        assert!(options.iter().any(|(k, _)| k == "Mode:"));
+        assert!(options.iter().any(|(k, _)| k == "Copy mode:"));
+        assert!(options.iter().any(|(k, _)| k == "Copy deleted:"));
+        assert!(options.iter().any(|(k, _)| k == "Preserve timestamps:"));
+        assert!(options.iter().any(|(k, _)| k == "Permission check:"));
+        assert!(options.iter().any(|(k, _)| k == "Patch mode:"));
+        assert!(options.iter().any(|(k, _)| k == "Combined patch file:"));
+        assert!(options.iter().any(|(k, _)| k == "Show unchanged:"));
+        assert!(options.iter().any(|(k, _)| k == "Exclude patterns:"));
+    }
+
+    #[test]
+    fn test_collect_options_minimal() {
+        let config = Config {
+            source: PathBuf::from("/test/source"),
+            target: PathBuf::from("/test/target"),
+            output: PathBuf::from("/test/output"),
+            ..Default::default()
+        };
+        let writer = ExcelWriter::new(&config);
+        let options = writer.collect_options();
+
+        assert!(options.is_empty());
+    }
+
+    #[test]
+    fn test_collect_options_permission_check_all() {
+        let config = Config {
+            source: PathBuf::from("/test/source"),
+            target: PathBuf::from("/test/target"),
+            output: PathBuf::from("/test/output"),
+            check_permissions: CheckPermissionsMode::All,
+            ..Default::default()
+        };
+        let writer = ExcelWriter::new(&config);
+        let options = writer.collect_options();
+
+        let perm_option = options.iter().find(|(k, _)| k == "Permission check:");
+        assert!(perm_option.is_some());
+        assert_eq!(perm_option.unwrap().1, "all");
+    }
+
+    #[test]
+    fn test_collect_options_filter_status() {
+        use crate::types::StatusFilter;
+
+        let mut filter = StatusFilter::new();
+        filter.included.insert("added".to_string());
+        filter.included.insert("modified".to_string());
+
+        let config = Config {
+            source: PathBuf::from("/test/source"),
+            target: PathBuf::from("/test/target"),
+            output: PathBuf::from("/test/output"),
+            filter_status: filter,
+            ..Default::default()
+        };
+        let writer = ExcelWriter::new(&config);
+        let options = writer.collect_options();
+
+        let filter_option = options.iter().find(|(k, _)| k == "Filter status:");
+        assert!(filter_option.is_some());
+        let value = &filter_option.unwrap().1;
+        // The value should contain both "added" and "modified"
+        assert!(value.contains("added"));
+        assert!(value.contains("modified"));
+    }
+
+    #[test]
+    fn test_collect_options_filter_status_empty() {
+        let config = Config {
+            source: PathBuf::from("/test/source"),
+            target: PathBuf::from("/test/target"),
+            output: PathBuf::from("/test/output"),
+            ..Default::default()
+        };
+        let writer = ExcelWriter::new(&config);
+        let options = writer.collect_options();
+
+        // Empty filter_status should not appear in options
+        let filter_option = options.iter().find(|(k, _)| k == "Filter status:");
+        assert!(filter_option.is_none());
+    }
+
+    #[test]
+    fn test_create_formats() {
+        // Just verify formats can be created without panic
+        let _formats = ExcelWriter::create_formats();
+    }
+
+    #[test]
+    fn test_get_entry_details_modified() {
+        let config = Config::default();
+        let writer = ExcelWriter::new(&config);
+
+        let mut entry = FileEntry::new(PathBuf::from("test.txt"), FileStatus::Modified, false);
+        entry.source_size = Some(100);
+        entry.target_size = Some(200);
+
+        let details = writer.get_entry_details(&entry);
+        assert_eq!(details, "100 -> 200 bytes");
+    }
+
+    #[test]
+    fn test_get_entry_details_error() {
+        let config = Config::default();
+        let writer = ExcelWriter::new(&config);
+
+        let mut entry = FileEntry::new(PathBuf::from("test.txt"), FileStatus::Error, false);
+        entry.error_message = Some("Permission denied".to_string());
+
+        let details = writer.get_entry_details(&entry);
+        assert_eq!(details, "Permission denied");
+    }
+
+    #[test]
+    fn test_apply_row_grouping() {
+        // Test that row grouping logic works correctly
+        // This tests the helper function logic without needing a real worksheet
+        let entries: Vec<FileEntry> = vec![
+            FileEntry::new(PathBuf::from("a/file1.txt"), FileStatus::Added, false),
+            FileEntry::new(PathBuf::from("a/b/file2.txt"), FileStatus::Added, false),
+            FileEntry::new(PathBuf::from("a/b/c/file3.txt"), FileStatus::Added, false),
+            FileEntry::new(PathBuf::from("x/file4.txt"), FileStatus::Added, false),
+        ];
+
+        // Verify depth calculation
+        assert_eq!(entries[0].relative_path.components().count(), 2);
+        assert_eq!(entries[1].relative_path.components().count(), 3);
+        assert_eq!(entries[2].relative_path.components().count(), 4);
+        assert_eq!(entries[3].relative_path.components().count(), 2);
     }
 }

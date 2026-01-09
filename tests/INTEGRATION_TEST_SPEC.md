@@ -318,6 +318,36 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
+### 20. Excelフォーマット拡張テスト
+
+**背景**: Excel出力の視認性向上（罫線、Options表示、fold-level等）の修正を検証
+
+| テストID | テスト名 | テスト内容 | 期待結果 | 分類 |
+|---------|---------|-----------|---------|------|
+| EXFMT-001 | test_excel_summary_has_options_section | Optionsセクション存在確認 | SummaryシートにOptionsセクションが存在 | 正常系 |
+| EXFMT-002 | test_excel_summary_has_statistics_section | Statisticsセクション存在確認 | SummaryシートにStatisticsセクションが存在 | 正常系 |
+| EXFMT-003 | test_excel_fold_level_option | --excel-fold-levelオプション | 指定深さ以上の行がグループ化対象 | 正常系 |
+| EXFMT-004 | test_excel_details_has_header | Detailsシートヘッダー確認 | ヘッダー行が4列存在 | 正常系 |
+| EXFMT-005 | test_excel_summary_has_labels | Summaryラベル確認 | Source:, Target:, Output:ラベルが存在 | 正常系 |
+| EXFMT-006 | test_excel_fold_level_zero_default | fold-levelデフォルト値 | デフォルト（0）で正常に動作 | 正常系 |
+| EXFMT-007 | test_excel_file_tree_cell_structure | File Treeセル構造 | ディレクトリ構造がセルで表現 | 正常系 |
+
+---
+
+### 21. Filter statusオプション表示テスト
+
+**背景**: --filter-statusオプションがSummaryファイルとExcelのOptionsセクションに表示されることを検証
+
+| テストID | テスト名 | テスト内容 | 期待結果 | 分類 |
+|---------|---------|-----------|---------|------|
+| FILT-001 | test_summary_contains_filter_status_option | Summaryにfilter_status表示 | --filter-status指定時にOptionsセクションに表示 | 正常系 |
+| FILT-002 | test_excel_contains_filter_status_option | Excelにfilter_status表示 | --filter-status指定時にSummaryシートOptionsに表示 | 正常系 |
+| FILT-003 | test_filter_status_multiple_values | 複数ステータス指定 | カンマ区切りで複数値が表示 | 正常系 |
+| FILT-004 | test_no_filter_status_when_not_specified | 未指定時は非表示（Summary） | --filter-status未指定時はFilter status行なし | 正常系 |
+| FILT-005 | test_excel_no_filter_status_when_not_specified | 未指定時は非表示（Excel） | --filter-status未指定時はFilter status行なし | 正常系 |
+
+---
+
 ## 終了コード一覧
 
 | 終了コード | 意味 |
@@ -388,3 +418,5 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-08 | 1.3 | 出力ファイル内容検証テスト追加（Excel、サマリー、パッチ）、calamineクレート使用 |
 | 2026-01-09 | 1.4 | シンボリックリンク不具合修正テスト追加（統計とSymlink Details不一致問題） |
 | 2026-01-09 | 1.5 | Unchanged/Total統計不具合修正テスト追加（Unchangedが0、Totalが検査総数にならない問題） |
+| 2026-01-09 | 1.6 | Excelフォーマット拡張テスト追加（罫線、Options、fold-level、ヘッダー幅修正） |
+| 2026-01-09 | 1.7 | Filter statusオプション表示テスト追加（SummaryとExcelのOptionsセクション） |

@@ -189,6 +189,43 @@ pub struct Config {
     pub save_config: Option<PathBuf>,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            source: PathBuf::new(),
+            target: PathBuf::new(),
+            output: PathBuf::new(),
+            exclude: Vec::new(),
+            force: false,
+            verbose: false,
+            dry_run: false,
+            both_versions: false,
+            summary: None,
+            check_permissions: CheckPermissionsMode::None,
+            patch: false,
+            patch_file: None,
+            excel: None,
+            excel_fold_level: None,
+            show_unchanged: false,
+            filter_status: StatusFilter::default(),
+            stats_only: false,
+            no_tree: false,
+            no_details: false,
+            copy_deleted: false,
+            preserve_timestamps: false,
+            workers: 1,
+            temp_dir: None,
+            color: ColorMode::Auto,
+            log_level: LogLevel::Warn,
+            three_way: false,
+            base: None,
+            merge_style: MergeStyle::All,
+            conflict_only: false,
+            save_config: None,
+        }
+    }
+}
+
 impl Config {
     /// Build config from CLI args, input config file, and app settings
     pub fn from_cli(cli: &Cli) -> Result<Self> {

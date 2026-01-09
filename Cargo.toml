@@ -39,7 +39,7 @@ indicatif = "0.17"
 colored = "2"
 
 # Excel output
-rust_xlsxwriter = "0.79"
+rust_xlsxwriter = "0.92"
 
 # Date/time
 chrono = "0.4"

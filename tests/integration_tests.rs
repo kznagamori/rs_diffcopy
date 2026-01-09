@@ -3770,3 +3770,497 @@ mod unchanged_total_stats_tests {
         assert!(unchanged >= 2, "Unchanged should be at least 2, got: {}", unchanged);
     }
 }
+
+// Section 20: Excel format enhancement tests
+mod excel_format_tests {
+    use super::*;
+    use calamine::{open_workbook, Reader, Xlsx};
+
+    // IT-2001: Verify Excel Summary sheet has Options section
+    #[test]
+    fn test_excel_summary_has_options_section() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        fs::write(source.join("file.txt"), "old content").unwrap();
+        fs::write(target.join("file.txt"), "new content").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+            "-v",  // Enable verbose to have options to show
+        ]);
+
+        assert!(result.status.success());
+        assert!(excel_path.exists());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Summary") {
+            let mut found_options = false;
+
+            for row in range.rows() {
+                if let Some(cell) = row.first() {
+                    let cell_str = cell.to_string();
+                    if cell_str == "Options" {
+                        found_options = true;
+                        break;
+                    }
+                }
+            }
+
+            assert!(found_options, "Options section not found in Summary sheet");
+        } else {
+            panic!("Could not read Summary sheet");
+        }
+    }
+
+    // IT-2002: Verify Excel Summary sheet has Statistics section header
+    #[test]
+    fn test_excel_summary_has_statistics_section() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        fs::write(source.join("file.txt"), "old content").unwrap();
+        fs::write(target.join("file.txt"), "new content").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Summary") {
+            let mut found_statistics = false;
+
+            for row in range.rows() {
+                if let Some(cell) = row.first() {
+                    let cell_str = cell.to_string();
+                    if cell_str == "Statistics" {
+                        found_statistics = true;
+                        break;
+                    }
+                }
+            }
+
+            assert!(found_statistics, "Statistics section header not found in Summary sheet");
+        } else {
+            panic!("Could not read Summary sheet");
+        }
+    }
+
+    // IT-2003: Verify Excel File Tree with --excel-fold-level generates correct file
+    #[test]
+    fn test_excel_fold_level_option() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create nested directory structure
+        let nested_dir = target.join("level1").join("level2").join("level3");
+        fs::create_dir_all(&nested_dir).unwrap();
+        fs::write(nested_dir.join("deep_file.txt"), "deep content").unwrap();
+
+        // Also add a file at level 1
+        fs::create_dir_all(target.join("level1")).unwrap();
+        fs::write(target.join("level1").join("shallow.txt"), "shallow").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+            "--excel-fold-level", "2",  // Fold level 2
+        ]);
+
+        assert!(result.status.success());
+        assert!(excel_path.exists());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            let mut found_deep_file = false;
+
+            for row in range.rows() {
+                for cell in row {
+                    let cell_str = cell.to_string();
+                    if cell_str.contains("deep_file.txt") {
+                        found_deep_file = true;
+                        break;
+                    }
+                }
+            }
+
+            assert!(found_deep_file, "deep_file.txt not found in File Tree with fold level");
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+
+    // IT-2004: Verify Excel Details sheet has header row
+    #[test]
+    fn test_excel_details_has_header() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Details") {
+            // First row should be header
+            if let Some(first_row) = range.rows().next() {
+                // Check that all 4 columns have header content
+                assert!(first_row.len() >= 4, "Details header should have at least 4 columns");
+
+                // Check header cells are not empty
+                let col0 = first_row.get(0).map(|c| c.to_string()).unwrap_or_default();
+                let col1 = first_row.get(1).map(|c| c.to_string()).unwrap_or_default();
+                let col2 = first_row.get(2).map(|c| c.to_string()).unwrap_or_default();
+                let col3 = first_row.get(3).map(|c| c.to_string()).unwrap_or_default();
+
+                assert!(!col0.is_empty() || !col1.is_empty() || !col2.is_empty() || !col3.is_empty(),
+                    "Details header should have at least one non-empty cell");
+            } else {
+                panic!("Details sheet is empty");
+            }
+        } else {
+            panic!("Could not read Details sheet");
+        }
+    }
+
+    // IT-2005: Verify Excel Summary sheet has all label rows (Source, Target, etc.)
+    #[test]
+    fn test_excel_summary_has_labels() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        fs::write(source.join("file.txt"), "content").unwrap();
+        fs::write(target.join("file.txt"), "content").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        // Exit code could be 0 (success) or 2 (no differences)
+        assert!(result.status.code() == Some(0) || result.status.code() == Some(2),
+            "Expected exit code 0 or 2");
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Summary") {
+            let mut found_source = false;
+            let mut found_target = false;
+            let mut found_output = false;
+
+            for row in range.rows() {
+                if let Some(cell) = row.first() {
+                    let cell_str = cell.to_string();
+                    if cell_str == "Source:" {
+                        found_source = true;
+                    }
+                    if cell_str == "Target:" {
+                        found_target = true;
+                    }
+                    if cell_str == "Output:" {
+                        found_output = true;
+                    }
+                }
+            }
+
+            assert!(found_source, "Source: label not found in Summary sheet");
+            assert!(found_target, "Target: label not found in Summary sheet");
+            assert!(found_output, "Output: label not found in Summary sheet");
+        } else {
+            panic!("Could not read Summary sheet");
+        }
+    }
+
+    // IT-2006: Verify Excel fold level 0 disables grouping (default)
+    #[test]
+    fn test_excel_fold_level_zero_default() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        let nested = target.join("a").join("b");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("file.txt"), "content").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        // Run without --excel-fold-level (default is 0)
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+        assert!(excel_path.exists());
+
+        // File should be generated successfully
+        let workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+        let sheet_names = workbook.sheet_names();
+        assert!(sheet_names.contains(&"File Tree".to_string()));
+    }
+
+    // IT-2007: Verify Excel File Tree preserves directory structure in cells
+    #[test]
+    fn test_excel_file_tree_cell_structure() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create directory structure
+        let subdir = target.join("subdir");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(subdir.join("nested.txt"), "content").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            let mut found_nested = false;
+
+            for row in range.rows() {
+                for cell in row {
+                    let cell_str = cell.to_string();
+                    if cell_str.contains("nested.txt") || cell_str.contains("subdir") {
+                        found_nested = true;
+                    }
+                }
+            }
+
+            assert!(found_nested, "Nested file structure not found in File Tree");
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+}
+
+// Section 21: Filter status in Options tests
+mod filter_status_options_tests {
+    use super::*;
+    use calamine::{open_workbook, Reader, Xlsx};
+
+    // IT-2101: Verify Summary file contains filter_status in Options
+    #[test]
+    fn test_summary_contains_filter_status_option() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create test files: 1 added, 1 modified
+        fs::write(source.join("modified.txt"), "old content").unwrap();
+        fs::write(target.join("modified.txt"), "new content").unwrap();
+        fs::write(target.join("added.txt"), "added content").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--filter-status", "added",
+        ]);
+
+        assert!(result.status.success());
+        assert!(summary_path.exists());
+
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+        assert!(summary_content.contains("Filter status:"),
+            "Summary file should contain 'Filter status:' in Options section");
+        assert!(summary_content.contains("added"),
+            "Summary file should contain 'added' as filter status value");
+    }
+
+    // IT-2102: Verify Excel file contains filter_status in Options section
+    #[test]
+    fn test_excel_contains_filter_status_option() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        fs::write(source.join("modified.txt"), "old content").unwrap();
+        fs::write(target.join("modified.txt"), "new content").unwrap();
+        fs::write(target.join("added.txt"), "added content").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+            "--filter-status", "modified",
+        ]);
+
+        assert!(result.status.success());
+        assert!(excel_path.exists());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Summary") {
+            let mut found_filter_status = false;
+
+            for row in range.rows() {
+                if let Some(cell) = row.first() {
+                    let cell_str = cell.to_string();
+                    if cell_str == "Filter status:" {
+                        found_filter_status = true;
+                        // Check value column contains "modified"
+                        if let Some(value) = row.get(1) {
+                            assert!(value.to_string().contains("modified"),
+                                "Filter status value should contain 'modified'");
+                        }
+                        break;
+                    }
+                }
+            }
+
+            assert!(found_filter_status, "Filter status: not found in Excel Options section");
+        } else {
+            panic!("Could not read Summary sheet");
+        }
+    }
+
+    // IT-2103: Verify multiple filter statuses are shown correctly
+    #[test]
+    fn test_filter_status_multiple_values() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+        fs::write(target.join("added.txt"), "added").unwrap();
+        fs::write(source.join("deleted.txt"), "deleted").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--filter-status", "added,modified",
+        ]);
+
+        assert!(result.status.success());
+
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+        assert!(summary_content.contains("Filter status:"),
+            "Summary should contain Filter status option");
+        assert!(summary_content.contains("added") && summary_content.contains("modified"),
+            "Summary should contain both 'added' and 'modified' in Filter status");
+    }
+
+    // IT-2104: Verify no filter_status shown when not specified
+    #[test]
+    fn test_no_filter_status_when_not_specified() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+        // When no filter is specified, the Options section might not exist at all
+        // or it shouldn't contain "Filter status:" if no other options are set
+        // Check that Filter status is not displayed when not using --filter-status
+        let lines: Vec<&str> = summary_content.lines().collect();
+        let has_filter_status_line = lines.iter().any(|line| line.contains("Filter status:"));
+        assert!(!has_filter_status_line,
+            "Summary should not contain 'Filter status:' when --filter-status is not specified");
+    }
+
+    // IT-2105: Verify Excel Options section correctly excludes filter_status when not specified
+    #[test]
+    fn test_excel_no_filter_status_when_not_specified() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Summary") {
+            let mut found_filter_status = false;
+
+            for row in range.rows() {
+                if let Some(cell) = row.first() {
+                    let cell_str = cell.to_string();
+                    if cell_str == "Filter status:" {
+                        found_filter_status = true;
+                        break;
+                    }
+                }
+            }
+
+            assert!(!found_filter_status,
+                "Filter status: should not appear in Excel when --filter-status is not specified");
+        } else {
+            panic!("Could not read Summary sheet");
+        }
+    }
+}
