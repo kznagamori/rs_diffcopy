@@ -2,7 +2,36 @@ use chrono::Local;
 use rust_xlsxwriter::{Color, Format, FormatBorder, Workbook, Worksheet};
 
 use crate::config::Config;
-use crate::types::{CheckPermissionsMode, ComparisonResult, ComparisonStats, FileEntry, FileStatus};
+use crate::types::{CheckPermissionsMode, ComparisonResult, ComparisonStats, FileEntry, FileStatus, StatusFilter};
+
+/// Format StatusFilter for display in Options section
+fn format_filter_status(filter: &StatusFilter) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // Add "all" if include_all is set, or if only exclusions exist
+    if filter.include_all {
+        parts.push("all".to_string());
+    } else if !filter.included.is_empty() {
+        // Add included statuses
+        let mut included: Vec<&str> = filter.included.iter().map(|s| s.as_str()).collect();
+        included.sort();
+        parts.extend(included.into_iter().map(|s| s.to_string()));
+    } else if !filter.excluded.is_empty() {
+        // Only exclusions exist, imply "all"
+        parts.push("all (implied)".to_string());
+    }
+
+    // Add excluded statuses with ^ prefix
+    if !filter.excluded.is_empty() {
+        let mut excluded: Vec<&str> = filter.excluded.iter().map(|s| s.as_str()).collect();
+        excluded.sort();
+        for ex in excluded {
+            parts.push(format!("^{}", ex));
+        }
+    }
+
+    parts.join(", ")
+}
 
 /// Excel report generator
 pub struct ExcelWriter<'a> {
@@ -200,9 +229,9 @@ impl<'a> ExcelWriter<'a> {
         }
 
         if !self.config.filter_status.is_empty() {
-            let statuses: Vec<&str> = self.config.filter_status.included.iter().map(|s| s.as_str()).collect();
-            if !statuses.is_empty() {
-                options.push(("Filter status:".to_string(), statuses.join(", ")));
+            let filter_str = format_filter_status(&self.config.filter_status);
+            if !filter_str.is_empty() {
+                options.push(("Filter status:".to_string(), filter_str));
             }
         }
 
@@ -271,36 +300,43 @@ impl<'a> ExcelWriter<'a> {
             .set_font_color(Color::RGB(0x808080))
             .set_border(FormatBorder::Thin);
 
-        // Headers - apply to each column individually
-        worksheet.write_string_with_format(0, 0, "Path", &formats.header).ok();
-        worksheet.write_string_with_format(0, 1, "Status", &formats.header).ok();
-
         // Build tree and write
         let filtered_entries: Vec<&FileEntry> = entries
             .iter()
             .filter(|e| self.config.filter_status.matches(e.status))
             .collect();
 
+        // Calculate max depth for column count
+        let max_depth = filtered_entries
+            .iter()
+            .map(|e| e.relative_path.components().count())
+            .max()
+            .unwrap_or(1);
+
+        // Status column is after all path columns
+        let status_col = max_depth as u16;
+
+        // Write headers - one for each depth level plus Status
+        for col in 0..max_depth {
+            let header_text = if col == 0 {
+                "Path".to_string()
+            } else {
+                "".to_string()  // Empty headers for intermediate columns
+            };
+            worksheet.write_string_with_format(0, col as u16, &header_text, &formats.header).ok();
+        }
+        worksheet.write_string_with_format(0, status_col, "Status", &formats.header).ok();
+
         let mut row = 1u32;
         let fold_level = self.config.excel_fold_level;
 
-        // Track row ranges for grouping by depth
-        let mut depth_ranges: std::collections::HashMap<usize, Vec<u32>> = std::collections::HashMap::new();
-
         for entry in &filtered_entries {
-            let depth = entry.relative_path.components().count();
-            let indent = "  ".repeat(depth.saturating_sub(1));
-            let name = entry
+            let components: Vec<String> = entry
                 .relative_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| entry.relative_path.to_string_lossy().to_string());
-
-            let display_name = if entry.is_directory {
-                format!("{}{}/", indent, name)
-            } else {
-                format!("{}{}", indent, name)
-            };
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect();
+            let depth = components.len();
 
             let status_str = match entry.status {
                 FileStatus::Added => "added",
@@ -322,40 +358,56 @@ impl<'a> ExcelWriter<'a> {
                 _ => &tree_format,
             };
 
-            worksheet.write_string_with_format(row, 0, &display_name, format).ok();
-            worksheet.write_string_with_format(row, 1, status_str, format).ok();
-
-            // Track rows for grouping based on depth
-            if let Some(level) = fold_level {
-                if depth > level {
-                    depth_ranges.entry(depth).or_default().push(row);
-                }
+            // Write each path component in its own cell
+            for (i, component) in components.iter().enumerate() {
+                let is_last = i == depth - 1;
+                let display_text = if is_last && entry.is_directory {
+                    format!("{}/", component)
+                } else if !is_last {
+                    format!("{}/", component)
+                } else {
+                    component.clone()
+                };
+                worksheet.write_string_with_format(row, i as u16, &display_text, format).ok();
             }
+
+            // Write status in the status column
+            worksheet.write_string_with_format(row, status_col, status_str, format).ok();
 
             row += 1;
         }
 
         // Apply row grouping for fold levels
+        // fold_level N means items at depth >= N should be grouped
         if let Some(level) = fold_level {
-            Self::apply_row_grouping(worksheet, &filtered_entries, level);
+            if level > 0 {
+                Self::apply_row_grouping(worksheet, &filtered_entries, level);
+            }
         }
 
         // Set column widths
-        worksheet.set_column_width(0, 60.0).ok();
-        worksheet.set_column_width(1, 15.0).ok();
+        for col in 0..=max_depth {
+            if col < max_depth {
+                worksheet.set_column_width(col as u16, 20.0).ok();
+            } else {
+                worksheet.set_column_width(col as u16, 12.0).ok();
+            }
+        }
 
         Ok(())
     }
 
     fn apply_row_grouping(worksheet: &mut Worksheet, entries: &[&FileEntry], fold_level: usize) {
-        // Find contiguous ranges of rows that exceed the fold level
+        // Find contiguous ranges of rows that should be folded
+        // depth >= fold_level means the row should be grouped
         let mut group_start: Option<u32> = None;
         let mut current_row = 1u32;
 
         for entry in entries {
             let depth = entry.relative_path.components().count();
 
-            if depth > fold_level {
+            // depth >= fold_level means this row should be grouped (hidden by default)
+            if depth >= fold_level {
                 if group_start.is_none() {
                     group_start = Some(current_row);
                 }
@@ -710,5 +762,62 @@ mod tests {
         assert_eq!(entries[1].relative_path.components().count(), 3);
         assert_eq!(entries[2].relative_path.components().count(), 4);
         assert_eq!(entries[3].relative_path.components().count(), 2);
+
+        // With fold_level=2, items at depth >= 2 should be grouped
+        // That means all items in this list would be grouped (depths 2, 3, 4, 2)
+        // With fold_level=3, items at depth >= 3 should be grouped
+        // That means file2.txt (3) and file3.txt (4) would be grouped
+    }
+
+    #[test]
+    fn test_format_filter_status_all_with_exclusion() {
+        use crate::types::StatusFilter;
+
+        let mut filter = StatusFilter::new();
+        filter.include_all = true;
+        filter.excluded.insert("deleted".to_string());
+
+        let result = format_filter_status(&filter);
+        assert!(result.contains("all"));
+        assert!(result.contains("^deleted"));
+    }
+
+    #[test]
+    fn test_format_filter_status_only_exclusions() {
+        use crate::types::StatusFilter;
+
+        let mut filter = StatusFilter::new();
+        filter.excluded.insert("deleted".to_string());
+        filter.excluded.insert("unchanged".to_string());
+
+        let result = format_filter_status(&filter);
+        assert!(result.contains("all (implied)"));
+        assert!(result.contains("^deleted"));
+        assert!(result.contains("^unchanged"));
+    }
+
+    #[test]
+    fn test_format_filter_status_included_only() {
+        use crate::types::StatusFilter;
+
+        let mut filter = StatusFilter::new();
+        filter.included.insert("added".to_string());
+        filter.included.insert("modified".to_string());
+
+        let result = format_filter_status(&filter);
+        assert!(result.contains("added"));
+        assert!(result.contains("modified"));
+        assert!(!result.contains("all"));
+    }
+
+    #[test]
+    fn test_format_filter_status_all_only() {
+        use crate::types::StatusFilter;
+
+        let mut filter = StatusFilter::new();
+        filter.include_all = true;
+
+        let result = format_filter_status(&filter);
+        assert_eq!(result, "all");
     }
 }

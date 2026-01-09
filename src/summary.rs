@@ -12,6 +12,35 @@ use crate::types::{
 };
 use crate::utils::is_terminal;
 
+/// Format StatusFilter for display in Options section
+fn format_filter_status(filter: &StatusFilter) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // Add "all" if include_all is set, or if only exclusions exist
+    if filter.include_all {
+        parts.push("all".to_string());
+    } else if !filter.included.is_empty() {
+        // Add included statuses
+        let mut included: Vec<&str> = filter.included.iter().map(|s| s.as_str()).collect();
+        included.sort();
+        parts.extend(included.into_iter().map(|s| s.to_string()));
+    } else if !filter.excluded.is_empty() {
+        // Only exclusions exist, imply "all"
+        parts.push("all (implied)".to_string());
+    }
+
+    // Add excluded statuses with ^ prefix
+    if !filter.excluded.is_empty() {
+        let mut excluded: Vec<&str> = filter.excluded.iter().map(|s| s.as_str()).collect();
+        excluded.sort();
+        for ex in excluded {
+            parts.push(format!("^{}", ex));
+        }
+    }
+
+    parts.join(", ")
+}
+
 /// Summary writer for console and file output
 pub struct SummaryWriter<'a> {
     config: &'a Config,
@@ -175,9 +204,9 @@ impl<'a> SummaryWriter<'a> {
         }
 
         if !self.config.filter_status.is_empty() {
-            let statuses: Vec<&str> = self.config.filter_status.included.iter().map(|s| s.as_str()).collect();
-            if !statuses.is_empty() {
-                output.push_str(&format!("  Filter status: {}\n", statuses.join(", ")));
+            let filter_str = format_filter_status(&self.config.filter_status);
+            if !filter_str.is_empty() {
+                output.push_str(&format!("  Filter status: {}\n", filter_str));
             }
         }
 

@@ -348,6 +348,23 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
+### 22. Filter status表示・File Tree構造・fold-level不具合修正テスト
+
+**背景**: 以下の不具合の修正を検証
+1. `--filter-status all,^deleted`がOptionsセクションに正しく表示されない
+2. File Treeがセル構造ではなくテキストインデントで表現されている
+3. `--excel-fold-level`の論理が誤っており、指定深さ以上ではなく超える行がグループ化される
+
+| テストID | テスト名 | テスト内容 | 期待結果 | 分類 |
+|---------|---------|-----------|---------|------|
+| FILTFIX-001 | test_summary_filter_status_all_with_exclusion | `all,^deleted`をSummaryに表示 | "Filter status: all, ^deleted"が表示 | 正常系 |
+| FILTFIX-002 | test_excel_filter_status_all_with_exclusion | `all,^deleted`をExcelに表示 | "all, ^deleted"がExcelに表示 | 正常系 |
+| FILTFIX-003 | test_excel_file_tree_cell_structure | File Treeセル構造確認 | パスコンポーネントが別々のセルに配置 | 正常系 |
+| FILTFIX-004 | test_excel_fold_level_groups_correctly | fold-level論理確認 | 深さ≧levelの行がグループ化対象 | 正常系 |
+| FILTFIX-005 | test_summary_filter_status_only_exclusion | 除外のみ指定時の表示 | "all (implied), ^deleted"が表示 | 正常系 |
+
+---
+
 ## 終了コード一覧
 
 | 終了コード | 意味 |
@@ -420,3 +437,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-09 | 1.5 | Unchanged/Total統計不具合修正テスト追加（Unchangedが0、Totalが検査総数にならない問題） |
 | 2026-01-09 | 1.6 | Excelフォーマット拡張テスト追加（罫線、Options、fold-level、ヘッダー幅修正） |
 | 2026-01-09 | 1.7 | Filter statusオプション表示テスト追加（SummaryとExcelのOptionsセクション） |
+| 2026-01-09 | 1.8 | Filter status表示・File Tree構造・fold-level不具合修正テスト追加 |

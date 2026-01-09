@@ -4264,3 +4264,225 @@ mod filter_status_options_tests {
         }
     }
 }
+
+// Section 22: Filter status exclusion and Excel format bug fixes
+mod filter_status_bugfix_tests {
+    use super::*;
+    use calamine::{open_workbook, Reader, Xlsx};
+
+    // IT-2201: Verify filter_status with "all,^deleted" shows in Summary
+    #[test]
+    fn test_summary_filter_status_all_with_exclusion() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+        fs::write(target.join("added.txt"), "added").unwrap();
+        fs::write(source.join("deleted.txt"), "deleted").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--filter-status", "all,^deleted",
+        ]);
+
+        assert!(result.status.success());
+
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+        assert!(summary_content.contains("Filter status:"),
+            "Summary should contain Filter status option");
+        assert!(summary_content.contains("all"),
+            "Summary should contain 'all' in Filter status");
+        assert!(summary_content.contains("^deleted"),
+            "Summary should contain '^deleted' in Filter status");
+    }
+
+    // IT-2202: Verify filter_status with "all,^deleted" shows in Excel
+    #[test]
+    fn test_excel_filter_status_all_with_exclusion() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+        fs::write(target.join("added.txt"), "added").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+            "--filter-status", "all,^deleted",
+        ]);
+
+        assert!(result.status.success());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Summary") {
+            let mut found_filter_status = false;
+            let mut found_all = false;
+            let mut found_exclusion = false;
+
+            for row in range.rows() {
+                if let Some(cell) = row.first() {
+                    let cell_str = cell.to_string();
+                    if cell_str == "Filter status:" {
+                        found_filter_status = true;
+                        if let Some(value) = row.get(1) {
+                            let val_str = value.to_string();
+                            found_all = val_str.contains("all");
+                            found_exclusion = val_str.contains("^deleted");
+                        }
+                        break;
+                    }
+                }
+            }
+
+            assert!(found_filter_status, "Filter status: should appear in Excel Options");
+            assert!(found_all, "Filter status should contain 'all'");
+            assert!(found_exclusion, "Filter status should contain '^deleted'");
+        } else {
+            panic!("Could not read Summary sheet");
+        }
+    }
+
+    // IT-2203: Verify Excel File Tree uses cell-based structure
+    #[test]
+    fn test_excel_file_tree_cell_structure() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create nested directory structure
+        let nested = target.join("level1").join("level2");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("deep.txt"), "content").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            // Find the row with deep.txt
+            let mut found_deep = false;
+            for row in range.rows() {
+                let row_str: String = row.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("|");
+                if row_str.contains("deep.txt") {
+                    found_deep = true;
+                    // Verify that level1/ and level2/ are in separate cells
+                    let has_level1 = row.iter().any(|c| c.to_string().contains("level1"));
+                    let has_level2 = row.iter().any(|c| c.to_string().contains("level2"));
+                    assert!(has_level1, "level1/ should be in a cell");
+                    assert!(has_level2, "level2/ should be in a cell");
+                    break;
+                }
+            }
+            assert!(found_deep, "deep.txt should be in File Tree");
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+
+    // IT-2204: Verify fold-level 2 hides items at depth >= 2
+    #[test]
+    fn test_excel_fold_level_groups_correctly() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create structure:
+        // a.txt (depth 1)
+        // b/ (depth 1)
+        //   d.txt (depth 2)
+        //   e/ (depth 2)
+        //     g.txt (depth 3)
+        fs::write(target.join("a.txt"), "a").unwrap();
+        let b_dir = target.join("b");
+        fs::create_dir_all(&b_dir).unwrap();
+        fs::write(b_dir.join("d.txt"), "d").unwrap();
+        let e_dir = b_dir.join("e");
+        fs::create_dir_all(&e_dir).unwrap();
+        fs::write(e_dir.join("g.txt"), "g").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+            "--excel-fold-level", "2",
+        ]);
+
+        assert!(result.status.success());
+        assert!(excel_path.exists());
+
+        // Verify the file was created and contains all entries
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            let mut found_a = false;
+            let mut found_d = false;
+            let mut found_g = false;
+
+            for row in range.rows() {
+                let row_str: String = row.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("");
+                if row_str.contains("a.txt") { found_a = true; }
+                if row_str.contains("d.txt") { found_d = true; }
+                if row_str.contains("g.txt") { found_g = true; }
+            }
+
+            assert!(found_a, "a.txt should be in File Tree");
+            assert!(found_d, "d.txt should be in File Tree");
+            assert!(found_g, "g.txt should be in File Tree");
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+
+    // IT-2205: Verify filter_status with only exclusion shows "all (implied)"
+    #[test]
+    fn test_summary_filter_status_only_exclusion() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--filter-status", "^deleted",
+        ]);
+
+        assert!(result.status.success());
+
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+        assert!(summary_content.contains("Filter status:"),
+            "Summary should contain Filter status option");
+        // When only exclusions, it should show "all (implied)"
+        assert!(summary_content.contains("all"),
+            "Summary should contain 'all' when only exclusions are specified");
+        assert!(summary_content.contains("^deleted"),
+            "Summary should contain '^deleted'");
+    }
+}

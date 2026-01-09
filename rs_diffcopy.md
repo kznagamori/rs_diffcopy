@@ -1110,12 +1110,40 @@ Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=dele
 #### File Treeシート詳細
 
 - **ツリー構造**: 各パスコンポーネント（ディレクトリ階層）をセル単位で分離して表示
-  - 例: `src/main.rs` は A列に深さに応じたインデント、B列にファイル名、C列にステータス
+  - 各ディレクトリ階層を別々の列に配置し、ファイル名は最後の列に配置
+  - 例: `a/b/c.txt` の場合:
+    - A列: "a/"
+    - B列: "b/"
+    - C列: "c.txt"
+    - D列: ステータス（added/modified等）
+  - ルート直下のファイル（深さ1）はA列にファイル名、B列にステータス
+  - ディレクトリは末尾に"/"を付与
 - **フォント**: 等幅フォント（Consolas）を使用
 - **行グループ化（折りたたみ）**: `-L, --excel-fold-level <LEVEL>` オプションで指定した深さ以上の行をグループ化
-  - 例: `-L 2` の場合、深さ3以上のディレクトリ内のファイルは折りたたみ可能
+  - 深さNは、ルートからのパス階層数（ルート直下=深さ1）
+  - 例: `-L 2` の場合、深さ2以上（=第2階層以降）の項目が折りたたみ可能
+    ```
+    ├── a.txt        (深さ1) → 表示
+    ├── b/           (深さ1) → 表示
+    │   ├── d.txt    (深さ2) → 折りたたみ
+    │   └── e/       (深さ2) → 折りたたみ
+    │       └── g.txt (深さ3) → 折りたたみ
+    └── c/           (深さ1) → 表示
+         └── h.txt   (深さ2) → 折りたたみ
+    ```
   - Excelの行グループ化機能（`group_rows`）を使用
-- **ヘッダー行**: Path, Status の2列、青背景
+- **ヘッダー行**: 動的列数（最大深さに応じて拡張）、最終列がStatus、青背景
+
+#### Options表示仕様
+
+SummaryファイルおよびExcelのOptionsセクションにおける`filter_status`の表示:
+
+- `--filter-status added,modified` → "Filter status: added, modified"
+- `--filter-status all` → "Filter status: all"
+- `--filter-status all,^deleted` → "Filter status: all, ^deleted"
+- `--filter-status ^deleted,^unchanged` → "Filter status: all (implied), ^deleted, ^unchanged"
+
+※ 除外指定（^prefix）のみの場合は、暗黙的に"all"が適用される
 
 #### Detailsシート詳細
 

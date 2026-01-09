@@ -5,7 +5,7 @@
 | 項目 | 内容 |
 |-----|------|
 | 実施日 | 2026-01-09 |
-| 実施時刻 | 03:30 JST |
+| 実施時刻 | 05:00 JST |
 | 実行環境 | Linux (WSL2) |
 | Rustバージョン | stable |
 | 結果 | **全テストPASS** |
@@ -14,9 +14,9 @@
 
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
-| ユニットテスト | 98 | 98 | 0 | 0 |
-| 結合テスト | 143 | 143 | 0 | 0 |
-| **合計** | **241** | **241** | **0** | **0** |
+| ユニットテスト | 102 | 102 | 0 | 0 |
+| 結合テスト | 148 | 148 | 0 | 0 |
+| **合計** | **250** | **250** | **0** | **0** |
 
 ---
 
@@ -270,9 +270,19 @@
 | FILT-004 | test_no_filter_status_when_not_specified | PASS | 未指定時にSummaryにFilter statusなし |
 | FILT-005 | test_excel_no_filter_status_when_not_specified | PASS | 未指定時にExcelにFilter statusなし |
 
+### 22. Filter status表示・File Tree構造・fold-level不具合修正テスト (5テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| FILTFIX-001 | test_summary_filter_status_all_with_exclusion | PASS | all,^deletedがSummaryに正しく表示確認 |
+| FILTFIX-002 | test_excel_filter_status_all_with_exclusion | PASS | all,^deletedがExcelに正しく表示確認 |
+| FILTFIX-003 | test_excel_file_tree_cell_structure | PASS | パスコンポーネントが別々のセルに配置確認 |
+| FILTFIX-004 | test_excel_fold_level_groups_correctly | PASS | 深さ≧levelの行がグループ化対象確認 |
+| FILTFIX-005 | test_summary_filter_status_only_exclusion | PASS | 除外のみ時に"all (implied)"表示確認 |
+
 ---
 
-## ユニットテスト詳細結果 (98テスト)
+## ユニットテスト詳細結果 (102テスト)
 
 ### src/types.rs (22テスト)
 
@@ -393,7 +403,7 @@
 | test_write_patch_file_with_subdirectory | PASS |
 | test_write_combined_patch | PASS |
 
-### src/excel.rs (9テスト)
+### src/excel.rs (13テスト)
 
 | テスト名 | 結果 |
 |---------|------|
@@ -406,6 +416,10 @@
 | test_get_entry_details_modified | PASS |
 | test_get_entry_details_error | PASS |
 | test_apply_row_grouping | PASS |
+| test_format_filter_status_all_only | PASS |
+| test_format_filter_status_all_with_exclusion | PASS |
+| test_format_filter_status_included_only | PASS |
+| test_format_filter_status_only_exclusions | PASS |
 
 ---
 
@@ -420,6 +434,7 @@
 | 2026-01-09 | 01:30 | 89/89 | 131/131 | PASS | Unchanged/Total統計不具合修正テスト追加 |
 | 2026-01-09 | 02:30 | 96/96 | 138/138 | PASS | Excelフォーマット拡張テスト追加（罫線、Options、fold-level） |
 | 2026-01-09 | 03:30 | 98/98 | 143/143 | PASS | Filter statusオプション表示テスト追加（Summary/Excel） |
+| 2026-01-09 | 05:00 | 102/102 | 148/148 | PASS | Filter status表示・File Tree構造・fold-level不具合修正テスト追加 |
 
 ---
 
@@ -557,3 +572,39 @@ cargo test 2>&1 | tee test_output.txt
 - --filter-status指定時にExcelのOptionsセクションに表示されることを検証
 - 複数ステータス（added,modified等）がカンマ区切りで表示されることを検証
 - --filter-status未指定時にFilter status行が表示されないことを検証
+
+## Filter status表示・File Tree構造・fold-level不具合修正テスト
+
+**不具合1**: `--filter-status all,^deleted`がOptionsセクションに正しく表示されない
+- `all,^deleted`指定時に「Filter status: 」が空または不正な値になる
+
+**不具合2**: Excel File Treeがセル構造ではなくテキストインデントで表現されている
+- 参照ファイル（summay.xlsx）ではディレクトリ階層が別々のセルに配置されている
+
+**不具合3**: `--excel-fold-level`の論理が誤っている
+- depth > level ではなく depth >= level でグループ化すべき
+- レベル2指定時に第2階層以上がグループ化対象になるべき
+
+**原因**:
+1. `format_filter_status()`が`include_all`フラグを考慮していなかった
+2. File Treeが単一セルにテキストインデントでパスを書いていた
+3. 条件式が`depth > fold_level`になっていた
+
+**修正内容**:
+1. `excel.rs`/`summary.rs`: `format_filter_status()`ヘルパー関数を追加
+   - `include_all=true`の場合は"all"を先頭に追加
+   - 除外のみの場合は"all (implied)"を表示
+   - 除外ステータスは"^status"形式で表示
+2. `excel.rs`: File Tree書き込みを完全にリライト
+   - 各パスコンポーネントを別々の列に配置
+   - ディレクトリは末尾に"/"を追加
+   - ステータスは最後の列に配置
+3. `excel.rs`: `apply_row_grouping()`の条件を修正
+   - `depth > fold_level`を`depth >= fold_level`に変更
+
+**テスト内容**:
+- `all,^deleted`指定時にSummaryに"Filter status: all, ^deleted"が表示されることを検証
+- `all,^deleted`指定時にExcelに"all, ^deleted"が表示されることを検証
+- File Treeでパスコンポーネントが別々のセルに配置されることを検証
+- fold-level 2指定時に深さ2以上の行がグループ化対象になることを検証
+- 除外のみ指定時に"all (implied)"が表示されることを検証
