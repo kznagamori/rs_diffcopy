@@ -5619,3 +5619,525 @@ mod three_way_excel_format_tests {
         }
     }
 }
+
+// ============================================================================
+// Section 27: Summary File Alignment Tests
+// ============================================================================
+
+mod summary_alignment_tests {
+    use super::*;
+    use unicode_width::UnicodeWidthStr;
+
+    /// Calculate display width of string up to a given byte position
+    fn display_width_up_to(s: &str, byte_pos: usize) -> usize {
+        s[..byte_pos].width()
+    }
+
+    // IT-2701: Verify two-way summary file has aligned status tags
+    #[test]
+    fn test_two_way_summary_file_alignment() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        let output = dir.path().join("output");
+
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+
+        // Create files with different path lengths
+        fs::write(source.join("a.txt"), "content").unwrap();
+        fs::write(target.join("a.txt"), "modified").unwrap();
+
+        fs::write(source.join("very_long_filename_here.txt"), "content").unwrap();
+        fs::write(target.join("very_long_filename_here.txt"), "modified").unwrap();
+
+        fs::write(target.join("short.txt"), "added").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let summary = fs::read_to_string(&summary_path).expect("Failed to read summary");
+
+        // Find lines with status tags
+        let tree_lines: Vec<&str> = summary.lines()
+            .filter(|line| line.contains("[modified]") || line.contains("[added]"))
+            .collect();
+
+        assert!(tree_lines.len() >= 3, "Should have at least 3 status lines");
+
+        // Check that all status tags are aligned (start at same position)
+        let positions: Vec<usize> = tree_lines.iter()
+            .map(|line| line.find('[').unwrap_or(0))
+            .collect();
+
+        // All positions should be the same (aligned)
+        let first_pos = positions[0];
+        for pos in &positions {
+            assert_eq!(*pos, first_pos, "Status tags should be aligned at same position");
+        }
+    }
+
+    // IT-2702: Verify two-way summary file alignment with Japanese filenames
+    #[test]
+    fn test_two_way_summary_file_alignment_japanese() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        let output = dir.path().join("output");
+
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+
+        // Create files with Japanese names (wider display width)
+        fs::write(source.join("テスト.txt"), "content").unwrap();
+        fs::write(target.join("テスト.txt"), "modified").unwrap();
+
+        fs::write(source.join("short.txt"), "content").unwrap();
+        fs::write(target.join("short.txt"), "modified").unwrap();
+
+        fs::write(source.join("日本語ファイル名.txt"), "content").unwrap();
+        fs::write(target.join("日本語ファイル名.txt"), "modified").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(2));
+
+        let summary = fs::read_to_string(&summary_path).expect("Failed to read summary");
+
+        // Find lines with status tags
+        let tree_lines: Vec<&str> = summary.lines()
+            .filter(|line| line.contains("[modified]") || line.contains("[unchanged]"))
+            .collect();
+
+        if tree_lines.len() >= 2 {
+            // Check that status tags are aligned by display width
+            let display_positions: Vec<usize> = tree_lines.iter()
+                .map(|line| {
+                    let byte_pos = line.find('[').unwrap_or(0);
+                    display_width_up_to(line, byte_pos)
+                })
+                .collect();
+
+            let first_pos = display_positions[0];
+            for pos in &display_positions {
+                assert_eq!(*pos, first_pos, "Status tags should be aligned even with Japanese filenames (display width)");
+            }
+        }
+    }
+
+    // IT-2703: Verify three-way summary file has aligned indicators
+    #[test]
+    fn test_three_way_summary_file_alignment() {
+        let dir = tempdir().unwrap();
+        let base_dir = dir.path().join("base");
+        let ours_dir = dir.path().join("ours");
+        let theirs_dir = dir.path().join("theirs");
+        let output = dir.path().join("output");
+
+        fs::create_dir_all(&base_dir).unwrap();
+        fs::create_dir_all(&ours_dir).unwrap();
+        fs::create_dir_all(&theirs_dir).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create files with different path lengths
+        fs::write(base_dir.join("a.txt"), "base").unwrap();
+        fs::write(ours_dir.join("a.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("a.txt"), "theirs").unwrap();
+
+        fs::write(base_dir.join("very_long_filename.txt"), "base").unwrap();
+        fs::write(ours_dir.join("very_long_filename.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("very_long_filename.txt"), "theirs").unwrap();
+
+        fs::write(ours_dir.join("new.txt"), "ours only").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let summary = fs::read_to_string(&summary_path).expect("Failed to read summary");
+
+        // Find lines with three-way indicators
+        let tree_lines: Vec<&str> = summary.lines()
+            .filter(|line| line.contains("[○") || line.contains("[-"))
+            .collect();
+
+        if tree_lines.len() >= 2 {
+            // Check that indicators are aligned (start at same position)
+            let positions: Vec<usize> = tree_lines.iter()
+                .map(|line| line.find('[').unwrap_or(0))
+                .collect();
+
+            let first_pos = positions[0];
+            for pos in &positions {
+                assert_eq!(*pos, first_pos, "Three-way indicators should be aligned at same position");
+            }
+        }
+    }
+
+    // IT-2704: Verify three-way summary file alignment with Japanese filenames
+    #[test]
+    fn test_three_way_summary_file_alignment_japanese() {
+        let dir = tempdir().unwrap();
+        let base_dir = dir.path().join("base");
+        let ours_dir = dir.path().join("ours");
+        let theirs_dir = dir.path().join("theirs");
+        let output = dir.path().join("output");
+
+        fs::create_dir_all(&base_dir).unwrap();
+        fs::create_dir_all(&ours_dir).unwrap();
+        fs::create_dir_all(&theirs_dir).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create files with Japanese names
+        fs::write(base_dir.join("テスト.txt"), "base").unwrap();
+        fs::write(ours_dir.join("テスト.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("テスト.txt"), "theirs").unwrap();
+
+        fs::write(base_dir.join("short.txt"), "base").unwrap();
+        fs::write(ours_dir.join("short.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("short.txt"), "theirs").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let summary = fs::read_to_string(&summary_path).expect("Failed to read summary");
+
+        // Find lines with three-way indicators
+        let tree_lines: Vec<&str> = summary.lines()
+            .filter(|line| line.contains("[○") || line.contains("[-"))
+            .collect();
+
+        if tree_lines.len() >= 2 {
+            // Check alignment by display width
+            let display_positions: Vec<usize> = tree_lines.iter()
+                .map(|line| {
+                    let byte_pos = line.find('[').unwrap_or(0);
+                    display_width_up_to(line, byte_pos)
+                })
+                .collect();
+
+            let first_pos = display_positions[0];
+            for pos in &display_positions {
+                assert_eq!(*pos, first_pos, "Three-way indicators should be aligned even with Japanese filenames (display width)");
+            }
+        }
+    }
+
+    // IT-2705: Verify console output is NOT aligned (compact format)
+    #[test]
+    fn test_console_output_not_aligned() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        let output = dir.path().join("output");
+
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+
+        // Create files with different path lengths
+        fs::write(source.join("a.txt"), "content").unwrap();
+        fs::write(target.join("a.txt"), "modified").unwrap();
+
+        fs::write(source.join("very_long_filename.txt"), "content").unwrap();
+        fs::write(target.join("very_long_filename.txt"), "modified").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        // Console output should have compact format (no padding before status)
+        let stdout_str = String::from_utf8_lossy(&result.stdout);
+
+        // Find lines with status tags
+        let tree_lines: Vec<&str> = stdout_str.lines()
+            .filter(|line| line.contains("[modified]"))
+            .collect();
+
+        if tree_lines.len() >= 2 {
+            // Console should NOT have aligned positions (compact format)
+            let positions: Vec<usize> = tree_lines.iter()
+                .map(|line| line.find('[').unwrap_or(0))
+                .collect();
+
+            // Positions should be different (not aligned) for different length paths
+            // This verifies console uses compact format
+            let all_same = positions.iter().all(|&p| p == positions[0]);
+            // Note: If paths happen to be same length, they might align by coincidence
+            // But with "a.txt" vs "very_long_filename.txt", they shouldn't align
+            if tree_lines.iter().any(|l| l.contains("a.txt")) &&
+               tree_lines.iter().any(|l| l.contains("very_long_filename.txt")) {
+                assert!(!all_same, "Console output should use compact format without alignment");
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Section 28: Three-Way Group Keyword Exclusion Tests (IT-2801 - IT-2805)
+// =============================================================================
+
+mod group_keyword_exclusion_tests {
+    use super::*;
+
+    /// Helper to create three-way test structure with all status types
+    fn create_three_way_all_statuses(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let base_dir = dir.join("base");
+        let ours_dir = dir.join("ours");
+        let theirs_dir = dir.join("theirs");
+
+        fs::create_dir_all(&base_dir).unwrap();
+        fs::create_dir_all(&ours_dir).unwrap();
+        fs::create_dir_all(&theirs_dir).unwrap();
+
+        // unchanged: same in all
+        fs::write(base_dir.join("unchanged.txt"), "same").unwrap();
+        fs::write(ours_dir.join("unchanged.txt"), "same").unwrap();
+        fs::write(theirs_dir.join("unchanged.txt"), "same").unwrap();
+
+        // ours-only: modified only in ours
+        fs::write(base_dir.join("ours_only.txt"), "base").unwrap();
+        fs::write(ours_dir.join("ours_only.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("ours_only.txt"), "base").unwrap();
+
+        // theirs-only: modified only in theirs
+        fs::write(base_dir.join("theirs_only.txt"), "base").unwrap();
+        fs::write(ours_dir.join("theirs_only.txt"), "base").unwrap();
+        fs::write(theirs_dir.join("theirs_only.txt"), "theirs").unwrap();
+
+        // conflict: modified differently in both
+        fs::write(base_dir.join("conflict.txt"), "base").unwrap();
+        fs::write(ours_dir.join("conflict.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("conflict.txt"), "theirs").unwrap();
+
+        // added-ours: added only in ours
+        fs::write(ours_dir.join("added_ours.txt"), "ours").unwrap();
+
+        // added-theirs: added only in theirs
+        fs::write(theirs_dir.join("added_theirs.txt"), "theirs").unwrap();
+
+        // added-both-same: added in both with same content
+        fs::write(ours_dir.join("added_both_same.txt"), "same").unwrap();
+        fs::write(theirs_dir.join("added_both_same.txt"), "same").unwrap();
+
+        // added-both-diff: added in both with different content (conflict)
+        fs::write(ours_dir.join("added_both_diff.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("added_both_diff.txt"), "theirs").unwrap();
+
+        // deleted-ours: deleted only in ours
+        fs::write(base_dir.join("deleted_ours.txt"), "base").unwrap();
+        fs::write(theirs_dir.join("deleted_ours.txt"), "base").unwrap();
+
+        // deleted-theirs: deleted only in theirs
+        fs::write(base_dir.join("deleted_theirs.txt"), "base").unwrap();
+        fs::write(ours_dir.join("deleted_theirs.txt"), "base").unwrap();
+
+        // deleted-both: deleted in both
+        fs::write(base_dir.join("deleted_both.txt"), "base").unwrap();
+
+        (base_dir, ours_dir, theirs_dir)
+    }
+
+    // IT-2801: Test ^added group keyword exclusion
+    #[test]
+    fn test_group_keyword_exclusion_added() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir) = create_three_way_all_statuses(dir.path());
+        let output = dir.path().join("output");
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--filter-status", "all,^added",
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let summary = fs::read_to_string(&summary_path).expect("Failed to read summary");
+
+        // added-* files should NOT be in summary
+        assert!(!summary.contains("added_ours"), "added_ours should be excluded");
+        assert!(!summary.contains("added_theirs"), "added_theirs should be excluded");
+        assert!(!summary.contains("added_both_same"), "added_both_same should be excluded");
+        assert!(!summary.contains("added_both_diff"), "added_both_diff should be excluded");
+
+        // Other files should be present
+        assert!(summary.contains("ours_only") || summary.contains("conflict") || summary.contains("deleted"),
+            "Non-added files should be present");
+    }
+
+    // IT-2802: Test ^deleted group keyword exclusion
+    #[test]
+    fn test_group_keyword_exclusion_deleted() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir) = create_three_way_all_statuses(dir.path());
+        let output = dir.path().join("output");
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--filter-status", "all,^deleted",
+            "--show-unchanged",
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let summary = fs::read_to_string(&summary_path).expect("Failed to read summary");
+
+        // deleted-* files should NOT be in summary
+        assert!(!summary.contains("deleted_ours"), "deleted_ours should be excluded");
+        assert!(!summary.contains("deleted_theirs"), "deleted_theirs should be excluded");
+        assert!(!summary.contains("deleted_both"), "deleted_both should be excluded");
+
+        // Other files should be present
+        assert!(summary.contains("ours_only") || summary.contains("added_ours"),
+            "Non-deleted files should be present");
+    }
+
+    // IT-2803: Test ^modified group keyword exclusion
+    #[test]
+    fn test_group_keyword_exclusion_modified() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir) = create_three_way_all_statuses(dir.path());
+        let output = dir.path().join("output");
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--filter-status", "all,^modified",
+            "--show-unchanged",
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let summary = fs::read_to_string(&summary_path).expect("Failed to read summary");
+
+        // modified group files (ours-only, theirs-only, both-same, conflict) should NOT be in summary
+        assert!(!summary.contains("ours_only"), "ours_only should be excluded by ^modified");
+        assert!(!summary.contains("theirs_only"), "theirs_only should be excluded by ^modified");
+
+        // added and deleted files should be present
+        assert!(summary.contains("added_ours") || summary.contains("deleted_ours"),
+            "Added/deleted files should be present");
+    }
+
+    // IT-2804: Test ^conflicts group keyword exclusion
+    #[test]
+    fn test_group_keyword_exclusion_conflicts() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir) = create_three_way_all_statuses(dir.path());
+        let output = dir.path().join("output");
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--filter-status", "all,^conflicts",
+            "--show-unchanged",
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let summary = fs::read_to_string(&summary_path).expect("Failed to read summary");
+
+        // conflict files should NOT be in summary
+        assert!(!summary.contains("conflict.txt"), "conflict should be excluded by ^conflicts");
+        assert!(!summary.contains("added_both_diff"), "added_both_diff should be excluded by ^conflicts");
+
+        // Non-conflict files should be present
+        assert!(summary.contains("ours_only") || summary.contains("added_ours") || summary.contains("unchanged"),
+            "Non-conflict files should be present");
+    }
+
+    // IT-2805: Test group keyword inclusion (added without exclusion)
+    #[test]
+    fn test_group_keyword_inclusion_added() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir) = create_three_way_all_statuses(dir.path());
+        let output = dir.path().join("output");
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--filter-status", "added",
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let summary = fs::read_to_string(&summary_path).expect("Failed to read summary");
+
+        // added-* files SHOULD be in summary
+        assert!(summary.contains("added_ours"), "added_ours should be included");
+        assert!(summary.contains("added_theirs"), "added_theirs should be included");
+        assert!(summary.contains("added_both_same"), "added_both_same should be included");
+        assert!(summary.contains("added_both_diff"), "added_both_diff should be included");
+
+        // Other files should NOT be present
+        assert!(!summary.contains("ours_only.txt"), "ours_only should be excluded");
+        assert!(!summary.contains("conflict.txt"), "conflict should be excluded");
+        assert!(!summary.contains("deleted_ours"), "deleted_ours should be excluded");
+    }
+}

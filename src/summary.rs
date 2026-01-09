@@ -10,7 +10,7 @@ use crate::types::{
     ColorMode, ComparisonResult, ComparisonStats, FileEntry, FileStatus, PatchResult,
     PermissionChange, SpecialFileType, StatusFilter,
 };
-use crate::utils::is_terminal;
+use crate::utils::{display_width, is_terminal};
 
 /// Format StatusFilter for display in Options section
 fn format_filter_status(filter: &StatusFilter) -> String {
@@ -421,9 +421,71 @@ impl<'a> SummaryWriter<'a> {
 
         // Build tree structure
         let tree = self.build_tree(entries);
-        output.push_str(&self.render_tree(&tree, "", true, for_console));
+
+        // Calculate max path width for file output alignment
+        let max_width = if for_console {
+            0 // Not used for console
+        } else {
+            self.calculate_max_path_width(&tree, "", true)
+        };
+
+        output.push_str(&self.render_tree(&tree, "", true, for_console, max_width));
 
         output
+    }
+
+    /// Calculate the maximum display width of all paths in the tree (for file entries only)
+    fn calculate_max_path_width(
+        &self,
+        tree: &BTreeMap<String, TreeNode>,
+        prefix: &str,
+        is_root: bool,
+    ) -> usize {
+        let mut max_width: usize = 0;
+        let items: Vec<_> = tree.iter().collect();
+        let count = items.len();
+
+        for (i, (_, node)) in items.iter().enumerate() {
+            let is_last = i == count - 1;
+            let connector = if is_root {
+                ""
+            } else if is_last {
+                "└── "
+            } else {
+                "├── "
+            };
+
+            let new_prefix = if is_root {
+                prefix.to_string()
+            } else if is_last {
+                format!("{}    ", prefix)
+            } else {
+                format!("{}│   ", prefix)
+            };
+
+            // Only count files with entries (not directory-only nodes)
+            if node.entry.is_some() {
+                let name_with_dir = if node.entry.as_ref().is_some_and(|e| e.is_directory) {
+                    format!("{}/", node.name)
+                } else {
+                    node.name.clone()
+                };
+                let path_display = format!("{}{}{}", prefix, connector, name_with_dir);
+                let width = display_width(&path_display);
+                if width > max_width {
+                    max_width = width;
+                }
+            }
+
+            if !node.children.is_empty() {
+                let child_max = self.calculate_max_path_width(&node.children, &new_prefix, false);
+                if child_max > max_width {
+                    max_width = child_max;
+                }
+            }
+        }
+
+        max_width
     }
 
     fn build_tree(&self, entries: &[FileEntry]) -> BTreeMap<String, TreeNode> {
@@ -479,6 +541,7 @@ impl<'a> SummaryWriter<'a> {
         prefix: &str,
         is_root: bool,
         for_console: bool,
+        max_width: usize,
     ) -> String {
         let mut output = String::new();
         let items: Vec<_> = tree.iter().collect();
@@ -516,10 +579,24 @@ impl<'a> SummaryWriter<'a> {
                 node.name.clone()
             };
 
-            output.push_str(&format!("{}{}{} {}\n", prefix, connector, name_with_dir, status_tag));
+            if for_console {
+                // Compact format for console
+                output.push_str(&format!("{}{}{} {}\n", prefix, connector, name_with_dir, status_tag));
+            } else {
+                // Aligned format for file output
+                let path_display = format!("{}{}{}", prefix, connector, name_with_dir);
+                if node.entry.is_some() && max_width > 0 {
+                    let path_width = display_width(&path_display);
+                    let padding = if path_width < max_width { max_width - path_width } else { 0 };
+                    output.push_str(&format!("{}{} {}\n", path_display, " ".repeat(padding), status_tag));
+                } else {
+                    // Directory nodes or no max_width
+                    output.push_str(&format!("{} {}\n", path_display, status_tag));
+                }
+            }
 
             if !node.children.is_empty() {
-                output.push_str(&self.render_tree(&node.children, &new_prefix, false, for_console));
+                output.push_str(&self.render_tree(&node.children, &new_prefix, false, for_console, max_width));
             }
         }
 

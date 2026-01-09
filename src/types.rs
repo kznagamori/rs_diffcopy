@@ -455,7 +455,8 @@ impl StatusFilter {
             return true;
         }
 
-        let status_str = status.as_str().to_string();
+        // Use lowercase for case-insensitive matching
+        let status_str = status.as_str().to_lowercase();
 
         if self.excluded.contains(&status_str) {
             return false;
@@ -490,6 +491,28 @@ impl StatusFilter {
         }
 
         parts.join(", ")
+    }
+
+    /// Expand a three-way group keyword to its component statuses
+    /// Returns None if the keyword is not a group keyword
+    pub fn expand_three_way_group(keyword: &str) -> Option<Vec<&'static str>> {
+        match keyword.to_lowercase().as_str() {
+            "added" => Some(vec![
+                "added-ours",
+                "added-theirs",
+                "added-both-same",
+                "added-both-diff",
+            ]),
+            "modified" => Some(vec!["ours-only", "theirs-only", "both-same", "conflict"]),
+            "deleted" => Some(vec!["deleted-ours", "deleted-theirs", "deleted-both"]),
+            "conflicts" => Some(vec![
+                "conflict",
+                "added-both-diff",
+                "modify-delete",
+                "delete-modify",
+            ]),
+            _ => None,
+        }
     }
 }
 
@@ -833,5 +856,108 @@ mod tests {
         let result = ThreeWayResult::new();
         assert!(result.entries.is_empty());
         assert!(result.copy_results.is_empty());
+    }
+
+    // StatusFilter group keyword expansion tests
+    #[test]
+    fn test_expand_three_way_group_added() {
+        let expanded = StatusFilter::expand_three_way_group("added").unwrap();
+        assert_eq!(expanded.len(), 4);
+        assert!(expanded.contains(&"added-ours"));
+        assert!(expanded.contains(&"added-theirs"));
+        assert!(expanded.contains(&"added-both-same"));
+        assert!(expanded.contains(&"added-both-diff"));
+    }
+
+    #[test]
+    fn test_expand_three_way_group_modified() {
+        let expanded = StatusFilter::expand_three_way_group("modified").unwrap();
+        assert_eq!(expanded.len(), 4);
+        assert!(expanded.contains(&"ours-only"));
+        assert!(expanded.contains(&"theirs-only"));
+        assert!(expanded.contains(&"both-same"));
+        assert!(expanded.contains(&"conflict"));
+    }
+
+    #[test]
+    fn test_expand_three_way_group_deleted() {
+        let expanded = StatusFilter::expand_three_way_group("deleted").unwrap();
+        assert_eq!(expanded.len(), 3);
+        assert!(expanded.contains(&"deleted-ours"));
+        assert!(expanded.contains(&"deleted-theirs"));
+        assert!(expanded.contains(&"deleted-both"));
+    }
+
+    #[test]
+    fn test_expand_three_way_group_conflicts() {
+        let expanded = StatusFilter::expand_three_way_group("conflicts").unwrap();
+        assert_eq!(expanded.len(), 4);
+        assert!(expanded.contains(&"conflict"));
+        assert!(expanded.contains(&"added-both-diff"));
+        assert!(expanded.contains(&"modify-delete"));
+        assert!(expanded.contains(&"delete-modify"));
+    }
+
+    #[test]
+    fn test_expand_three_way_group_case_insensitive() {
+        assert!(StatusFilter::expand_three_way_group("ADDED").is_some());
+        assert!(StatusFilter::expand_three_way_group("Added").is_some());
+        assert!(StatusFilter::expand_three_way_group("MODIFIED").is_some());
+    }
+
+    #[test]
+    fn test_expand_three_way_group_non_group() {
+        assert!(StatusFilter::expand_three_way_group("added-ours").is_none());
+        assert!(StatusFilter::expand_three_way_group("conflict").is_none());
+        assert!(StatusFilter::expand_three_way_group("unchanged").is_none());
+        assert!(StatusFilter::expand_three_way_group("unknown").is_none());
+    }
+
+    #[test]
+    fn test_status_filter_matches_three_way_with_expanded_exclusion() {
+        // Simulate what happens when ^added is expanded
+        let mut filter = StatusFilter::new();
+        filter.include_all = true;
+        // Expanded statuses for ^added
+        filter.excluded.insert("added-ours".to_string());
+        filter.excluded.insert("added-theirs".to_string());
+        filter.excluded.insert("added-both-same".to_string());
+        filter.excluded.insert("added-both-diff".to_string());
+
+        // Added statuses should be excluded
+        assert!(!filter.matches_three_way(ThreeWayStatus::AddedOurs));
+        assert!(!filter.matches_three_way(ThreeWayStatus::AddedTheirs));
+        assert!(!filter.matches_three_way(ThreeWayStatus::AddedBothSame));
+        assert!(!filter.matches_three_way(ThreeWayStatus::AddedBothDiff));
+
+        // Other statuses should be included
+        assert!(filter.matches_three_way(ThreeWayStatus::Unchanged));
+        assert!(filter.matches_three_way(ThreeWayStatus::OursOnly));
+        assert!(filter.matches_three_way(ThreeWayStatus::TheirsOnly));
+        assert!(filter.matches_three_way(ThreeWayStatus::DeletedOurs));
+        assert!(filter.matches_three_way(ThreeWayStatus::Conflict));
+    }
+
+    #[test]
+    fn test_status_filter_matches_three_way_with_expanded_inclusion() {
+        // Simulate what happens when added is used for inclusion
+        let mut filter = StatusFilter::new();
+        // Expanded statuses for added
+        filter.included.insert("added-ours".to_string());
+        filter.included.insert("added-theirs".to_string());
+        filter.included.insert("added-both-same".to_string());
+        filter.included.insert("added-both-diff".to_string());
+
+        // Added statuses should be included
+        assert!(filter.matches_three_way(ThreeWayStatus::AddedOurs));
+        assert!(filter.matches_three_way(ThreeWayStatus::AddedTheirs));
+        assert!(filter.matches_three_way(ThreeWayStatus::AddedBothSame));
+        assert!(filter.matches_three_way(ThreeWayStatus::AddedBothDiff));
+
+        // Other statuses should be excluded
+        assert!(!filter.matches_three_way(ThreeWayStatus::Unchanged));
+        assert!(!filter.matches_three_way(ThreeWayStatus::OursOnly));
+        assert!(!filter.matches_three_way(ThreeWayStatus::DeletedOurs));
+        assert!(!filter.matches_three_way(ThreeWayStatus::Conflict));
     }
 }

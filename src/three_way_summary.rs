@@ -76,6 +76,7 @@ impl<'a> ThreeWaySummaryWriter<'a> {
                 .entries
                 .iter()
                 .filter(|e| e.status.is_conflict())
+                .filter(|e| self.config.filter_status.matches_three_way(e.status))
                 .collect();
             if !conflicts.is_empty() {
                 output.push_str(&self.generate_conflict_details(&conflicts));
@@ -183,18 +184,82 @@ impl<'a> ThreeWaySummaryWriter<'a> {
         output.push_str("Legend: [Base|Ours|Theirs] ");
         output.push_str("○=exists -=missing ==same M=modified A=added D=deleted\n");
 
+        // Build tree
+        let tree = self.build_tree(entries);
+
+        // Calculate max path width for file output alignment
+        let max_width = if for_console {
+            0 // Not used for console
+        } else {
+            self.calculate_max_path_width(&tree, "", true)
+        };
+
         if !for_console {
-            // Add header for aligned format
-            output.push_str(&format!("{:40}B  O  T\n", ""));
+            // Add header for aligned format with dynamic width
+            let header_padding = if max_width > 0 { max_width } else { 40 };
+            output.push_str(&format!("{:width$}B  O  T\n", "", width = header_padding));
         }
 
         output.push_str(".\n");
 
-        // Build and render tree
-        let tree = self.build_tree(entries);
-        output.push_str(&self.render_tree(&tree, "", true, for_console));
+        // Render tree with max_width
+        output.push_str(&self.render_tree(&tree, "", true, for_console, max_width));
 
         output
+    }
+
+    /// Calculate the maximum display width of all paths in the tree (for file entries only)
+    fn calculate_max_path_width(
+        &self,
+        tree: &BTreeMap<String, ThreeWayTreeNode>,
+        prefix: &str,
+        is_root: bool,
+    ) -> usize {
+        let mut max_width: usize = 0;
+        let items: Vec<_> = tree.iter().collect();
+        let count = items.len();
+
+        for (i, (_, node)) in items.iter().enumerate() {
+            let is_last = i == count - 1;
+            let connector = if is_root {
+                ""
+            } else if is_last {
+                "└── "
+            } else {
+                "├── "
+            };
+
+            let new_prefix = if is_root {
+                prefix.to_string()
+            } else if is_last {
+                format!("{}    ", prefix)
+            } else {
+                format!("{}│   ", prefix)
+            };
+
+            // Only count files with entries (not directory-only nodes)
+            if node.entry.is_some() {
+                let name_with_dir = if node.entry.as_ref().is_some_and(|e| e.is_directory) {
+                    format!("{}/", node.name)
+                } else {
+                    node.name.clone()
+                };
+                let path_display = format!("{}{}{}", prefix, connector, name_with_dir);
+                let width = display_width(&path_display);
+                if width > max_width {
+                    max_width = width;
+                }
+            }
+
+            if !node.children.is_empty() {
+                let child_max = self.calculate_max_path_width(&node.children, &new_prefix, false);
+                if child_max > max_width {
+                    max_width = child_max;
+                }
+            }
+        }
+
+        max_width
     }
 
     fn build_tree(&self, entries: &[ThreeWayEntry]) -> BTreeMap<String, ThreeWayTreeNode> {
@@ -250,6 +315,7 @@ impl<'a> ThreeWaySummaryWriter<'a> {
         prefix: &str,
         is_root: bool,
         for_console: bool,
+        max_width: usize,
     ) -> String {
         let mut output = String::new();
         let items: Vec<_> = tree.iter().collect();
@@ -294,21 +360,26 @@ impl<'a> ThreeWaySummaryWriter<'a> {
                     prefix, connector, name_with_dir, indicator, status_label
                 ));
             } else {
-                // Aligned format
+                // Aligned format using dynamic max_width
                 let path_display = format!("{}{}{}", prefix, connector, name_with_dir);
-                let path_width = display_width(&path_display);
-                let padding = if path_width < 40 { 40 - path_width } else { 1 };
-                output.push_str(&format!(
-                    "{}{}{} {}\n",
-                    path_display,
-                    " ".repeat(padding),
-                    indicator,
-                    status_label
-                ));
+                if node.entry.is_some() && max_width > 0 {
+                    let path_width = display_width(&path_display);
+                    let padding = if path_width < max_width { max_width - path_width } else { 0 };
+                    output.push_str(&format!(
+                        "{}{} {} {}\n",
+                        path_display,
+                        " ".repeat(padding),
+                        indicator,
+                        status_label
+                    ));
+                } else {
+                    // Directory nodes or no max_width
+                    output.push_str(&format!("{}\n", path_display));
+                }
             }
 
             if !node.children.is_empty() {
-                output.push_str(&self.render_tree(&node.children, &new_prefix, false, for_console));
+                output.push_str(&self.render_tree(&node.children, &new_prefix, false, for_console, max_width));
             }
         }
 

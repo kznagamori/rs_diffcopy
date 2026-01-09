@@ -5,7 +5,7 @@
 | 項目 | 内容 |
 |-----|------|
 | 実施日 | 2026-01-09 |
-| 実施時刻 | 12:00 JST |
+| 実施時刻 | 20:15 JST |
 | 実行環境 | Linux (WSL2) |
 | Rustバージョン | stable |
 | 結果 | **全テストPASS** |
@@ -14,9 +14,9 @@
 
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
-| ユニットテスト | 109 | 109 | 0 | 0 |
-| 結合テスト | 168 | 168 | 0 | 0 |
-| **合計** | **277** | **277** | **0** | **0** |
+| ユニットテスト | 119 | 119 | 0 | 0 |
+| 結合テスト | 178 | 178 | 0 | 0 |
+| **合計** | **297** | **297** | **0** | **0** |
 
 ---
 
@@ -456,6 +456,7 @@
 | 2026-01-09 | 08:00 | 109/109 | 157/157 | PASS | パス展開テスト追加 |
 | 2026-01-09 | 12:00 | 109/109 | 163/163 | PASS | 三者間比較Excel修正テスト追加（File Tree形式、filter-status、fold-level） |
 | 2026-01-09 | 14:00 | 109/109 | 168/168 | PASS | 三者間比較Excelフォーマット修正テスト追加（Summary罫線、Conflicts/Copied Filesパス分割・ヘッダー幅） |
+| 2026-01-09 | 16:00 | 111/111 | 173/173 | PASS | Summaryファイル桁位置揃え機能テスト追加（二者間/三者間、日本語対応、表示幅計算） |
 
 ---
 
@@ -690,6 +691,26 @@ cargo test 2>&1 | tee test_output.txt
 | IT-2604 | test_three_way_conflicts_header_width | PASS | 9列すべてにヘッダーが存在することを確認 |
 | IT-2605 | test_three_way_copied_files_header_width | PASS | 4列すべてにヘッダーが存在することを確認 |
 
+### 27. Summaryファイル桁位置揃えテスト (5テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| IT-2701 | test_two_way_summary_file_alignment | PASS | 異なる長さのパスでもステータスタグが同じ位置に揃うことを確認 |
+| IT-2702 | test_two_way_summary_file_alignment_japanese | PASS | 日本語ファイル名でも表示幅でステータスが揃うことを確認 |
+| IT-2703 | test_three_way_summary_file_alignment | PASS | 異なる長さのパスでもインジケータが同じ位置に揃うことを確認 |
+| IT-2704 | test_three_way_summary_file_alignment_japanese | PASS | 日本語ファイル名でも表示幅でインジケータが揃うことを確認 |
+| IT-2705 | test_console_output_not_aligned | PASS | コンソール出力はコンパクト形式（整列なし）のままであることを確認 |
+
+### 28. 三者間グループキーワード除外テスト (5テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| IT-2801 | test_group_keyword_exclusion_added | PASS | ^addedでadded-*が除外されることを確認 |
+| IT-2802 | test_group_keyword_exclusion_deleted | PASS | ^deletedでdeleted-*が除外されることを確認 |
+| IT-2803 | test_group_keyword_exclusion_modified | PASS | ^modifiedで変更系ステータスが除外されることを確認 |
+| IT-2804 | test_group_keyword_exclusion_conflicts | PASS | ^conflictsでコンフリクト系が除外されることを確認 |
+| IT-2805 | test_group_keyword_inclusion_added | PASS | addedでadded-*のみ表示されることを確認 |
+
 ## パス展開機能の不具合修正
 
 **不具合**: 最初のパスが`a/b/c/d/e/f.txt`のように深い場合、`--excel-fold-level 2`指定でも全体が折りたたまれてしまう
@@ -804,3 +825,62 @@ cargo test 2>&1 | tee test_output.txt
 - Copied FilesシートにDirectoryとFilenameヘッダーがあり、Pathは存在しないことを検証
 - Conflictsシートのヘッダーに9列すべて存在することを検証
 - Copied Filesシートのヘッダーに4列すべて存在することを検証
+
+## Summaryファイル桁位置揃え機能
+
+**修正要望**:
+- Summaryファイル出力で、File TreeのステータスやChange Matrixの桁位置をすべてのファイルで揃える
+- 日本語を使用するため、半角は1桁、全角は2桁で計算
+- 半角カナなども考慮した正確な表示幅計算
+- コンソール出力は変更なし（コンパクト形式のまま）
+
+**修正内容**:
+1. `summary.rs`: 二者間比較のSummaryファイル出力に整列機能を追加
+   - `calculate_max_path_width()`関数を追加して最大パス表示幅を事前計算
+   - `render_tree()`に`max_width`パラメータを追加
+   - ファイル出力時のみパディングを適用してステータス位置を揃える
+
+2. `three_way_summary.rs`: 三者間比較のSummaryファイル出力を改善
+   - 固定40文字幅から動的最大幅に変更
+   - `calculate_max_path_width()`関数を追加
+   - インジケータ位置を最大パス幅に合わせて揃える
+
+3. `utils.rs`: 表示幅計算のユニットテストを追加
+   - 半角カナ（`ｱｲｳ`など）のテスト
+   - ツリーコネクタ（`├──`など）のテスト
+
+**テスト内容**:
+- 二者間Summaryファイルで異なる長さのパスでもステータスタグが揃うことを検証
+- 日本語ファイル名を含む場合も表示幅に基づいて正しく整列されることを検証
+- 三者間Summaryファイルでインジケータ位置が揃うことを検証
+- コンソール出力がコンパクト形式（整列なし）のままであることを検証
+
+## 三者間グループキーワード除外機能
+
+**修正要望**:
+- `--filter-status all,^added`で`added`グループ（added-ours, added-theirs, added-both-same, added-both-diff）を除外したい
+- グループキーワードが除外（`^`プレフィックス）でも動作するようにしたい
+
+**修正内容**:
+1. `types.rs`: StatusFilterにグループキーワード展開関数を追加
+   - `expand_three_way_group()`関数で`added`, `modified`, `deleted`, `conflicts`を展開
+   - `matches_three_way()`で大文字小文字を区別しないように修正
+
+2. `cli.rs`: `parse_filter_status()`を更新
+   - 元のキーワード（二者間用）と展開後のステータス（三者間用）の両方を挿入
+
+3. `config.rs`: `parse_filter_status_vec()`を更新
+   - cli.rsと同様の変更を適用
+
+4. `three_way_summary.rs`: Conflict Detailsセクションにフィルター適用
+   - `generate_conflict_details()`呼び出し前に`filter_status.matches_three_way()`でフィルター
+
+5. `three_way_excel.rs`: ConflictsシートにもFilter適用
+   - Conflictsシートの項目取得時に`filter_status.matches_three_way()`でフィルター
+
+**テスト内容**:
+- `^added`でadded-ours, added-theirs, added-both-same, added-both-diffが除外されることを検証
+- `^deleted`でdeleted-ours, deleted-theirs, deleted-bothが除外されることを検証
+- `^modified`でours-only, theirs-only, both-same, conflictが除外されることを検証
+- `^conflicts`でconflict, added-both-diff, modify-delete, delete-modifyが除外されることを検証
+- `added`でadded-*のみが表示されることを検証

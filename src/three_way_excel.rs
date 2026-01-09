@@ -633,6 +633,7 @@ impl<'a> ThreeWayExcelWriter<'a> {
         let conflicts: Vec<&ThreeWayEntry> = entries
             .iter()
             .filter(|e| e.status.is_conflict())
+            .filter(|e| self.config.filter_status.matches_three_way(e.status))
             .collect();
 
         let mut row = 1u32;

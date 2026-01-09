@@ -431,6 +431,44 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
+### Section 27: Summaryファイル桁位置揃えテスト（summary_alignment_tests）
+
+**背景**: 以下の機能を検証
+1. 二者間比較のSummaryファイルでステータスタグの表示位置が揃っていること
+2. 三者間比較のSummaryファイルでインジケータの表示位置が揃っていること
+3. 日本語ファイル名でも表示幅に基づいて正しく整列されること
+4. コンソール出力はコンパクト形式（整列なし）のままであること
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| IT-2701 | test_two_way_summary_file_alignment | 二者間Summaryファイル整列 | 異なる長さのパスでもステータスタグが同じ位置に揃う | 正常系 |
+| IT-2702 | test_two_way_summary_file_alignment_japanese | 二者間日本語ファイル名整列 | 日本語ファイル名でも表示幅でステータスが揃う | 正常系 |
+| IT-2703 | test_three_way_summary_file_alignment | 三者間Summaryファイル整列 | 異なる長さのパスでもインジケータが同じ位置に揃う | 正常系 |
+| IT-2704 | test_three_way_summary_file_alignment_japanese | 三者間日本語ファイル名整列 | 日本語ファイル名でも表示幅でインジケータが揃う | 正常系 |
+| IT-2705 | test_console_output_not_aligned | コンソール出力コンパクト形式 | コンソール出力は整列されず、コンパクト形式 | 正常系 |
+
+---
+
+### Section 28: 三者間グループキーワード除外テスト（group_keyword_exclusion_tests）
+
+**背景**: 以下の機能を検証
+1. `--filter-status all,^added` で added グループ（added-ours, added-theirs, added-both-same, added-both-diff）が除外されること
+2. `--filter-status all,^deleted` で deleted グループが除外されること
+3. `--filter-status all,^modified` で modified グループ（ours-only, theirs-only, both-same, conflict）が除外されること
+4. `--filter-status all,^conflicts` で conflicts グループ（conflict, added-both-diff, modify-delete, delete-modify）が除外されること
+5. `--filter-status added` で added グループのみが表示されること
+6. グループキーワード展開は三者間モード用で、二者間モードでも後方互換性を維持
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| IT-2801 | test_group_keyword_exclusion_added | ^addedグループ除外 | added-ours, added-theirs, added-both-same, added-both-diffが除外される | 正常系 |
+| IT-2802 | test_group_keyword_exclusion_deleted | ^deletedグループ除外 | deleted-ours, deleted-theirs, deleted-bothが除外される | 正常系 |
+| IT-2803 | test_group_keyword_exclusion_modified | ^modifiedグループ除外 | ours-only, theirs-only, both-same, conflictが除外される | 正常系 |
+| IT-2804 | test_group_keyword_exclusion_conflicts | ^conflictsグループ除外 | conflict, added-both-diff, modify-delete, delete-modifyが除外される | 正常系 |
+| IT-2805 | test_group_keyword_inclusion_added | addedグループ包含 | added-*のみが表示され、他は除外される | 正常系 |
+
+---
+
 ## 終了コード一覧
 
 | 終了コード | 意味 |
@@ -507,3 +545,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-09 | 1.9 | File Treeセル構造・fold-level改善テスト追加（セル重複省略、ディレクトリ単位グループ化、境界罫線） |
 | 2026-01-09 | 2.0 | パス展開テスト追加（深いパスの中間ディレクトリを個別行に展開する機能） |
 | 2026-01-09 | 2.1 | 三者間比較Excel修正テスト追加（File Tree形式、filter-status、fold-level） |
+| 2026-01-09 | 2.2 | 三者間グループキーワード除外テスト追加（^added, ^deleted, ^modified, ^conflictsグループ除外） |

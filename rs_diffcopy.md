@@ -978,7 +978,7 @@ No differences found.
 
 #### 二者間比較のFile Tree形式
 
-コンソール・ファイル共にツリー形式で出力されます。
+**コンソール出力**: コンパクト形式（パス直後にステータス表示）
 
 ```
 ================
@@ -992,6 +992,25 @@ File Tree
 │       └── deep.txt [modified]
 └── config.toml [deleted]
 ```
+
+**ファイル出力**: 整列形式（最長パス幅に合わせてステータス位置を揃える）
+
+```
+================
+File Tree
+================
+.
+├── file1.txt                        [modified]
+├── subdir/
+│   ├── added.txt                    [added]
+│   └── nested/
+│       └── deep.txt                 [modified]
+└── 日本語ファイル.txt               [modified]
+```
+
+- ファイル出力では、すべてのファイルのステータス表示位置を最長パス幅に合わせて揃える
+- 日本語文字は表示幅2、半角文字は表示幅1として計算（`unicode_width`クレートを使用）
+- 半角カナ等のUnicode文字も正確に表示幅を計算
 
 #### 三者間比較のFile Tree形式
 
@@ -1012,7 +1031,7 @@ Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=dele
 └── 日本語ファイル.txt [○M=] ours-only
 ```
 
-**ファイル出力**: 整列形式（パス幅に応じて整列、日本語は2文字幅で計算）
+**ファイル出力**: 整列形式（最長パス幅に合わせてインジケータ位置を揃える）
 
 ```
 ================
@@ -1027,6 +1046,10 @@ Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=dele
 │   └── nested.txt                [○  =  M] theirs-only
 └── 日本語ファイル.txt             [○  M  =] ours-only
 ```
+
+- ファイル出力では、すべてのファイルのインジケータ位置を最長パス幅に合わせて揃える
+- 日本語文字は表示幅2、半角文字は表示幅1として計算（`unicode_width`クレートを使用）
+- 半角カナ等のUnicode文字も正確に表示幅を計算
 
 ### 10.4 統計情報の計算
 
@@ -1251,12 +1274,22 @@ SummaryファイルおよびExcelのOptionsセクションにおける`filter_st
 | `deleted` | deleted-ours, deleted-theirs, deleted-both |
 | `conflicts` | conflict, added-both-diff, modify-delete, delete-modify |
 
+**グループキーワードの展開：**
+
+グループキーワードは指定時（追加・除外どちらも）に自動的に含まれるステータスに展開されます：
+
 ```bash
 # 追加系のみ表示
 --filter-status added
+# → added-ours, added-theirs, added-both-same, added-both-diff に展開
 
-# 削除系を除外
+# 追加系を除外（全ステータスから追加系を除く）
+--filter-status all,^added
+# → all, ^added-ours, ^added-theirs, ^added-both-same, ^added-both-diff と同義
+
+# 削除系を除外（暗黙のall + 削除系除外）
 --filter-status ^deleted
+# → ^deleted-ours, ^deleted-theirs, ^deleted-both に展開
 
 # 追加と変更のみ表示（削除と変更なしを除外）
 --filter-status added,modified

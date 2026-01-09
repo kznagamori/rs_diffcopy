@@ -632,9 +632,25 @@ fn parse_filter_status_vec(statuses: &[String]) -> StatusFilter {
         }
 
         if let Some(stripped) = status_str.strip_prefix('^') {
-            filter.excluded.insert(stripped.to_lowercase());
+            let lowered = stripped.to_lowercase();
+            // Always insert the original keyword (for two-way mode compatibility)
+            filter.excluded.insert(lowered.clone());
+            // Also expand group keywords for three-way mode
+            if let Some(expanded) = StatusFilter::expand_three_way_group(&lowered) {
+                for s in expanded {
+                    filter.excluded.insert(s.to_string());
+                }
+            }
         } else {
-            filter.included.insert(status_str.to_lowercase());
+            let lowered = status_str.to_lowercase();
+            // Always insert the original keyword (for two-way mode compatibility)
+            filter.included.insert(lowered.clone());
+            // Also expand group keywords for three-way mode
+            if let Some(expanded) = StatusFilter::expand_three_way_group(&lowered) {
+                for s in expanded {
+                    filter.included.insert(s.to_string());
+                }
+            }
         }
     }
 

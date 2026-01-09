@@ -172,6 +172,26 @@ mod tests {
     }
 
     #[test]
+    fn test_display_width_halfwidth_katakana() {
+        // Half-width katakana should be 1-width each
+        assert_eq!(display_width("ｱｲｳｴｵ"), 5); // Half-width katakana
+        assert_eq!(display_width("アイウエオ"), 10); // Full-width katakana (2-width each)
+        assert_eq!(display_width("ｱｲｳ日本語"), 9); // Mixed: 3 half-width + 3 full-width
+    }
+
+    #[test]
+    fn test_display_width_tree_connectors() {
+        // Tree connectors are multi-byte but display as width 1 each
+        // ├, └, │, ─ are all width 1
+        assert_eq!(display_width("├── "), 4);  // ├(1) + ─(1) + ─(1) + space(1) = 4
+        assert_eq!(display_width("└── "), 4);  // └(1) + ─(1) + ─(1) + space(1) = 4
+        assert_eq!(display_width("│   "), 4);  // │(1) + space(1) + space(1) + space(1) = 4
+        assert_eq!(display_width("├── file.txt"), 12); // 4 + 8 = 12
+        // 日本語 = 6 width (each CJK is 2), .txt = 4 width
+        assert_eq!(display_width("├── 日本語.txt"), 14); // 4 + 6 + 4 = 14
+    }
+
+    #[test]
     fn test_pad_to_width() {
         assert_eq!(pad_to_width("abc", 5), "abc  ");
         assert_eq!(pad_to_width("日本", 6), "日本  ");
