@@ -303,6 +303,21 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
+### 19. Unchanged/Total統計不具合修正テスト
+
+**背景**: Unchangedが0で表示され、Totalが検査総数にならない不具合の修正を検証
+
+| テストID | テスト名 | テスト内容 | 期待結果 | 分類 |
+|---------|---------|-----------|---------|------|
+| STATS-001 | test_unchanged_count_always_shown | --show-unchangedなしでUnchangedカウント | Unchangedが正しい数で表示される | 正常系 |
+| STATS-002 | test_total_equals_all_unique_paths | Total=全ユニークパス数 | Totalが検査した全パス数と一致 | 正常系 |
+| STATS-003 | test_statistics_categories_sum | カテゴリ合計=Total | Added+Modified+Deleted+Unchanged=Total | 正常系 |
+| STATS-004 | test_unchanged_count_with_many_files | 多数の変更なしファイル | 正確なUnchangedカウント | 正常系 |
+| STATS-005 | test_unchanged_count_same_with_or_without_option | --show-unchanged有無でカウント同一 | オプション有無で統計は同じ | 正常系 |
+| STATS-006 | test_unchanged_directories_counted | 変更なしディレクトリ | ディレクトリもUnchangedとしてカウント | 正常系 |
+
+---
+
 ## 終了コード一覧
 
 | 終了コード | 意味 |
@@ -372,3 +387,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-08 | 1.2 | 実運用不具合対応テスト追加（エッジケース、設定ファイル、show_unchanged、シンボリックリンク、パーミッション、拡張三方向比較） |
 | 2026-01-08 | 1.3 | 出力ファイル内容検証テスト追加（Excel、サマリー、パッチ）、calamineクレート使用 |
 | 2026-01-09 | 1.4 | シンボリックリンク不具合修正テスト追加（統計とSymlink Details不一致問題） |
+| 2026-01-09 | 1.5 | Unchanged/Total統計不具合修正テスト追加（Unchangedが0、Totalが検査総数にならない問題） |

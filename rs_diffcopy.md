@@ -960,7 +960,7 @@ No differences found.
 | Modified Files | 変更あり時 | 変更されたファイル一覧 |
 | Deleted Files | 削除あり時 | 削除されたファイル/ディレクトリ一覧 |
 | Unchanged Files | `--show-unchanged`指定時 | 変更がないファイル一覧 |
-| Symlink Details | シンボリックリンクあり時 | シンボリックリンクの詳細情報 |
+| Symlink Details | 追加/削除/変更されたシンボリックリンクあり時 | シンボリックリンクの詳細情報（※変更なしは表示されない） |
 | Permission Changes | 権限変更あり時 | 権限変更の詳細 |
 | Errors | エラーあり時 | 権限エラー詳細 |
 | Special Files (skipped) | 特殊ファイルあり時 | スキップされた特殊ファイル一覧（Unix） |
@@ -1035,14 +1035,17 @@ Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=dele
 | Added | targetにのみ存在するファイル/ディレクトリ数 |
 | Modified | 両方に存在し、内容が変更されたファイル数 |
 | Deleted | sourceにのみ存在するファイル/ディレクトリ数 |
-| Symlinks | 追加/削除/変更されたシンボリックリンク数 |
+| Symlinks | 追加/削除/変更されたシンボリックリンク数（※変更なしのシンボリックリンクは含まない） |
 | Special Files | スキップされた特殊ファイル数（Unix: ソケット、FIFO等） |
 | Permissions | 権限のみ変更されたファイル数 |
 | Errors | 権限エラー等でスキップされたファイル数 |
-| Unchanged | 両方に存在し、変更がないファイル数（常に表示） |
-| **Total** | sourceとtargetの全ユニークパス数（source ∪ target） |
+| Unchanged | 両方に存在し、変更がないファイル数（**常に統計に表示**、`--show-unchanged`はFile Treeと詳細セクションの表示のみ制御） |
+| **Total** | 検査した全ユニークパス数（source ∪ target）
 
-**注意**: Totalは `source側のファイル数 + target側のファイル数 - 両方に存在するファイル数` で計算されます。
+**注意**:
+- Totalは `source側のファイル数 + target側のファイル数 - 両方に存在するファイル数` で計算されます
+- Unchangedは `--show-unchanged` オプションの有無に関わらず、常に統計情報に正確な数が表示されます
+- `--show-unchanged` オプションはFile Treeや詳細セクションへの表示のみを制御し、統計情報には影響しません
 
 ### 10.5 ステータスタグ一覧
 
@@ -1066,7 +1069,7 @@ Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=dele
 | `[permission denied]` | 権限エラー（スキップ） |
 | `[skip]` | パッチ生成スキップ（バイナリファイル） |
 
-※ シンボリックリンクはコピーされず、Symlink Detailsセクションに詳細が表示される
+※ シンボリックリンクはコピーされず、Symlink Detailsセクションに詳細が表示される（変更なしのシンボリックリンクは統計にもFile Treeにも含まれない）
 ※ バイナリファイルはパッチ生成時にスキップされ、Patch Detailsセクションに記載
 ※ 特殊ファイルはUnix系OSでのみ検出され、スキップされてSpecial Files (skipped)セクションに記載
 

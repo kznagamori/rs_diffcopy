@@ -1,6 +1,7 @@
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::config::Config;
@@ -42,9 +43,11 @@ impl<'a> Comparator<'a> {
 
         // Get all unique paths
         let all_paths: Vec<PathBuf> = source_paths.union(&target_paths).cloned().collect();
+        let total_paths = all_paths.len();
 
         // Compare files in parallel
         let result = Arc::new(Mutex::new(ComparisonResult::new()));
+        let unchanged_count = AtomicUsize::new(0);
 
         let chunk_size = (all_paths.len() / self.config.workers).max(1);
 
@@ -52,7 +55,10 @@ impl<'a> Comparator<'a> {
             .par_chunks(chunk_size)
             .for_each(|paths| {
                 for path in paths {
-                    let entry = self.compare_path(path, &source_paths, &target_paths);
+                    let (entry, is_unchanged) = self.compare_path_with_unchanged(path, &source_paths, &target_paths);
+                    if is_unchanged {
+                        unchanged_count.fetch_add(1, Ordering::Relaxed);
+                    }
                     if let Some(entry) = entry {
                         let mut res = result.lock().unwrap();
                         res.entries.push(entry);
@@ -66,18 +72,20 @@ impl<'a> Comparator<'a> {
         // Sort entries by path
         result.entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
-        // Calculate statistics
-        result.stats = self.calculate_stats(&result.entries);
+        // Calculate statistics with unchanged count and total
+        result.stats = self.calculate_stats(&result.entries, unchanged_count.load(Ordering::Relaxed), total_paths);
 
         Ok(result)
     }
 
-    fn compare_path(
+    /// Compare path and return (Option<FileEntry>, is_unchanged)
+    /// is_unchanged is true only for files that exist in both and have identical content
+    fn compare_path_with_unchanged(
         &self,
         relative_path: &Path,
         source_paths: &HashSet<PathBuf>,
         target_paths: &HashSet<PathBuf>,
-    ) -> Option<FileEntry> {
+    ) -> (Option<FileEntry>, bool) {
         let source_path = self.config.source.join(relative_path);
         let target_path = self.config.target.join(relative_path);
 
@@ -86,14 +94,14 @@ impl<'a> Comparator<'a> {
 
         // Check for symlinks
         if source_path.is_symlink() || target_path.is_symlink() {
-            return self.handle_symlink(relative_path, &source_path, &target_path, in_source, in_target);
+            return (self.handle_symlink(relative_path, &source_path, &target_path, in_source, in_target), false);
         }
 
         // Check for special files (Unix)
         if let Some(special_type) = get_special_file_type(&source_path)
             .or_else(|| get_special_file_type(&target_path))
         {
-            return self.handle_special_file(relative_path, special_type);
+            return (self.handle_special_file(relative_path, special_type), false);
         }
 
         // Determine status
@@ -107,7 +115,7 @@ impl<'a> Comparator<'a> {
                     entry.target_size = std::fs::metadata(&target_path).ok().map(|m| m.len());
                     entry.target_hash = hash_file(&target_path).ok();
                 }
-                Some(entry)
+                (Some(entry), false)
             }
             (true, false) => {
                 // Deleted from target
@@ -116,37 +124,39 @@ impl<'a> Comparator<'a> {
                     entry.source_size = std::fs::metadata(&source_path).ok().map(|m| m.len());
                     entry.source_hash = hash_file(&source_path).ok();
                 }
-                Some(entry)
+                (Some(entry), false)
             }
             (true, true) => {
                 if is_dir {
                     // Directories that exist in both - skip unless checking permissions
                     if self.should_check_permissions(relative_path) {
-                        self.check_directory_permissions(relative_path, &source_path, &target_path)
+                        (self.check_directory_permissions(relative_path, &source_path, &target_path), false)
                     } else {
-                        None
+                        // Unchanged directory - count as unchanged
+                        (None, true)
                     }
                 } else {
                     // File exists in both - compare content
-                    self.compare_file(relative_path, &source_path, &target_path)
+                    self.compare_file_with_unchanged(relative_path, &source_path, &target_path)
                 }
             }
-            (false, false) => None,
+            (false, false) => (None, false),
         }
     }
 
-    fn compare_file(
+    /// Compare file and return (Option<FileEntry>, is_unchanged)
+    fn compare_file_with_unchanged(
         &self,
         relative_path: &Path,
         source_path: &Path,
         target_path: &Path,
-    ) -> Option<FileEntry> {
+    ) -> (Option<FileEntry>, bool) {
         let source_meta = match std::fs::metadata(source_path) {
             Ok(m) => m,
             Err(e) => {
                 let mut entry = FileEntry::new(relative_path.to_path_buf(), FileStatus::Error, false);
                 entry.error_message = Some(e.to_string());
-                return Some(entry);
+                return (Some(entry), false);
             }
         };
 
@@ -155,7 +165,7 @@ impl<'a> Comparator<'a> {
             Err(e) => {
                 let mut entry = FileEntry::new(relative_path.to_path_buf(), FileStatus::Error, false);
                 entry.error_message = Some(e.to_string());
-                return Some(entry);
+                return (Some(entry), false);
             }
         };
 
@@ -182,22 +192,23 @@ impl<'a> Comparator<'a> {
             entry.source_hash = hash_file(source_path).ok();
             entry.target_hash = hash_file(target_path).ok();
             entry.permission_change = permission_changed;
-            Some(entry)
+            (Some(entry), false)
         } else if let Some(perm_change) = permission_changed {
             // Only permission changed
             let mut entry = FileEntry::new(relative_path.to_path_buf(), FileStatus::Permission, false);
             entry.source_size = Some(source_size);
             entry.target_size = Some(target_size);
             entry.permission_change = Some(perm_change);
-            Some(entry)
+            (Some(entry), false)
         } else if self.config.show_unchanged {
-            // No changes but showing unchanged
+            // No changes but showing unchanged in entries
             let mut entry = FileEntry::new(relative_path.to_path_buf(), FileStatus::Unchanged, false);
             entry.source_size = Some(source_size);
             entry.target_size = Some(target_size);
-            Some(entry)
+            (Some(entry), true)
         } else {
-            None
+            // No changes, not showing in entries, but count as unchanged
+            (None, true)
         }
     }
 
@@ -316,7 +327,7 @@ impl<'a> Comparator<'a> {
         }
     }
 
-    fn calculate_stats(&self, entries: &[FileEntry]) -> ComparisonStats {
+    fn calculate_stats(&self, entries: &[FileEntry], unchanged_count: usize, total_paths: usize) -> ComparisonStats {
         let mut stats = ComparisonStats::default();
 
         for entry in entries {
@@ -336,7 +347,7 @@ impl<'a> Comparator<'a> {
                         stats.deleted_files += 1;
                     }
                 }
-                FileStatus::Unchanged => stats.unchanged_files += 1,
+                FileStatus::Unchanged => {} // Already counted via unchanged_count
                 FileStatus::Symlink => stats.symlink_files += 1,
                 FileStatus::Special => stats.special_files += 1,
                 FileStatus::Permission => stats.permission_files += 1,
@@ -344,8 +355,11 @@ impl<'a> Comparator<'a> {
             }
         }
 
-        // Calculate total unique items
-        stats.total_items = entries.len();
+        // Set unchanged count (always tracked, regardless of show_unchanged option)
+        stats.unchanged_files = unchanged_count;
+
+        // Set total as all unique paths scanned
+        stats.total_items = total_paths;
 
         stats
     }

@@ -15,8 +15,8 @@
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
 | ユニットテスト | 89 | 89 | 0 | 0 |
-| 結合テスト | 125 | 125 | 0 | 0 |
-| **合計** | **214** | **214** | **0** | **0** |
+| 結合テスト | 131 | 131 | 0 | 0 |
+| **合計** | **220** | **220** | **0** | **0** |
 
 ---
 
@@ -237,6 +237,17 @@
 | SYMFIX-005 | test_multiple_unchanged_symlinks_ignored | PASS | 複数の変更なしシンボリックリンクがすべて無視されることを確認 |
 | SYMFIX-006 | test_mixed_changed_unchanged_symlinks | PASS | 変更あり/なし混在時に正しくフィルタリングされることを確認 |
 
+### 19. Unchanged/Total統計テスト (6テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| STATS-001 | test_unchanged_count_always_shown | PASS | --show-unchangedなしでもUnchangedカウントが表示されることを確認 |
+| STATS-002 | test_total_equals_all_unique_paths | PASS | Totalが全ユニークパス数（source ∪ target）と一致することを確認 |
+| STATS-003 | test_statistics_categories_sum | PASS | 統計カテゴリの合計が妥当であることを確認 |
+| STATS-004 | test_unchanged_count_with_many_files | PASS | 多数のファイルがあるときUnchangedカウントが正確であることを確認 |
+| STATS-005 | test_unchanged_count_same_with_or_without_option | PASS | --show-unchanged有無でUnchangedカウントが同じであることを確認 |
+| STATS-006 | test_unchanged_directories_counted | PASS | 変更なしディレクトリが正しくカウントされることを確認 |
+
 ---
 
 ## ユニットテスト詳細結果 (89テスト)
@@ -370,6 +381,7 @@
 | 2026-01-08 | 22:15 | 89/89 | 95/95 | PASS | 実運用不具合対応テスト追加 |
 | 2026-01-08 | 23:30 | 89/89 | 119/119 | PASS | 出力ファイル内容検証テスト追加（Excel/Summary/Patch） |
 | 2026-01-09 | 00:30 | 89/89 | 125/125 | PASS | シンボリックリンク不具合修正テスト追加（統計とDetails不一致問題） |
+| 2026-01-09 | 01:30 | 89/89 | 131/131 | PASS | Unchanged/Total統計不具合修正テスト追加 |
 
 ---
 
@@ -442,3 +454,29 @@ cargo test 2>&1 | tee test_output.txt
 - 変更ありシンボリックリンクがカウントされ詳細表示されることを検証
 - 統計のカウントとSymlink Detailsのエントリ数が一致することを検証
 - 複数の変更なし/あり混在シナリオでの正確なフィルタリングを検証
+
+## Unchanged/Total統計不具合修正テスト
+
+**不具合**: 大量にチェックしているのにUnchangedが0になり、Totalが検査総数にならない問題
+
+**原因**:
+1. `compare_file()`メソッドは`show_unchanged`がfalseの場合、変更なしファイルのエントリを返さなかった
+2. `calculate_stats()`は`entries.len()`からtotal_itemsを計算しており、変更なしファイルが含まれなかった
+3. unchanged_filesカウントもentriesからカウントしていたため、show_unchangedがfalseの場合は0になった
+
+**修正内容**:
+1. `comparator.rs`: AtomicUsizeを使用してスレッドセーフにunchangedカウントを追跡
+2. 新メソッド`compare_path_with_unchanged()`を作成、`(Option<FileEntry>, bool)`を返すように変更
+3. 新メソッド`compare_file_with_unchanged()`を作成、変更なしファイルを識別
+4. `calculate_stats()`の引数を`(entries, unchanged_count, total_paths)`に変更
+5. `rs_diffcopy.md`: 仕様を明確化
+   - Unchanged: 変更なしファイル数（`--show-unchanged`オプションに関わらず常に統計に表示）
+   - Total: 検査した全ユニークパス数（source ∪ target）
+
+**テスト内容**:
+- `--show-unchanged`オプションなしでもUnchangedカウントが正確に表示されることを検証
+- Totalが全ユニークパス数（source ∪ target）と一致することを検証
+- 統計カテゴリの合計が妥当であることを検証
+- 多数のファイルがある場合のUnchangedカウントの正確性を検証
+- `--show-unchanged`有無でUnchangedカウントが同じ値になることを検証
+- 変更なしディレクトリが正しくカウントされることを検証

@@ -3508,3 +3508,265 @@ mod symlink_bug_fix_tests {
             "Unchanged symlinks should not appear in details");
     }
 }
+
+// ============================================================================
+// 19. Unchanged/Total Statistics Bug Fix Tests
+// ============================================================================
+
+mod unchanged_total_stats_tests {
+    use super::*;
+
+    // IT-1901: Unchanged count should be shown even without --show-unchanged option
+    #[test]
+    fn test_unchanged_count_always_shown() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create unchanged files
+        fs::write(source.join("unchanged1.txt"), "same content").unwrap();
+        fs::write(target.join("unchanged1.txt"), "same content").unwrap();
+        fs::write(source.join("unchanged2.txt"), "same content 2").unwrap();
+        fs::write(target.join("unchanged2.txt"), "same content 2").unwrap();
+
+        // Create one modified file
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+
+        // Run without --show-unchanged option
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+        let stdout = String::from_utf8_lossy(&result.stdout);
+
+        // Unchanged count should be 2 (both unchanged files)
+        let unchanged_regex = regex::Regex::new(r"Unchanged:\s+(\d+)").unwrap();
+        let caps = unchanged_regex.captures(&stdout).expect("Unchanged count not found in output");
+        let count: i32 = caps[1].parse().unwrap();
+        assert_eq!(count, 2, "Unchanged count should be 2, got: {}", count);
+    }
+
+    // IT-1902: Total should equal all unique paths
+    #[test]
+    fn test_total_equals_all_unique_paths() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create files: 2 unchanged, 1 modified, 1 added, 1 deleted
+        fs::write(source.join("unchanged1.txt"), "same").unwrap();
+        fs::write(target.join("unchanged1.txt"), "same").unwrap();
+        fs::write(source.join("unchanged2.txt"), "same2").unwrap();
+        fs::write(target.join("unchanged2.txt"), "same2").unwrap();
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+        fs::write(source.join("deleted.txt"), "will be deleted").unwrap();
+        fs::write(target.join("added.txt"), "newly added").unwrap();
+
+        // Total should be 5 unique paths:
+        // unchanged1.txt, unchanged2.txt, modified.txt, deleted.txt, added.txt
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+        let stdout = String::from_utf8_lossy(&result.stdout);
+
+        let total_regex = regex::Regex::new(r"Total:\s+(\d+)").unwrap();
+        let caps = total_regex.captures(&stdout).expect("Total count not found in output");
+        let count: i32 = caps[1].parse().unwrap();
+        assert_eq!(count, 5, "Total should be 5, got: {}", count);
+    }
+
+    // IT-1903: Statistics categories sum should make sense
+    #[test]
+    fn test_statistics_categories_sum() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create files
+        fs::write(source.join("unchanged.txt"), "same").unwrap();
+        fs::write(target.join("unchanged.txt"), "same").unwrap();
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+        fs::write(source.join("deleted.txt"), "will be deleted").unwrap();
+        fs::write(target.join("added.txt"), "newly added").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+        let summary = fs::read_to_string(&summary_path).unwrap();
+
+        // Parse all statistics
+        let added_regex = regex::Regex::new(r"Added:\s+(\d+)").unwrap();
+        let modified_regex = regex::Regex::new(r"Modified:\s+(\d+)").unwrap();
+        let deleted_regex = regex::Regex::new(r"Deleted:\s+(\d+)").unwrap();
+        let unchanged_regex = regex::Regex::new(r"Unchanged:\s+(\d+)").unwrap();
+        let total_regex = regex::Regex::new(r"Total:\s+(\d+)").unwrap();
+
+        let added: i32 = added_regex.captures(&summary)
+            .map(|c| c[1].parse().unwrap()).unwrap_or(0);
+        let modified: i32 = modified_regex.captures(&summary)
+            .map(|c| c[1].parse().unwrap()).unwrap_or(0);
+        let deleted: i32 = deleted_regex.captures(&summary)
+            .map(|c| c[1].parse().unwrap()).unwrap_or(0);
+        let unchanged: i32 = unchanged_regex.captures(&summary)
+            .map(|c| c[1].parse().unwrap()).unwrap_or(0);
+        let total: i32 = total_regex.captures(&summary)
+            .map(|c| c[1].parse().unwrap()).unwrap_or(0);
+
+        // Verify individual counts
+        assert_eq!(added, 1, "Added should be 1");
+        assert_eq!(modified, 1, "Modified should be 1");
+        assert_eq!(deleted, 1, "Deleted should be 1");
+        assert_eq!(unchanged, 1, "Unchanged should be 1");
+        assert_eq!(total, 4, "Total should be 4");
+
+        // Verify: Added + Modified + Deleted + Unchanged = Total
+        assert_eq!(added + modified + deleted + unchanged, total,
+            "Sum of categories ({}) should equal Total ({})",
+            added + modified + deleted + unchanged, total);
+    }
+
+    // IT-1904: Unchanged count correct with many unchanged files
+    #[test]
+    fn test_unchanged_count_with_many_files() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create 10 unchanged files
+        for i in 1..=10 {
+            let content = format!("content {}", i);
+            fs::write(source.join(format!("file{}.txt", i)), &content).unwrap();
+            fs::write(target.join(format!("file{}.txt", i)), &content).unwrap();
+        }
+
+        // Create 2 modified files
+        fs::write(source.join("mod1.txt"), "old1").unwrap();
+        fs::write(target.join("mod1.txt"), "new1").unwrap();
+        fs::write(source.join("mod2.txt"), "old2").unwrap();
+        fs::write(target.join("mod2.txt"), "new2").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+        let stdout = String::from_utf8_lossy(&result.stdout);
+
+        // Unchanged should be 10
+        let unchanged_regex = regex::Regex::new(r"Unchanged:\s+(\d+)").unwrap();
+        let caps = unchanged_regex.captures(&stdout).expect("Unchanged count not found");
+        let unchanged: i32 = caps[1].parse().unwrap();
+        assert_eq!(unchanged, 10, "Unchanged should be 10, got: {}", unchanged);
+
+        // Modified should be 2
+        let modified_regex = regex::Regex::new(r"Modified:\s+(\d+)").unwrap();
+        let caps = modified_regex.captures(&stdout).expect("Modified count not found");
+        let modified: i32 = caps[1].parse().unwrap();
+        assert_eq!(modified, 2, "Modified should be 2, got: {}", modified);
+
+        // Total should be 12
+        let total_regex = regex::Regex::new(r"Total:\s+(\d+)").unwrap();
+        let caps = total_regex.captures(&stdout).expect("Total count not found");
+        let total: i32 = caps[1].parse().unwrap();
+        assert_eq!(total, 12, "Total should be 12, got: {}", total);
+    }
+
+    // IT-1905: Unchanged count with --show-unchanged should be same as without
+    #[test]
+    fn test_unchanged_count_same_with_or_without_option() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+        let output2 = dir.path().join("output2");
+
+        // Create 5 unchanged files
+        for i in 1..=5 {
+            let content = format!("content {}", i);
+            fs::write(source.join(format!("file{}.txt", i)), &content).unwrap();
+            fs::write(target.join(format!("file{}.txt", i)), &content).unwrap();
+        }
+
+        // Run without --show-unchanged
+        let result1 = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+        ]);
+        // Exit code 2 = no differences, which is expected
+        assert!(result1.status.code() == Some(0) || result1.status.code() == Some(2),
+            "Expected exit code 0 or 2, got: {:?}", result1.status.code());
+        let stdout1 = String::from_utf8_lossy(&result1.stdout);
+
+        // Run with --show-unchanged (need to use different output)
+        let result2 = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output2.to_str().unwrap(),
+            "--show-unchanged",
+        ]);
+        assert!(result2.status.code() == Some(0) || result2.status.code() == Some(2),
+            "Expected exit code 0 or 2, got: {:?}", result2.status.code());
+        let stdout2 = String::from_utf8_lossy(&result2.stdout);
+
+        // Extract unchanged counts from both
+        let unchanged_regex = regex::Regex::new(r"Unchanged:\s+(\d+)").unwrap();
+
+        let count1: i32 = unchanged_regex.captures(&stdout1)
+            .map(|c| c[1].parse().unwrap()).unwrap_or(0);
+        let count2: i32 = unchanged_regex.captures(&stdout2)
+            .map(|c| c[1].parse().unwrap()).unwrap_or(0);
+
+        assert_eq!(count1, count2,
+            "Unchanged count should be same with or without --show-unchanged. Without: {}, With: {}",
+            count1, count2);
+        assert_eq!(count1, 5, "Unchanged count should be 5, got: {}", count1);
+    }
+
+    // IT-1906: Unchanged directories counted correctly
+    #[test]
+    fn test_unchanged_directories_counted() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create unchanged directory structure
+        let subdir = source.join("subdir");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(subdir.join("file.txt"), "content").unwrap();
+
+        let target_subdir = target.join("subdir");
+        fs::create_dir_all(&target_subdir).unwrap();
+        fs::write(target_subdir.join("file.txt"), "content").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+        ]);
+
+        // Exit code 0 or 2 (no differences) is OK
+        assert!(result.status.code() == Some(0) || result.status.code() == Some(2),
+            "Expected exit code 0 or 2, got: {:?}", result.status.code());
+        let stdout = String::from_utf8_lossy(&result.stdout);
+
+        // Unchanged should include the directory and file
+        let unchanged_regex = regex::Regex::new(r"Unchanged:\s+(\d+)").unwrap();
+        let caps = unchanged_regex.captures(&stdout).expect("Unchanged count not found");
+        let unchanged: i32 = caps[1].parse().unwrap();
+        // Should be at least 2 (subdir directory + file.txt)
+        assert!(unchanged >= 2, "Unchanged should be at least 2, got: {}", unchanged);
+    }
+}
