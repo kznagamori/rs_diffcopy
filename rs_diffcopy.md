@@ -1713,22 +1713,38 @@ Conflict Details
 
 | シート名 | 内容 |
 |----------|------|
-| Summary | 基本情報、統計情報、コンフリクト数 |
-| File Matrix | 全ファイルの三者間状態マトリクス |
+| Summary | 基本情報、オプション、統計情報、コンフリクト数 |
+| File Tree | ツリー形式のファイル一覧（二者間比較と同じ形式、三者間ステータス表示） |
 | Conflicts | コンフリクト候補の詳細一覧 |
 | Copied Files | コピーされたファイルの一覧 |
 
-#### マトリクスシートの色分け
+#### Summaryシートのオプション表示
+
+三者間モードでも以下のオプションがOptionsセクションに表示される：
+- `--filter-status`: フィルタリングするステータス
+- `--merge-style`: マージスタイル
+- `--conflict-only`: コンフリクトのみ出力
+- `--exclude`: 除外パターン
+
+#### File Treeシート
+
+二者間比較と同じツリー形式を使用：
+- 各パスコンポーネントをセル単位で分離表示
+- Status列に三者間ステータス（unchanged, ours-only, theirs-only, conflict等）を表示
+- `--excel-fold-level`オプションで折りたたみレベルを指定可能
+- ディレクトリ区切り罫線、パス展開機能も二者間と同様に動作
+
+#### ステータスの色分け
 
 | 状態 | 色 |
 |------|-----|
-| unchanged | グレー |
-| ours-only | 緑 |
-| theirs-only | 青 |
-| both-same | 水色 |
-| conflict | 赤（太字） |
-| added-* | 薄緑 |
-| deleted-* | 薄赤 |
+| unchanged | グレー (#808080) |
+| ours-only | 緑 (#008000) |
+| theirs-only | 青 (#0066CC) |
+| both-same | 水色 (#00B0F0) |
+| conflict | 赤・太字 (#CC0000) |
+| added-* | 薄緑 (#92D050) |
+| deleted-* | 薄赤 (#FFC7CE) |
 
 ### 15.10 終了コード（三者間モード）
 

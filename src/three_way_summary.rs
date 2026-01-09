@@ -105,6 +105,7 @@ impl<'a> ThreeWaySummaryWriter<'a> {
         self.config.dry_run
             || self.config.merge_style != crate::types::MergeStyle::All
             || self.config.conflict_only
+            || !self.config.filter_status.is_empty()
             || !self.config.exclude.is_empty()
     }
 
@@ -121,6 +122,11 @@ impl<'a> ThreeWaySummaryWriter<'a> {
 
         if self.config.conflict_only {
             output.push_str("  Conflict only: Yes\n");
+        }
+
+        if !self.config.filter_status.is_empty() {
+            let filter_str = self.config.filter_status.to_display_string();
+            output.push_str(&format!("  Filter status: {}\n", filter_str));
         }
 
         if !self.config.exclude.is_empty() {

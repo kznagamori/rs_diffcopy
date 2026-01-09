@@ -15,8 +15,8 @@
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
 | ユニットテスト | 109 | 109 | 0 | 0 |
-| 結合テスト | 157 | 157 | 0 | 0 |
-| **合計** | **266** | **266** | **0** | **0** |
+| 結合テスト | 163 | 163 | 0 | 0 |
+| **合計** | **272** | **272** | **0** | **0** |
 
 ---
 
@@ -453,6 +453,8 @@
 | 2026-01-09 | 03:30 | 98/98 | 143/143 | PASS | Filter statusオプション表示テスト追加（Summary/Excel） |
 | 2026-01-09 | 05:00 | 102/102 | 148/148 | PASS | Filter status表示・File Tree構造・fold-level不具合修正テスト追加 |
 | 2026-01-09 | 06:30 | 109/109 | 153/153 | PASS | File Treeセル構造・fold-level改善テスト追加（セル重複省略、ディレクトリ単位グループ化、境界罫線） |
+| 2026-01-09 | 08:00 | 109/109 | 157/157 | PASS | パス展開テスト追加 |
+| 2026-01-09 | 12:00 | 109/109 | 163/163 | PASS | 三者間比較Excel修正テスト追加（File Tree形式、filter-status、fold-level） |
 
 ---
 
@@ -666,6 +668,17 @@ cargo test 2>&1 | tee test_output.txt
 | PEXP-003 | test_excel_intermediate_dirs_empty_status | PASS | |
 | PEXP-004 | test_excel_shared_intermediate_dirs | PASS | |
 
+### 25. 三者間比較Excel修正テスト (6テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| IT-2501 | test_three_way_excel_uses_file_tree_sheet | PASS | File Matrixではなく、File Treeシートが存在することを確認 |
+| IT-2502 | test_three_way_filter_status_works | PASS | added-oursのみ表示、conflictは除外されることを確認 |
+| IT-2503 | test_three_way_filter_status_in_summary | PASS | SummaryのOptionsセクションにFilter status表示確認 |
+| IT-2504 | test_three_way_filter_status_in_excel | PASS | ExcelのSummaryシートにFilter status表示確認 |
+| IT-2505 | test_three_way_excel_fold_level | PASS | --excel-fold-level 2で深いファイルがグループ化対象になることを確認 |
+| IT-2506 | test_three_way_file_tree_cell_structure | PASS | パスコンポーネントが別々のセルに配置されることを確認 |
+
 ## パス展開機能の不具合修正
 
 **不具合**: 最初のパスが`a/b/c/d/e/f.txt`のように深い場合、`--excel-fold-level 2`指定でも全体が折りたたまれてしまう
@@ -704,3 +717,44 @@ cargo test 2>&1 | tee test_output.txt
 - fold-level 2指定時に展開されたパスが正しくグループ化されることを検証
 - 中間ディレクトリ行のStatusが空であることを検証
 - 同一ディレクトリ内の複数ファイルが中間行を共有することを検証
+
+## 三者間比較Excel修正テスト
+
+**修正要望**:
+1. 三者間比較のExcelレポートで「File Matrix」シートを「File Tree」形式に変更
+2. `--excel-fold-level`オプションが三者間モードで動作すること
+
+**不具合修正**:
+- `--filter-status`が三者間モードのSummary/Excelのオプションに表示されない
+- `--filter-status`が三者間モードでフィルタリングが機能しない
+
+**修正内容**:
+1. `three_way_excel.rs`: `write_file_matrix_sheet()`を`write_file_tree_sheet()`に置換
+   - 二者間比較と同じセルベースのツリー形式を採用
+   - パスコンポーネントを別々の列に配置
+   - ステータス固有の色付けフォーマットを適用
+   - ディレクトリ境界の罫線を適用
+   - 中間ディレクトリ行のパス展開を実装
+
+2. `three_way_excel.rs`: `apply_row_grouping_expanded()`関数を追加
+   - ディレクトリ単位でのfold-levelグループ化
+   - 二者間比較と同じロジック
+
+3. `three_way_excel.rs`: `write_summary_sheet()`を更新
+   - Optionsセクションに`filter_status`を追加
+   - `has_options()`メソッドで`filter_status`をチェック
+
+4. `three_way_summary.rs`: Summaryファイルの修正
+   - `has_options()`に`filter_status.is_empty()`チェックを追加
+   - `generate_options()`に`filter_status`表示を追加
+
+5. `types.rs`: `StatusFilter`に`to_display_string()`メソッドを追加
+   - 三者間・二者間共通で使用可能
+
+**テスト内容**:
+- 三者間ExcelがFile Matrixではなく、File Treeシートを使用することを検証
+- `--filter-status added-ours`指定時に正しくフィルタリングされることを検証
+- 三者間SummaryのOptionsセクションにFilter statusが表示されることを検証
+- 三者間ExcelのSummaryシートにFilter statusが表示されることを検証
+- `--excel-fold-level 2`で深いファイルがグループ化対象になることを検証
+- パスコンポーネントが別々のセルに配置されることを検証

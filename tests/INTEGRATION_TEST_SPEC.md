@@ -393,6 +393,25 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
+### Section 25: 三者間比較Excel修正テスト（three_way_excel_fixes_tests）
+
+**背景**: 以下の機能修正を検証
+1. 三者間比較のExcelレポートで「File Matrix」シートを「File Tree」形式に変更
+2. `--excel-fold-level`オプションが三者間モードで動作すること
+3. `--filter-status`が三者間モードのSummary/Excelのオプションに表示されること
+4. `--filter-status`が三者間モードで正しくフィルタリングすること
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| IT-2501 | test_three_way_excel_uses_file_tree_sheet | 三者間ExcelがFile Treeシートを使用 | File Matrixではなく、File Treeシートが存在 | 正常系 |
+| IT-2502 | test_three_way_filter_status_works | 三者間でfilter-statusフィルタリング | added-oursのみ表示、conflictは除外 | 正常系 |
+| IT-2503 | test_three_way_filter_status_in_summary | 三者間SummaryにFilter status表示 | Optionsセクションに"Filter status:"が表示 | 正常系 |
+| IT-2504 | test_three_way_filter_status_in_excel | 三者間ExcelにFilter status表示 | Summaryシートに"Filter status"が表示 | 正常系 |
+| IT-2505 | test_three_way_excel_fold_level | 三者間でfold-levelが機能 | --excel-fold-level 2で深いファイルがグループ化対象 | 正常系 |
+| IT-2506 | test_three_way_file_tree_cell_structure | 三者間File Treeセル構造 | パスコンポーネントが別々のセルに配置 | 正常系 |
+
+---
+
 ## 終了コード一覧
 
 | 終了コード | 意味 |
@@ -468,3 +487,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-09 | 1.8 | Filter status表示・File Tree構造・fold-level不具合修正テスト追加 |
 | 2026-01-09 | 1.9 | File Treeセル構造・fold-level改善テスト追加（セル重複省略、ディレクトリ単位グループ化、境界罫線） |
 | 2026-01-09 | 2.0 | パス展開テスト追加（深いパスの中間ディレクトリを個別行に展開する機能） |
+| 2026-01-09 | 2.1 | 三者間比較Excel修正テスト追加（File Tree形式、filter-status、fold-level） |

@@ -467,6 +467,30 @@ impl StatusFilter {
 
         self.included.is_empty()
     }
+
+    /// Convert to display string for options output
+    pub fn to_display_string(&self) -> String {
+        let mut parts = Vec::new();
+
+        if self.include_all {
+            parts.push("all".to_string());
+        } else if !self.included.is_empty() {
+            let mut included: Vec<_> = self.included.iter().cloned().collect();
+            included.sort();
+            parts.extend(included);
+        }
+
+        if !self.excluded.is_empty() {
+            let mut excluded: Vec<_> = self.excluded.iter().map(|s| format!("^{}", s)).collect();
+            excluded.sort();
+            if parts.is_empty() {
+                parts.push("all (implied)".to_string());
+            }
+            parts.extend(excluded);
+        }
+
+        parts.join(", ")
+    }
 }
 
 /// Copy result for a single file

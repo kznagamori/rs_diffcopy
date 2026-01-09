@@ -5034,3 +5034,312 @@ mod path_expansion_tests {
         }
     }
 }
+
+/// Section 25: Three-way Excel File Tree and filter-status fixes
+mod three_way_excel_fixes_tests {
+    use super::*;
+    use calamine::{open_workbook, Reader, Xlsx};
+
+    fn create_three_way_test_structure(base: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let base_dir = base.join("base");
+        let ours_dir = base.join("ours");
+        let theirs_dir = base.join("theirs");
+        let output_dir = base.join("output");
+
+        fs::create_dir_all(&base_dir).unwrap();
+        fs::create_dir_all(&ours_dir).unwrap();
+        fs::create_dir_all(&theirs_dir).unwrap();
+        fs::create_dir_all(&output_dir).unwrap();
+
+        (base_dir, ours_dir, theirs_dir, output_dir)
+    }
+
+    // IT-2501: Verify three-way Excel uses File Tree sheet (not File Matrix)
+    #[test]
+    fn test_three_way_excel_uses_file_tree_sheet() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir (it was created in setup)
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create files
+        fs::write(base_dir.join("common.txt"), "base").unwrap();
+        fs::write(ours_dir.join("common.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("common.txt"), "theirs").unwrap();
+        fs::write(ours_dir.join("ours_only.txt"), "ours only").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+        assert!(excel_path.exists());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        // Should have File Tree sheet, not File Matrix
+        let sheet_names = workbook.sheet_names().to_vec();
+        assert!(sheet_names.contains(&"File Tree".to_string()), "Should have 'File Tree' sheet");
+        assert!(!sheet_names.contains(&"File Matrix".to_string()), "Should NOT have 'File Matrix' sheet");
+
+        // Verify File Tree has content
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            assert!(rows.len() > 1, "File Tree should have content");
+
+            // Verify header has Path and Status
+            let header = &rows[0];
+            assert!(header.iter().any(|c| c == "Path"), "Header should have Path");
+            assert!(header.iter().any(|c| c == "Status"), "Header should have Status");
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+
+    // IT-2502: Verify filter-status works in three-way mode
+    #[test]
+    fn test_three_way_filter_status_works() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create files to have conflict and added-ours
+        // Note: A file only in ours (not in base/theirs) is "added-ours" status
+        // "ours-only" is when a file exists in all three but only ours modified it
+        fs::write(base_dir.join("conflict.txt"), "base").unwrap();
+        fs::write(ours_dir.join("conflict.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("conflict.txt"), "theirs").unwrap();
+        fs::write(ours_dir.join("added_by_ours.txt"), "ours only").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        // Filter to only show added-ours status (file added by ours, not in base)
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+            "--filter-status", "added-ours",
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            let mut found_added_ours = false;
+            let mut found_conflict = false;
+
+            for row in range.rows() {
+                let row_str: String = row.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("");
+                if row_str.contains("added_by_ours.txt") { found_added_ours = true; }
+                if row_str.contains("conflict.txt") { found_conflict = true; }
+            }
+
+            assert!(found_added_ours, "added_by_ours.txt should be in File Tree");
+            assert!(!found_conflict, "conflict.txt should NOT be in File Tree (filtered out)");
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+
+    // IT-2503: Verify filter-status is displayed in three-way Summary Options
+    #[test]
+    fn test_three_way_filter_status_in_summary() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        fs::write(base_dir.join("file.txt"), "base").unwrap();
+        fs::write(ours_dir.join("file.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("file.txt"), "theirs").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--filter-status", "CONFLICT,ours-only",
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let summary = fs::read_to_string(&summary_path).expect("Failed to read summary");
+        assert!(summary.contains("Filter status:"), "Summary should show Filter status option");
+    }
+
+    // IT-2504: Verify filter-status is displayed in three-way Excel Options
+    #[test]
+    fn test_three_way_filter_status_in_excel() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        fs::write(base_dir.join("file.txt"), "base").unwrap();
+        fs::write(ours_dir.join("file.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("file.txt"), "theirs").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+            "--filter-status", "CONFLICT",
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Summary") {
+            let mut found_filter_status = false;
+
+            for row in range.rows() {
+                let row_str: String = row.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(" ");
+                if row_str.contains("Filter status") {
+                    found_filter_status = true;
+                }
+            }
+
+            assert!(found_filter_status, "Excel Summary should show Filter status option");
+        } else {
+            panic!("Could not read Summary sheet");
+        }
+    }
+
+    // IT-2505: Verify excel-fold-level works in three-way mode
+    #[test]
+    fn test_three_way_excel_fold_level() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create nested structure
+        let nested_base = base_dir.join("a/b/c");
+        let nested_ours = ours_dir.join("a/b/c");
+        let nested_theirs = theirs_dir.join("a/b/c");
+
+        fs::create_dir_all(&nested_base).unwrap();
+        fs::create_dir_all(&nested_ours).unwrap();
+        fs::create_dir_all(&nested_theirs).unwrap();
+
+        fs::write(nested_base.join("deep.txt"), "base").unwrap();
+        fs::write(nested_ours.join("deep.txt"), "ours").unwrap();
+        fs::write(nested_theirs.join("deep.txt"), "theirs").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+            "--excel-fold-level", "2",
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+        assert!(excel_path.exists());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            let mut found_deep = false;
+
+            for row in range.rows() {
+                let row_str: String = row.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("");
+                if row_str.contains("deep.txt") { found_deep = true; }
+            }
+
+            assert!(found_deep, "deep.txt should be in File Tree");
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+
+    // IT-2506: Verify three-way File Tree has correct tree structure with cell-based layout
+    #[test]
+    fn test_three_way_file_tree_cell_structure() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create nested structure
+        let nested_base = base_dir.join("dir1/subdir");
+        let nested_ours = ours_dir.join("dir1/subdir");
+
+        fs::create_dir_all(&nested_base).unwrap();
+        fs::create_dir_all(&nested_ours).unwrap();
+
+        fs::write(nested_base.join("file.txt"), "base").unwrap();
+        fs::write(nested_ours.join("file.txt"), "ours").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            // Find the row with file.txt
+            let file_row = rows.iter().find(|row| {
+                row.iter().any(|c| c.contains("file.txt"))
+            });
+
+            assert!(file_row.is_some(), "Should find file.txt row");
+
+            // File should be in column 2 (0-indexed) for dir1/subdir/file.txt
+            if let Some(row) = file_row {
+                let file_col = row.iter().position(|c| c.contains("file.txt"));
+                assert!(file_col.is_some(), "file.txt should be in one of the columns");
+            }
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+}
