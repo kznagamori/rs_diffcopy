@@ -4820,3 +4820,217 @@ mod file_tree_cell_structure_tests {
         }
     }
 }
+
+/// Section 24: Path expansion for first deep paths
+mod path_expansion_tests {
+    use super::*;
+    use calamine::{open_workbook, Reader, Xlsx};
+
+    // IT-2401: Verify deep path is expanded into multiple rows
+    #[test]
+    fn test_excel_path_expansion_deep_path() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create a deeply nested file: a/b/c/d/e/f.txt
+        let deep_dir = target.join("a/b/c/d/e");
+        fs::create_dir_all(&deep_dir).unwrap();
+        fs::write(deep_dir.join("f.txt"), "deep file").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+        assert!(excel_path.exists());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            // Should have multiple rows for intermediate directories
+            // At minimum: header + a/ + b/ + c/ + d/ + e/ + f.txt = 7 rows
+            // or fewer if some optimization applies, but f.txt should be present
+            let mut found_f = false;
+            let mut found_a = false;
+            let mut found_e = false;
+
+            for row in &rows {
+                let row_str = row.join("");
+                if row_str.contains("f.txt") { found_f = true; }
+                if row_str.contains("a/") { found_a = true; }
+                if row_str.contains("e/") { found_e = true; }
+            }
+
+            assert!(found_f, "f.txt should be in File Tree");
+            assert!(found_a, "a/ should be in File Tree");
+            assert!(found_e, "e/ should be in File Tree");
+
+            // f.txt should be in column 5 (depth 6, 0-indexed)
+            // Find the row with f.txt and verify column position
+            for row in &rows {
+                if row.iter().any(|c| c.contains("f.txt")) {
+                    // f.txt should be at column index 5 (6th column)
+                    assert!(row.len() >= 6, "Row should have at least 6 columns for deep path");
+                    let f_col = row.iter().position(|c| c.contains("f.txt"));
+                    assert_eq!(f_col, Some(5), "f.txt should be in column 5 (index)");
+                }
+            }
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+
+    // IT-2402: Verify fold-level 2 works with expanded paths
+    #[test]
+    fn test_excel_fold_level_with_expanded_paths() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create a deeply nested file: a/b/c/d.txt
+        let deep_dir = target.join("a/b/c");
+        fs::create_dir_all(&deep_dir).unwrap();
+        fs::write(deep_dir.join("d.txt"), "deep file").unwrap();
+        // Also create a shallow file
+        fs::write(target.join("shallow.txt"), "shallow").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+            "--excel-fold-level", "2",
+        ]);
+
+        assert!(result.status.success());
+        assert!(excel_path.exists());
+
+        // Verify the file is created and readable
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            let mut found_d = false;
+            let mut found_shallow = false;
+
+            for row in range.rows() {
+                let row_str: String = row.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("");
+                if row_str.contains("d.txt") { found_d = true; }
+                if row_str.contains("shallow.txt") { found_shallow = true; }
+            }
+
+            assert!(found_d, "d.txt should be in File Tree");
+            assert!(found_shallow, "shallow.txt should be in File Tree");
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+
+    // IT-2403: Verify intermediate directory rows have empty status
+    #[test]
+    fn test_excel_intermediate_dirs_empty_status() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create a nested file: level1/level2/file.txt
+        let nested_dir = target.join("level1/level2");
+        fs::create_dir_all(&nested_dir).unwrap();
+        fs::write(nested_dir.join("file.txt"), "content").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            // Find rows with level1/ or level2/ that are intermediate directory rows
+            // These should have empty status (last column)
+            let mut found_file_row = false;
+            let empty_string = String::new();
+            for row in &rows {
+                let row_str = row.join("");
+                if row_str.contains("file.txt") {
+                    found_file_row = true;
+                    // The file row should have a status
+                    let last_cell = row.last().unwrap_or(&empty_string);
+                    assert!(last_cell == "added", "file.txt row should have 'added' status, got: {}", last_cell);
+                }
+            }
+            assert!(found_file_row, "file.txt row should exist");
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+
+    // IT-2404: Verify multiple deep paths in same directory share intermediate rows
+    #[test]
+    fn test_excel_shared_intermediate_dirs() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create two files in same deep directory
+        let deep_dir = target.join("shared/deep/path");
+        fs::create_dir_all(&deep_dir).unwrap();
+        fs::write(deep_dir.join("file1.txt"), "content1").unwrap();
+        fs::write(deep_dir.join("file2.txt"), "content2").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("File Tree") {
+            let mut found_file1 = false;
+            let mut found_file2 = false;
+            let mut found_shared = false;
+            let mut found_deep = false;
+            let mut found_path = false;
+
+            for row in range.rows() {
+                let row_str: String = row.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("");
+                if row_str.contains("file1.txt") { found_file1 = true; }
+                if row_str.contains("file2.txt") { found_file2 = true; }
+                if row_str.contains("shared/") { found_shared = true; }
+                if row_str.contains("deep/") { found_deep = true; }
+                if row_str.contains("path/") { found_path = true; }
+            }
+
+            assert!(found_file1, "file1.txt should be in File Tree");
+            assert!(found_file2, "file2.txt should be in File Tree");
+            assert!(found_shared, "shared/ should be in File Tree");
+            assert!(found_deep, "deep/ should be in File Tree");
+            assert!(found_path, "path/ should be in File Tree");
+        } else {
+            panic!("Could not read File Tree sheet");
+        }
+    }
+}

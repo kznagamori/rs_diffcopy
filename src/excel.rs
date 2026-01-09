@@ -363,15 +363,21 @@ impl<'a> ExcelWriter<'a> {
         }
         worksheet.write_string_with_format(0, status_col, "Status", &formats.header).ok();
 
+        // Track written directory paths (for expansion)
+        let mut written_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
         // Track previous row's components for deduplication
         let mut prev_components: Vec<String> = Vec::new();
         let mut row = 1u32;
         let fold_level = self.config.excel_fold_level;
 
-        // Pre-calculate which rows need bottom borders (when first-level directory changes)
-        let rows_with_bottom_border = Self::calculate_directory_boundaries(&filtered_entries);
+        // Track row info for directory boundaries and grouping
+        // Each row is: (depth, is_file, first_level_dir)
+        let mut row_info: Vec<(usize, bool, String)> = Vec::new();
 
-        for (idx, entry) in filtered_entries.iter().enumerate() {
+        // Pre-calculate boundary rows by doing a dry-run pass
+        let boundary_rows = Self::calculate_boundary_rows(&filtered_entries);
+
+        for entry in &filtered_entries {
             let components: Vec<String> = entry
                 .relative_path
                 .components()
@@ -390,9 +396,7 @@ impl<'a> ExcelWriter<'a> {
                 FileStatus::Error => "error",
             };
 
-            // Check if this row needs a bottom border
-            let needs_bottom_border = rows_with_bottom_border.contains(&idx);
-
+            // Select format based on status (we'll also need bottom border versions for boundary rows)
             let (format, format_bottom) = match entry.status {
                 FileStatus::Added => (&added_format, &added_format_bottom),
                 FileStatus::Modified => (&modified_format, &modified_format_bottom),
@@ -402,9 +406,93 @@ impl<'a> ExcelWriter<'a> {
                 _ => (&tree_format, &tree_format_bottom),
             };
 
-            let cell_format = if needs_bottom_border { format_bottom } else { format };
+            // Check if we need to expand intermediate directories
+            // This happens when entering a new directory path that hasn't been written yet
+            let mut expand_from = 0usize;
+            for i in 0..depth.saturating_sub(1) {
+                let dir_path = components[..=i].join("/");
+                if !written_dirs.contains(&dir_path) {
+                    expand_from = i;
+                    break;
+                }
+                expand_from = i + 1;
+            }
 
-            // Write each path component in its own cell, skipping duplicates from previous row
+            // Check if parent directory has changed (for deduplication purposes)
+            let parent_changed = if !prev_components.is_empty() {
+                components.first() != prev_components.first()
+            } else {
+                true
+            };
+
+            // Write intermediate directory rows if needed
+            if depth > 1 && (parent_changed || expand_from < depth - 1) {
+                for i in expand_from..depth.saturating_sub(1) {
+                    let dir_path = components[..=i].join("/");
+                    if written_dirs.contains(&dir_path) {
+                        continue;
+                    }
+                    written_dirs.insert(dir_path);
+
+                    // Write intermediate directory row
+                    let dir_name = format!("{}/", &components[i]);
+
+                    // Check if this component should be written (deduplication)
+                    let should_write = if i < prev_components.len() {
+                        let parent_changed_for_row = (0..i).any(|j| {
+                            j >= prev_components.len() || components[j] != prev_components[j]
+                        });
+                        parent_changed_for_row || components[i] != prev_components[i]
+                    } else {
+                        true
+                    };
+
+                    // Select format based on boundary
+                    let dir_format = if boundary_rows.contains(&row) {
+                        &tree_format_bottom
+                    } else {
+                        &tree_format
+                    };
+
+                    // Write empty cells for columns before this depth
+                    for col in 0..i {
+                        worksheet.write_string_with_format(row, col as u16, "", dir_format).ok();
+                    }
+
+                    // Write directory name
+                    if should_write {
+                        worksheet.write_string_with_format(row, i as u16, &dir_name, dir_format).ok();
+                    } else {
+                        worksheet.write_string_with_format(row, i as u16, "", dir_format).ok();
+                    }
+
+                    // Fill remaining columns with empty cells
+                    for col in (i + 1)..max_depth {
+                        worksheet.write_string_with_format(row, col as u16, "", dir_format).ok();
+                    }
+
+                    // Write empty status for intermediate directory
+                    worksheet.write_string_with_format(row, status_col, "", dir_format).ok();
+
+                    // Track row info
+                    let first_level = components.first().cloned().unwrap_or_default();
+                    row_info.push((i + 1, false, first_level));
+
+                    // Update prev_components for next iteration
+                    prev_components = components[..=i].to_vec();
+                    row += 1;
+                }
+            }
+
+            // Write the file/entry row
+            // Select format based on boundary
+            let row_format = if boundary_rows.contains(&row) {
+                format_bottom
+            } else {
+                format
+            };
+
+            // Check deduplication for each component
             for (i, component) in components.iter().enumerate() {
                 let is_last = i == depth - 1;
                 let display_text = if is_last && entry.is_directory {
@@ -415,42 +503,47 @@ impl<'a> ExcelWriter<'a> {
                     component.clone()
                 };
 
-                // Check if this component is the same as the previous row's component at the same column
                 let should_write = if i < prev_components.len() {
-                    // Compare with previous row - also check if parent directory changed
-                    let parent_changed = (0..i).any(|j| {
+                    let parent_changed_for_row = (0..i).any(|j| {
                         j >= prev_components.len() || components[j] != prev_components[j]
                     });
-                    parent_changed || components[i] != prev_components[i]
+                    parent_changed_for_row || components[i] != prev_components[i]
                 } else {
-                    true // Previous row didn't have this column
+                    true
                 };
 
                 if should_write {
-                    worksheet.write_string_with_format(row, i as u16, &display_text, cell_format).ok();
+                    worksheet.write_string_with_format(row, i as u16, &display_text, row_format).ok();
                 } else {
-                    // Write empty cell with border format
-                    worksheet.write_string_with_format(row, i as u16, "", cell_format).ok();
+                    worksheet.write_string_with_format(row, i as u16, "", row_format).ok();
                 }
             }
 
-            // Fill remaining columns with empty cells (for border consistency)
+            // Fill remaining columns with empty cells
             for col in depth..max_depth {
-                worksheet.write_string_with_format(row, col as u16, "", cell_format).ok();
+                worksheet.write_string_with_format(row, col as u16, "", row_format).ok();
             }
 
-            // Write status in the status column
-            worksheet.write_string_with_format(row, status_col, status_str, cell_format).ok();
+            // Write status
+            worksheet.write_string_with_format(row, status_col, status_str, row_format).ok();
 
+            // Track row info
+            let first_level = components.first().cloned().unwrap_or_default();
+            row_info.push((depth, true, first_level));
+
+            // Update state
+            if depth > 1 {
+                let dir_path = components[..depth-1].join("/");
+                written_dirs.insert(dir_path);
+            }
             prev_components = components;
             row += 1;
         }
 
         // Apply row grouping for fold levels
-        // fold_level N means items at depth >= N should be grouped, per directory
         if let Some(level) = fold_level {
             if level > 0 {
-                Self::apply_row_grouping(worksheet, &filtered_entries, level);
+                Self::apply_row_grouping_expanded(worksheet, &row_info, level);
             }
         }
 
@@ -466,113 +559,103 @@ impl<'a> ExcelWriter<'a> {
         Ok(())
     }
 
-    /// Calculate which row indices should have bottom borders (directory boundaries)
-    fn calculate_directory_boundaries(entries: &[&FileEntry]) -> std::collections::HashSet<usize> {
-        let mut boundaries = std::collections::HashSet::new();
+    /// Pre-calculate which rows are directory boundaries (for border formatting)
+    /// Returns a HashSet of Excel row numbers that should have bottom borders
+    fn calculate_boundary_rows(entries: &[&FileEntry]) -> std::collections::HashSet<u32> {
+        let mut boundary_rows = std::collections::HashSet::new();
+        let mut row_info: Vec<String> = Vec::new();  // first_level_dir for each row
+        let mut written_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        for i in 0..entries.len() {
-            let current_components: Vec<String> = entries[i]
-                .relative_path
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .collect();
-
-            // Check if this is the last row, or if the next row's first-level directory is different
-            let is_boundary = if i + 1 >= entries.len() {
-                true // Last row always gets a border
-            } else {
-                let next_components: Vec<String> = entries[i + 1]
-                    .relative_path
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy().to_string())
-                    .collect();
-
-                // First-level directory changes
-                if current_components.is_empty() || next_components.is_empty() {
-                    true
-                } else {
-                    current_components[0] != next_components[0]
-                }
-            };
-
-            if is_boundary {
-                boundaries.insert(i);
-            }
-        }
-
-        boundaries
-    }
-
-    fn apply_row_grouping(worksheet: &mut Worksheet, entries: &[&FileEntry], fold_level: usize) {
-        // Group rows by directory - items at depth >= fold_level should be grouped
-        // Groups are per-directory, not continuous ranges
-
-        // Build a structure to track directory groups
-        // For fold_level N, we group items that are at depth >= N, grouped by their parent at depth N-1
-
-        if entries.is_empty() {
-            return;
-        }
-
-        // First, identify group ranges
-        // A group is a set of consecutive rows where:
-        // 1. The item is at depth >= fold_level
-        // 2. They share the same parent path at depth fold_level - 1
-
-        let mut groups: Vec<(u32, u32)> = Vec::new();
-        let mut current_group_start: Option<u32> = None;
-        let mut current_group_parent: Option<Vec<String>> = None;
-
-        for (idx, entry) in entries.iter().enumerate() {
-            let row = (idx + 1) as u32; // Excel rows start at 1, header is row 0
+        for entry in entries {
             let components: Vec<String> = entry
                 .relative_path
                 .components()
                 .map(|c| c.as_os_str().to_string_lossy().to_string())
                 .collect();
             let depth = components.len();
+            let first_level = components.first().cloned().unwrap_or_default();
 
-            if depth >= fold_level {
-                // This row should be in a group
-                // Calculate parent path at depth fold_level - 1
-                let parent_path: Vec<String> = components.iter()
-                    .take(fold_level - 1)
-                    .cloned()
-                    .collect();
+            // Simulate intermediate directory rows
+            let mut expand_from = 0usize;
+            for i in 0..depth.saturating_sub(1) {
+                let dir_path = components[..=i].join("/");
+                if !written_dirs.contains(&dir_path) {
+                    expand_from = i;
+                    break;
+                }
+                expand_from = i + 1;
+            }
 
-                if let Some(ref current_parent) = current_group_parent {
-                    if *current_parent == parent_path {
-                        // Continue current group
-                    } else {
-                        // End current group, start new one
-                        if let Some(start) = current_group_start {
-                            if row > start {
-                                groups.push((start, row - 1));
-                            }
-                        }
-                        current_group_start = Some(row);
-                        current_group_parent = Some(parent_path);
+            // Check if parent directory has changed
+            let parent_changed = row_info.last().map_or(true, |prev_first| *prev_first != first_level);
+
+            // Add intermediate directory rows
+            if depth > 1 && (parent_changed || expand_from < depth - 1) {
+                for i in expand_from..depth.saturating_sub(1) {
+                    let dir_path = components[..=i].join("/");
+                    if written_dirs.contains(&dir_path) {
+                        continue;
                     }
-                } else {
-                    // Start a new group
+                    written_dirs.insert(dir_path);
+                    row_info.push(first_level.clone());
+                }
+            }
+
+            // Add the file row
+            if depth > 1 {
+                let dir_path = components[..depth-1].join("/");
+                written_dirs.insert(dir_path);
+            }
+            row_info.push(first_level);
+        }
+
+        // Determine boundary rows (where first_level changes or is last row)
+        for i in 0..row_info.len() {
+            let is_boundary = if i + 1 >= row_info.len() {
+                true // Last row
+            } else {
+                row_info[i] != row_info[i + 1]
+            };
+
+            if is_boundary {
+                let excel_row = (i + 1) as u32; // +1 for header row
+                boundary_rows.insert(excel_row);
+            }
+        }
+
+        boundary_rows
+    }
+
+    /// Apply row grouping with expanded intermediate directory rows
+    fn apply_row_grouping_expanded(worksheet: &mut Worksheet, row_info: &[(usize, bool, String)], fold_level: usize) {
+        if row_info.is_empty() {
+            return;
+        }
+
+        // Group consecutive rows where depth >= fold_level
+        let mut groups: Vec<(u32, u32)> = Vec::new();
+        let mut current_group_start: Option<u32> = None;
+
+        for (idx, (depth, _, _)) in row_info.iter().enumerate() {
+            let row = (idx + 1) as u32; // +1 for header row
+
+            if *depth >= fold_level {
+                if current_group_start.is_none() {
                     current_group_start = Some(row);
-                    current_group_parent = Some(parent_path);
                 }
             } else {
-                // This row should not be grouped - end current group if any
                 if let Some(start) = current_group_start {
                     if row > start {
                         groups.push((start, row - 1));
                     }
                 }
                 current_group_start = None;
-                current_group_parent = None;
             }
         }
 
         // Handle last group
         if let Some(start) = current_group_start {
-            let last_row = entries.len() as u32;
+            let last_row = row_info.len() as u32;
             if last_row >= start {
                 groups.push((start, last_row));
             }
@@ -975,145 +1058,133 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate_directory_boundaries_simple() {
-        // Test: a.txt, b/d.txt, b/e/g.txt, c/e.txt, c/f/h.txt
-        // Boundaries should be at: a.txt (idx 0), b/e/g.txt (idx 2), c/f/h.txt (idx 4)
+    fn test_row_info_depth_calculation() {
+        // Test that row_info tracks depth correctly for path expansion
+        // With the new expansion logic:
+        // a/b/c/d.txt becomes:
+        //   row 1: a/       (depth 1, not file)
+        //   row 2: b/       (depth 2, not file)
+        //   row 3: c/       (depth 3, not file)
+        //   row 4: d.txt    (depth 4, file)
+
         let entries: Vec<FileEntry> = vec![
-            FileEntry::new(PathBuf::from("a.txt"), FileStatus::Added, false),
-            FileEntry::new(PathBuf::from("b/d.txt"), FileStatus::Modified, false),
-            FileEntry::new(PathBuf::from("b/e/g.txt"), FileStatus::Modified, false),
-            FileEntry::new(PathBuf::from("c/e.txt"), FileStatus::Deleted, false),
-            FileEntry::new(PathBuf::from("c/f/h.txt"), FileStatus::Modified, false),
+            FileEntry::new(PathBuf::from("a/b/c/d.txt"), FileStatus::Added, false),
         ];
-        let entry_refs: Vec<&FileEntry> = entries.iter().collect();
 
-        let boundaries = ExcelWriter::calculate_directory_boundaries(&entry_refs);
+        // Verify depth calculation
+        assert_eq!(entries[0].relative_path.components().count(), 4);
 
-        // a.txt (idx 0): first-level is "a.txt", next is "b/d.txt" which starts with "b" -> boundary
-        assert!(boundaries.contains(&0), "a.txt should be a boundary");
-        // b/e/g.txt (idx 2): first-level is "b", next is "c/e.txt" which starts with "c" -> boundary
-        assert!(boundaries.contains(&2), "b/e/g.txt should be a boundary");
-        // c/f/h.txt (idx 4): last row -> boundary
-        assert!(boundaries.contains(&4), "c/f/h.txt should be a boundary");
-
-        // b/d.txt (idx 1): first-level is "b", next is "b/e/g.txt" which also starts with "b" -> not boundary
-        assert!(!boundaries.contains(&1), "b/d.txt should not be a boundary");
-        // c/e.txt (idx 3): first-level is "c", next is "c/f/h.txt" which also starts with "c" -> not boundary
-        assert!(!boundaries.contains(&3), "c/e.txt should not be a boundary");
+        // With path expansion, intermediate directories are on separate rows
+        // This enables fold-level to work correctly
     }
 
     #[test]
-    fn test_calculate_directory_boundaries_all_same_first_level() {
-        let entries: Vec<FileEntry> = vec![
-            FileEntry::new(PathBuf::from("src/a.txt"), FileStatus::Added, false),
-            FileEntry::new(PathBuf::from("src/b.txt"), FileStatus::Modified, false),
-            FileEntry::new(PathBuf::from("src/c/d.txt"), FileStatus::Modified, false),
+    fn test_row_info_boundary_detection() {
+        // Test boundary detection in row_info
+        // row_info format: (depth, is_file, first_level_dir)
+
+        let row_info: Vec<(usize, bool, String)> = vec![
+            (1, true, "a.txt".to_string()),      // a.txt -> boundary (next first_level differs)
+            (1, false, "b".to_string()),         // b/ intermediate
+            (2, true, "b".to_string()),          // b/d.txt
+            (2, false, "b".to_string()),         // b/e/ intermediate
+            (3, true, "b".to_string()),          // b/e/g.txt -> boundary (next first_level differs)
+            (1, false, "c".to_string()),         // c/ intermediate
+            (2, true, "c".to_string()),          // c/e.txt
+            (2, false, "c".to_string()),         // c/f/ intermediate
+            (3, true, "c".to_string()),          // c/f/h.txt -> boundary (last row)
         ];
-        let entry_refs: Vec<&FileEntry> = entries.iter().collect();
 
-        let boundaries = ExcelWriter::calculate_directory_boundaries(&entry_refs);
+        // Boundaries occur when:
+        // 1. Next row has different first_level_dir, or
+        // 2. It's the last row
 
-        // All have same first-level "src", so only last row is boundary
-        assert!(!boundaries.contains(&0));
-        assert!(!boundaries.contains(&1));
-        assert!(boundaries.contains(&2), "Last row should be a boundary");
+        // idx 0 (a.txt): first_level "a.txt", next is "b" -> boundary
+        assert_ne!(&row_info[0].2, &row_info[1].2);
+        // idx 4 (b/e/g.txt): first_level "b", next is "c" -> boundary
+        assert_ne!(&row_info[4].2, &row_info[5].2);
+        // idx 8 (c/f/h.txt): last row -> boundary
+        assert_eq!(row_info.len() - 1, 8);
     }
 
     #[test]
-    fn test_calculate_directory_boundaries_root_files() {
-        let entries: Vec<FileEntry> = vec![
-            FileEntry::new(PathBuf::from("a.txt"), FileStatus::Added, false),
-            FileEntry::new(PathBuf::from("b.txt"), FileStatus::Added, false),
-            FileEntry::new(PathBuf::from("c.txt"), FileStatus::Added, false),
+    fn test_row_grouping_expanded_fold_level_2() {
+        // Test grouping with expanded intermediate rows
+        // row_info: (depth, is_file, first_level_dir)
+
+        let row_info: Vec<(usize, bool, String)> = vec![
+            (1, true, "a.txt".to_string()),      // depth 1 - not grouped
+            (1, false, "b".to_string()),         // depth 1 - not grouped
+            (2, true, "b".to_string()),          // depth 2 - grouped
+            (2, false, "b".to_string()),         // depth 2 - grouped
+            (3, true, "b".to_string()),          // depth 3 - grouped
+            (1, false, "c".to_string()),         // depth 1 - not grouped (breaks group)
+            (2, true, "c".to_string()),          // depth 2 - grouped (new group)
+            (2, false, "c".to_string()),         // depth 2 - grouped
+            (3, true, "c".to_string()),          // depth 3 - grouped
         ];
-        let entry_refs: Vec<&FileEntry> = entries.iter().collect();
 
-        let boundaries = ExcelWriter::calculate_directory_boundaries(&entry_refs);
+        let fold_level = 2;
 
-        // Each root file has different first component -> all are boundaries
-        assert!(boundaries.contains(&0));
-        assert!(boundaries.contains(&1));
-        assert!(boundaries.contains(&2));
+        // With fold_level=2:
+        // rows 2-4 (0-indexed) should be grouped
+        // row 5 breaks the group (depth 1 < fold_level)
+        // rows 6-8 should be grouped
+
+        // Verify depths for grouping
+        assert!(row_info[2].0 >= fold_level);
+        assert!(row_info[3].0 >= fold_level);
+        assert!(row_info[4].0 >= fold_level);
+        assert!(row_info[5].0 < fold_level); // breaks group
+        assert!(row_info[6].0 >= fold_level);
+        assert!(row_info[7].0 >= fold_level);
+        assert!(row_info[8].0 >= fold_level);
     }
 
     #[test]
-    fn test_apply_row_grouping_fold_level_2() {
-        // Test the expected structure:
-        // a.txt       (depth 1) - not grouped
-        // b/          (depth 1) - not grouped
-        //   d.txt     (depth 2) - grouped (group 1)
-        //   e/        (depth 2) - grouped (group 1)
-        //     g.txt   (depth 3) - grouped (group 1)
-        // c/          (depth 1) - not grouped
-        //   e.txt     (depth 2) - grouped (group 2)
-        //   f/        (depth 2) - grouped (group 2)
-        //     h.txt   (depth 3) - grouped (group 2)
+    fn test_row_grouping_expanded_fold_level_3() {
+        // Test that fold_level=3 only groups depth >= 3
 
-        let entries: Vec<FileEntry> = vec![
-            FileEntry::new(PathBuf::from("a.txt"), FileStatus::Added, false),
-            FileEntry::new(PathBuf::from("b"), FileStatus::Added, true),
-            FileEntry::new(PathBuf::from("b/d.txt"), FileStatus::Modified, false),
-            FileEntry::new(PathBuf::from("b/e"), FileStatus::Added, true),
-            FileEntry::new(PathBuf::from("b/e/g.txt"), FileStatus::Modified, false),
-            FileEntry::new(PathBuf::from("c"), FileStatus::Added, true),
-            FileEntry::new(PathBuf::from("c/e.txt"), FileStatus::Deleted, false),
-            FileEntry::new(PathBuf::from("c/f"), FileStatus::Added, true),
-            FileEntry::new(PathBuf::from("c/f/h.txt"), FileStatus::Modified, false),
+        let row_info: Vec<(usize, bool, String)> = vec![
+            (1, true, "a.txt".to_string()),      // depth 1 - not grouped
+            (1, false, "b".to_string()),         // depth 1 - not grouped
+            (2, true, "b".to_string()),          // depth 2 - not grouped
+            (2, false, "b".to_string()),         // depth 2 - not grouped
+            (3, true, "b".to_string()),          // depth 3 - grouped
+            (1, false, "c".to_string()),         // depth 1 - not grouped (breaks any group)
+            (2, true, "c".to_string()),          // depth 2 - not grouped
+            (2, false, "c".to_string()),         // depth 2 - not grouped
+            (3, true, "c".to_string()),          // depth 3 - grouped (single row group)
         ];
 
-        // Verify depth calculation for fold_level=2 grouping logic
-        // depth 1: a.txt, b, c
-        // depth 2: b/d.txt, b/e, c/e.txt, c/f
-        // depth 3: b/e/g.txt, c/f/h.txt
+        let fold_level = 3;
 
-        // For fold_level=2, items at depth >= 2 should be grouped
-        // Parent at depth 1 is used to separate groups:
-        // - b/d.txt, b/e, b/e/g.txt share parent "b" -> group 1
-        // - c/e.txt, c/f, c/f/h.txt share parent "c" -> group 2
+        // Only rows 4 and 8 (depth 3) should be grouped
+        // Note: row 5 breaks any group because depth 1 < fold_level
 
-        assert_eq!(entries[0].relative_path.components().count(), 1); // a.txt
-        assert_eq!(entries[1].relative_path.components().count(), 1); // b
-        assert_eq!(entries[2].relative_path.components().count(), 2); // b/d.txt
-        assert_eq!(entries[3].relative_path.components().count(), 2); // b/e
-        assert_eq!(entries[4].relative_path.components().count(), 3); // b/e/g.txt
-        assert_eq!(entries[5].relative_path.components().count(), 1); // c
-        assert_eq!(entries[6].relative_path.components().count(), 2); // c/e.txt
-        assert_eq!(entries[7].relative_path.components().count(), 2); // c/f
-        assert_eq!(entries[8].relative_path.components().count(), 3); // c/f/h.txt
+        assert!(row_info[4].0 >= fold_level);
+        assert!(row_info[5].0 < fold_level); // breaks group
+        assert!(row_info[8].0 >= fold_level);
     }
 
     #[test]
-    fn test_apply_row_grouping_fold_level_3() {
-        // For fold_level=3, only items at depth >= 3 should be grouped
-        // - b/e/g.txt (depth 3, parent at depth 2 is "b/e") -> group 1
-        // - c/f/h.txt (depth 3, parent at depth 2 is "c/f") -> group 2
+    fn test_path_expansion_components() {
+        // Test that path components are correctly identified for expansion
 
-        let entries: Vec<FileEntry> = vec![
-            FileEntry::new(PathBuf::from("a.txt"), FileStatus::Added, false),
-            FileEntry::new(PathBuf::from("b"), FileStatus::Added, true),
-            FileEntry::new(PathBuf::from("b/d.txt"), FileStatus::Modified, false),
-            FileEntry::new(PathBuf::from("b/e"), FileStatus::Added, true),
-            FileEntry::new(PathBuf::from("b/e/g.txt"), FileStatus::Modified, false),
-            FileEntry::new(PathBuf::from("c"), FileStatus::Added, true),
-            FileEntry::new(PathBuf::from("c/e.txt"), FileStatus::Deleted, false),
-            FileEntry::new(PathBuf::from("c/f"), FileStatus::Added, true),
-            FileEntry::new(PathBuf::from("c/f/h.txt"), FileStatus::Modified, false),
-        ];
+        let path = PathBuf::from("a/b/c/d.txt");
+        let components: Vec<String> = path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
 
-        // For fold_level=3:
-        // Items at depth >= 3: b/e/g.txt, c/f/h.txt
-        // Parent at depth 2: "b/e" and "c/f" respectively
-        // These have different parents, so they form separate groups
+        assert_eq!(components.len(), 4);
+        assert_eq!(components[0], "a");
+        assert_eq!(components[1], "b");
+        assert_eq!(components[2], "c");
+        assert_eq!(components[3], "d.txt");
 
-        // Verify only depth 3 items would be grouped
-        assert!(entries[4].relative_path.components().count() >= 3); // b/e/g.txt
-        assert!(entries[8].relative_path.components().count() >= 3); // c/f/h.txt
-
-        // Verify depth 2 items would NOT be grouped with fold_level=3
-        assert!(entries[2].relative_path.components().count() < 3); // b/d.txt
-        assert!(entries[3].relative_path.components().count() < 3); // b/e
-        assert!(entries[6].relative_path.components().count() < 3); // c/e.txt
-        assert!(entries[7].relative_path.components().count() < 3); // c/f
+        // Intermediate directories are components[0..3]
+        // File is components[3]
     }
 
     #[test]

@@ -380,6 +380,17 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 | FTREE-004 | test_excel_directory_boundaries | ディレクトリ境界検出 | 第1階層変更時に境界あり | 正常系 |
 | FTREE-005 | test_excel_file_tree_empty_cells_for_repeated_values | 同一ディレクトリ内ファイルの空セル | src/配下の2番目以降はsrc/セルが空 | 正常系 |
 
+### Section 24: パス展開テスト（path_expansion_tests）
+
+深いディレクトリパスが最初に出現した場合、中間ディレクトリを個別行に展開する機能のテスト。
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| PEXP-001 | test_excel_path_expansion_deep_path | 深いパスの展開確認 | a/b/c/d/e/f.txtが正しく列に配置される | 正常系 |
+| PEXP-002 | test_excel_fold_level_with_expanded_paths | 展開パスでのfold-level動作 | fold-level 2で深いパスが正しくグループ化 | 正常系 |
+| PEXP-003 | test_excel_intermediate_dirs_empty_status | 中間ディレクトリ行の空Status | 中間ディレクトリ行はStatusが空 | 正常系 |
+| PEXP-004 | test_excel_shared_intermediate_dirs | 共有中間ディレクトリ | 同一ディレクトリ内の複数ファイルで中間行を共有 | 正常系 |
+
 ---
 
 ## 終了コード一覧
@@ -456,3 +467,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-09 | 1.7 | Filter statusオプション表示テスト追加（SummaryとExcelのOptionsセクション） |
 | 2026-01-09 | 1.8 | Filter status表示・File Tree構造・fold-level不具合修正テスト追加 |
 | 2026-01-09 | 1.9 | File Treeセル構造・fold-level改善テスト追加（セル重複省略、ディレクトリ単位グループ化、境界罫線） |
+| 2026-01-09 | 2.0 | パス展開テスト追加（深いパスの中間ディレクトリを個別行に展開する機能） |
