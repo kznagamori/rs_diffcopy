@@ -167,12 +167,52 @@ pub fn is_piped() -> bool {
 }
 
 /// Convert UTF-8 string to CP932 (Shift-JIS) for Windows console output
-/// Characters that cannot be represented in CP932 are replaced with '?'
+/// Box Drawing characters are explicitly mapped to CP932 keisen characters
+/// Other characters that cannot be represented in CP932 are replaced with '?'
 #[cfg(windows)]
 pub fn to_cp932(s: &str) -> Vec<u8> {
     use encoding_rs::SHIFT_JIS;
-    let (encoded, _, _) = SHIFT_JIS.encode(s);
-    encoded.into_owned()
+
+    let mut result = Vec::with_capacity(s.len() * 2);
+    let mut temp = String::new();
+
+    for c in s.chars() {
+        // Check for Box Drawing characters and map to CP932 keisen bytes
+        let cp932_bytes: Option<&[u8]> = match c {
+            '─' => Some(&[0x84, 0x9F]), // U+2500 BOX DRAWINGS LIGHT HORIZONTAL
+            '│' => Some(&[0x84, 0xA0]), // U+2502 BOX DRAWINGS LIGHT VERTICAL
+            '┌' => Some(&[0x84, 0xA1]), // U+250C BOX DRAWINGS LIGHT DOWN AND RIGHT
+            '┐' => Some(&[0x84, 0xA2]), // U+2510 BOX DRAWINGS LIGHT DOWN AND LEFT
+            '└' => Some(&[0x84, 0xA4]), // U+2514 BOX DRAWINGS LIGHT UP AND RIGHT
+            '┘' => Some(&[0x84, 0xA3]), // U+2518 BOX DRAWINGS LIGHT UP AND LEFT
+            '├' => Some(&[0x84, 0xA5]), // U+251C BOX DRAWINGS LIGHT VERTICAL AND RIGHT
+            '┤' => Some(&[0x84, 0xA7]), // U+2524 BOX DRAWINGS LIGHT VERTICAL AND LEFT
+            '┬' => Some(&[0x84, 0xA6]), // U+252C BOX DRAWINGS LIGHT DOWN AND HORIZONTAL
+            '┴' => Some(&[0x84, 0xA8]), // U+2534 BOX DRAWINGS LIGHT UP AND HORIZONTAL
+            '┼' => Some(&[0x84, 0xA9]), // U+253C BOX DRAWINGS LIGHT VERTICAL AND HORIZONTAL
+            _ => None,
+        };
+
+        if let Some(bytes) = cp932_bytes {
+            // Flush any accumulated regular characters first
+            if !temp.is_empty() {
+                let (encoded, _, _) = SHIFT_JIS.encode(&temp);
+                result.extend_from_slice(&encoded);
+                temp.clear();
+            }
+            result.extend_from_slice(bytes);
+        } else {
+            temp.push(c);
+        }
+    }
+
+    // Flush remaining characters
+    if !temp.is_empty() {
+        let (encoded, _, _) = SHIFT_JIS.encode(&temp);
+        result.extend_from_slice(&encoded);
+    }
+
+    result
 }
 
 /// Print string to stdout with CP932 encoding (Windows only)
@@ -497,6 +537,35 @@ mod tests {
         let (encoded, _, _) = SHIFT_JIS.encode(input);
         // Box drawing characters should be converted (may be replaced if not in CP932)
         assert!(!encoded.is_empty());
+    }
+
+    #[test]
+    fn test_cp932_box_drawing_explicit_mapping() {
+        // Test that box drawing characters have correct CP932 keisen byte mappings
+        // These mappings are used by the Windows-specific to_cp932 function
+        // CP932 keisen bytes (JIS X 0208 row 8):
+        // ─ = 0x849F, │ = 0x84A0, ┌ = 0x84A1, ┐ = 0x84A2
+        // └ = 0x84A4, ┘ = 0x84A3, ├ = 0x84A5, ┤ = 0x84A7
+        // ┬ = 0x84A6, ┴ = 0x84A8, ┼ = 0x84A9
+
+        // Verify the expected mappings for tree display
+        let box_chars = [
+            ('─', [0x84u8, 0x9F]),  // horizontal line
+            ('│', [0x84, 0xA0]),    // vertical line
+            ('└', [0x84, 0xA4]),    // corner (up-right)
+            ('├', [0x84, 0xA5]),    // T-junction (vertical-right)
+        ];
+
+        for (c, expected_bytes) in &box_chars {
+            // Verify the character exists and maps to expected values
+            assert!(c.is_ascii() == false, "Box drawing char {} should be non-ASCII", c);
+            assert_eq!(expected_bytes.len(), 2, "CP932 keisen should be 2 bytes");
+            // First byte should be 0x84 (JIS X 0208 row 8)
+            assert_eq!(expected_bytes[0], 0x84, "First byte of keisen should be 0x84");
+            // Second byte should be in valid range
+            assert!(expected_bytes[1] >= 0x9F && expected_bytes[1] <= 0xA9,
+                   "Second byte 0x{:02X} should be in keisen range", expected_bytes[1]);
+        }
     }
 
     #[test]

@@ -547,6 +547,55 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 | IT-3104 | test_three_way_japanese_console_output | 三者間日本語出力 | 三者間比較で日本語パスがクラッシュしない | 正常系 |
 | IT-3105 | test_verbose_mode_japanese_filenames | 冗長モード日本語ファイル名 | -vオプション付きで日本語ファイル名がクラッシュしない | 正常系 |
 | IT-3106 | test_error_message_japanese_path | 日本語パスエラーメッセージ | 存在しない日本語パスのエラーメッセージが出力される | 準正常系 |
+| IT-3107 | test_console_box_drawing_no_crash | コンソールBox Drawing文字出力 | ネストしたディレクトリ構造でBox Drawing文字がクラッシュしない | 正常系 |
+| IT-3108 | test_japanese_and_box_drawing_combined | 日本語とBox Drawing文字併用 | 日本語ファイル名とTree表示でクラッシュしない | 正常系 |
+
+---
+
+### Section 32: CompareDirectoryルートノード表示テスト（tree_display_tests内）
+
+**背景**: 以下の機能を検証
+1. 二者間比較のFile TreeでルートノードがCompareDirectory{source, target}形式で表示されること
+2. 三者間比較のFile TreeでルートノードがCompareDirectory{base, ours, theirs}形式で表示されること
+3. ディレクトリ名はフルパスではなくbasename（最後の部分）のみ使用すること
+
+**修正内容**:
+1. `summary.rs`: `generate_file_tree()`でCompareDirectory{source, target}をルートノードとして表示
+2. `three_way_summary.rs`: `generate_file_tree()`でCompareDirectory{base, ours, theirs}をルートノードとして表示
+3. 従来の`.`ルートノードからCompareDirectory形式に変更
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| IT-3201 | test_two_way_compare_directory_root_node | 二者間CompareDirectoryルート | コンソールとSummaryファイルに`CompareDirectory{old_version, new_version}`が表示される | 正常系 |
+| IT-3202 | test_three_way_compare_directory_root_node | 三者間CompareDirectoryルート | コンソールとSummaryファイルに`CompareDirectory{base_ver, ours_ver, theirs_ver}`が表示される | 正常系 |
+| IT-3203 | test_compare_directory_uses_basename | basenameのみ使用確認 | 深いパスでもCompareDirectory行にはbasenameのみ含まれる | 正常系 |
+
+---
+
+### Section 33: CP932 Box Drawing文字エンコーディングテスト
+
+**背景**: 以下の機能を検証
+1. Windows版でBox Drawing文字（├, └, │, ─）がCP932の罫線バイトに正しく変換されること
+2. encoding_rsのデフォルト変換ではなく、明示的なCP932罫線バイトマッピングを使用すること
+3. Box Drawing文字以外は従来通りencoding_rsでエンコードされること
+
+**修正内容**:
+1. `utils.rs`: `to_cp932()`関数でBox Drawing文字を明示的にCP932罫線バイトにマッピング
+   - ─ (U+2500) → 0x84 0x9F
+   - │ (U+2502) → 0x84 0xA0
+   - ┌ (U+250C) → 0x84 0xA1
+   - ┐ (U+2510) → 0x84 0xA2
+   - └ (U+2514) → 0x84 0xA4
+   - ┘ (U+2518) → 0x84 0xA3
+   - ├ (U+251C) → 0x84 0xA5
+   - ┤ (U+2524) → 0x84 0xA7
+   - ┬ (U+252C) → 0x84 0xA6
+   - ┴ (U+2534) → 0x84 0xA8
+   - ┼ (U+253C) → 0x84 0xA9
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| UT-3301 | test_cp932_box_drawing_explicit_mapping | CP932罫線マッピング確認 | Box Drawing文字が正しいCP932バイトにマッピングされる | 正常系 |
 
 ---
 
@@ -631,3 +680,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-13 | 2.4 | データセルには外枠罫線適用テスト追加 |
 | 2026-01-13 | 2.5 | Tree表示クロスプラットフォームテスト追加（Windowsパス区切り文字対応） |
 | 2026-01-13 | 2.6 | CP932コンソール出力テスト追加（Windows版コンソール出力のCP932エンコーディング対応） |
+| 2026-01-13 | 2.7 | CompareDirectoryルートノード表示テスト追加、CP932罫線明示マッピングテスト追加 |

@@ -854,7 +854,7 @@ Total:        71 items
 ================
 File Tree
 ================
-.
+CompareDirectory{source, target}
 ├── src/
 │   ├── main.rs [modified]
 │   ├── new_feature.rs [added]
@@ -1004,13 +1004,15 @@ No differences found.
 
 #### 二者間比較のFile Tree形式
 
+**ルートノード表示**: `CompareDirectory{<SourceDirBaseName>, <TargetDirBaseName>}` 形式で比較対象ディレクトリを表示
+
 **コンソール出力**: コンパクト形式（パス直後にステータス表示）
 
 ```
 ================
 File Tree
 ================
-.
+CompareDirectory{old_version, new_version}
 ├── file1.txt [modified]
 ├── subdir/
 │   ├── added.txt [added]
@@ -1025,7 +1027,7 @@ File Tree
 ================
 File Tree
 ================
-.
+CompareDirectory{old_version, new_version}
 ├── file1.txt                        [modified]
 ├── subdir/
 │   ├── added.txt                    [added]
@@ -1043,6 +1045,8 @@ File Tree
 
 三者間比較でもツリー形式を使用し、[Base|Ours|Theirs]のインジケータを付加します。
 
+**ルートノード表示**: `CompareDirectory{<BaseDirBaseName>, <SourceDirBaseName>, <TargetDirBaseName>}` 形式で比較対象ディレクトリを表示
+
 **コンソール出力**: コンパクト形式（`[○M=]`のように詰めて表示）
 
 ```
@@ -1050,7 +1054,7 @@ File Tree
 File Tree
 ================
 Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
-.
+CompareDirectory{base, ours, theirs}
 ├── file1.txt [○M=] ours-only
 ├── new_ours.txt [-A-] added-ours
 ├── subdir/
@@ -1066,7 +1070,7 @@ File Tree
 ================
 Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
                                      B  O  T
-.
+CompareDirectory{base, ours, theirs}
 ├── file1.txt                      [○  M  =] ours-only
 ├── new_ours.txt                   [-  A  -] added-ours
 ├── subdir/
@@ -1401,7 +1405,7 @@ Showing:      13 items (filtered)
 ================
 File Tree (filtered)
 ================
-.
+CompareDirectory{source, target}
 └── src/
     ├── main.rs [modified]
     └── new_feature.rs [added]
@@ -1719,7 +1723,7 @@ Conflicts       |    4
 File Tree
 ================
 Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
-.
+CompareDirectory{base, ours, theirs}
 ├── file1.txt [○M=] ours-only
 ├── new_ours.txt [-A-] added-ours
 ├── handler.rs [○MM] CONFLICT
@@ -1739,7 +1743,7 @@ File Tree
 ================
 Legend: [Base|Ours|Theirs] ○=exists -=missing ==same M=modified A=added D=deleted
                                      B  O  T
-.
+CompareDirectory{base, ours, theirs}
 ├── file1.txt                      [○  M  =] ours-only
 ├── new_ours.txt                   [-  A  -] added-ours
 ├── handler.rs                     [○  M  M] CONFLICT

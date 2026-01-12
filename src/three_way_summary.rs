@@ -200,7 +200,18 @@ impl<'a> ThreeWaySummaryWriter<'a> {
             output.push_str(&format!("{:width$}B  O  T\n", "", width = header_padding));
         }
 
-        output.push_str(".\n");
+        // Generate CompareDirectory root node with directory base names
+        let base_name = self.config.base.as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "base".to_string());
+        let ours_name = self.config.source.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "ours".to_string());
+        let theirs_name = self.config.target.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "theirs".to_string());
+        output.push_str(&format!("CompareDirectory{{{}, {}, {}}}\n", base_name, ours_name, theirs_name));
 
         // Render tree with max_width
         output.push_str(&self.render_tree(&tree, "", true, for_console, max_width));

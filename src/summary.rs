@@ -417,7 +417,15 @@ impl<'a> SummaryWriter<'a> {
         };
 
         output.push_str(&format!("================\n{}\n================\n", header));
-        output.push_str(".\n");
+
+        // Generate CompareDirectory root node with directory base names
+        let source_name = self.config.source.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "source".to_string());
+        let target_name = self.config.target.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "target".to_string());
+        output.push_str(&format!("CompareDirectory{{{}, {}}}\n", source_name, target_name));
 
         // Build tree structure
         let tree = self.build_tree(entries);

@@ -6669,6 +6669,117 @@ mod tree_display_tests {
         let has_tree_chars = summary_content.contains("├── ") || summary_content.contains("└── ");
         assert!(has_tree_chars, "Summary should contain tree connector patterns");
     }
+
+    /// Test that two-way comparison shows CompareDirectory root node
+    #[test]
+    fn test_two_way_compare_directory_root_node() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("old_version");
+        let target = dir.path().join("new_version");
+        let output = dir.path().join("output");
+        let summary_path = dir.path().join("summary.txt");
+
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("file.txt"), "old").unwrap();
+        fs::write(target.join("file.txt"), "new").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success());
+
+        // Check console output
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("CompareDirectory{old_version, new_version}"),
+            "Console output should contain CompareDirectory root node with directory names, got:\n{}", stdout);
+
+        // Check summary file
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+        assert!(summary_content.contains("CompareDirectory{old_version, new_version}"),
+            "Summary file should contain CompareDirectory root node, got:\n{}", summary_content);
+    }
+
+    /// Test that three-way comparison shows CompareDirectory root node with base, ours, theirs
+    #[test]
+    fn test_three_way_compare_directory_root_node() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join("base_ver");
+        let ours = dir.path().join("ours_ver");
+        let theirs = dir.path().join("theirs_ver");
+        let output = dir.path().join("output");
+        let summary_path = dir.path().join("summary.txt");
+
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&ours).unwrap();
+        fs::create_dir_all(&theirs).unwrap();
+
+        fs::write(base.join("file.txt"), "base").unwrap();
+        fs::write(ours.join("file.txt"), "ours modified").unwrap();
+        fs::write(theirs.join("file.txt"), "base").unwrap();
+
+        let result = run_diffcopy(&[
+            "-3",
+            "-B", base.to_str().unwrap(),
+            "-S", ours.to_str().unwrap(),
+            "-T", theirs.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success());
+
+        // Check console output
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("CompareDirectory{base_ver, ours_ver, theirs_ver}"),
+            "Console output should contain CompareDirectory root node with base, ours, theirs names, got:\n{}", stdout);
+
+        // Check summary file
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+        assert!(summary_content.contains("CompareDirectory{base_ver, ours_ver, theirs_ver}"),
+            "Summary file should contain CompareDirectory root node, got:\n{}", summary_content);
+    }
+
+    /// Test CompareDirectory with absolute paths (uses basename)
+    #[test]
+    fn test_compare_directory_uses_basename() {
+        let dir = tempdir().unwrap();
+        let deep_source = dir.path().join("very/deep/path/source_dir");
+        let deep_target = dir.path().join("another/deep/path/target_dir");
+        let output = dir.path().join("output");
+
+        fs::create_dir_all(&deep_source).unwrap();
+        fs::create_dir_all(&deep_target).unwrap();
+        fs::write(deep_source.join("test.txt"), "content").unwrap();
+        fs::write(deep_target.join("test.txt"), "modified").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", deep_source.to_str().unwrap(),
+            "-T", deep_target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success());
+
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        // Should only contain basenames in CompareDirectory, not full paths
+        assert!(stdout.contains("CompareDirectory{source_dir, target_dir}"),
+            "CompareDirectory should use basename only, not full path, got:\n{}", stdout);
+        // The CompareDirectory line itself should not contain the full path
+        // (Note: Source/Target headers will contain full paths, which is expected)
+        let compare_dir_line = stdout.lines()
+            .find(|line| line.contains("CompareDirectory"))
+            .unwrap_or("");
+        assert!(!compare_dir_line.contains("very/deep/path") && !compare_dir_line.contains("another/deep/path"),
+            "CompareDirectory line should not contain full path components, got: {}", compare_dir_line);
+    }
 }
 
 
@@ -6823,6 +6934,75 @@ mod cp932_output_tests {
         // Error message should be output (not crash)
         let stderr = String::from_utf8_lossy(&result.stderr);
         assert!(!stderr.is_empty(), "Should have error message in stderr");
+    }
+
+    /// Test console output with Box Drawing characters (tree display) does not crash
+    /// This is especially important for Windows CP932 console output
+    #[test]
+    fn test_console_box_drawing_no_crash() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create nested structure to ensure tree connectors are used
+        fs::create_dir_all(target.join("dir1/subdir1")).unwrap();
+        fs::create_dir_all(target.join("dir1/subdir2")).unwrap();
+        fs::create_dir_all(target.join("dir2")).unwrap();
+        fs::write(target.join("dir1/file1.txt"), "content1").unwrap();
+        fs::write(target.join("dir1/subdir1/nested.txt"), "nested").unwrap();
+        fs::write(target.join("dir1/subdir2/deep.txt"), "deep").unwrap();
+        fs::write(target.join("dir2/file2.txt"), "content2").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        // Should complete successfully without crashing
+        assert!(result.status.success(),
+            "Command should succeed. Exit code: {:?}\nStderr: {}",
+            result.status.code(),
+            String::from_utf8_lossy(&result.stderr));
+
+        // Verify console output contains tree structure
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("File Tree"),
+            "Output should contain File Tree section");
+        // Should contain some file names
+        assert!(stdout.contains("file1.txt") || stdout.contains("file2.txt"),
+            "Output should contain file names");
+    }
+
+    /// Test console output with Japanese content and Box Drawing characters combined
+    #[test]
+    fn test_japanese_and_box_drawing_combined() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create structure with Japanese names in nested directories
+        fs::create_dir_all(target.join("日本語ディレクトリ/サブディレクトリ")).unwrap();
+        fs::write(target.join("日本語ディレクトリ/ファイル.txt"), "内容").unwrap();
+        fs::write(target.join("日本語ディレクトリ/サブディレクトリ/深いファイル.txt"), "深い内容").unwrap();
+        fs::write(target.join("通常.txt"), "普通").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        // Should complete successfully without crashing
+        assert!(result.status.success(),
+            "Command should succeed with Japanese paths and tree display. Exit code: {:?}\nStderr: {}",
+            result.status.code(),
+            String::from_utf8_lossy(&result.stderr));
+
+        // Verify console output is produced
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(!stdout.is_empty(), "Should have console output");
+        assert!(stdout.contains("File Tree"), "Output should contain File Tree section");
     }
 }
 

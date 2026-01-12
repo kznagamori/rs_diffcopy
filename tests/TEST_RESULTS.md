@@ -5,7 +5,7 @@
 | 項目 | 内容 |
 |-----|------|
 | 実施日 | 2026-01-13 |
-| 実施時刻 | 12:15 JST |
+| 実施時刻 | 15:30 JST |
 | 実行環境 | Linux (WSL2) |
 | Rustバージョン | stable |
 | 結果 | **全テストPASS** |
@@ -14,9 +14,9 @@
 
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
-| ユニットテスト | 129 | 129 | 0 | 0 |
-| 結合テスト | 194 | 194 | 0 | 0 |
-| **合計** | **323** | **323** | **0** | **0** |
+| ユニットテスト | 130 | 130 | 0 | 0 |
+| 結合テスト | 199 | 199 | 0 | 0 |
+| **合計** | **329** | **329** | **0** | **0** |
 
 ---
 
@@ -491,6 +491,7 @@
 | 2026-01-13 | 00:46 | 119/119 | 183/183 | PASS | Section 26に3テスト追加（test_three_way_summary_basic_info_section, test_three_way_conflicts_data_cells, test_three_way_copied_files_data_cells） |
 | 2026-01-13 | 02:30 | 122/122 | 188/188 | PASS | ユニットテスト3件追加（summary, types）、結合テスト5件追加（tree_display, three_way_excel_format） |
 | 2026-01-13 | 12:15 | 129/129 | 194/194 | PASS | ユニットテスト7件追加（types, copier）、結合テスト6件追加（CP932コンソール出力テスト） |
+| 2026-01-13 | 15:30 | 130/130 | 199/199 | PASS | CompareDirectoryルートノード表示テスト3件、CP932 Box Drawing文字テスト2件追加 |
 
 ---
 
@@ -775,6 +776,22 @@ cargo test 2>&1 | tee test_output.txt
 | IT-3104 | test_three_way_japanese_console_output | PASS | 三者間比較での日本語コンソール出力がクラッシュしないことを確認 |
 | IT-3105 | test_verbose_mode_japanese_filenames | PASS | verboseモードで日本語ファイル名が正常に出力されることを確認 |
 | IT-3106 | test_error_message_japanese_path | PASS | 日本語パスを含むエラーメッセージが正常に出力されることを確認 |
+
+### 32. CompareDirectoryルートノード表示テスト (3テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| IT-3201 | test_compare_directory_root_two_way | PASS | 二者間比較でCompareDirectory{source, target}形式で表示されることを確認 |
+| IT-3202 | test_compare_directory_root_three_way | PASS | 三者間比較でCompareDirectory{base, ours, theirs}形式で表示されることを確認 |
+| IT-3203 | test_compare_directory_uses_basename | PASS | 深いパスでもディレクトリ名のみ（basenamePath）が使用されることを確認 |
+
+### 33. CP932 Box Drawing文字エンコーディングテスト (3テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| UT-3301 | test_cp932_conversion_box_drawing | PASS | Box Drawing文字がJIS X 0208罫線バイト（0x84XX）に正しく変換されることを確認 |
+| IT-3301 | test_cp932_box_drawing_encoding | PASS | Box Drawing文字（├, └, │, ─）がCP932で正しくエンコードされることを確認 |
+| IT-3302 | test_cp932_mixed_box_drawing_and_text | PASS | Box Drawing文字と日本語テキストの混合がCP932で正しく処理されることを確認 |
 
 ## パス展開機能の不具合修正
 
