@@ -10,7 +10,7 @@ use crate::types::{
     ColorMode, ComparisonResult, ComparisonStats, FileEntry, FileStatus, PatchResult,
     PermissionChange, SpecialFileType, StatusFilter,
 };
-use crate::utils::{display_width, is_terminal};
+use crate::utils::{display_width, is_terminal, println_cp932};
 
 /// Format StatusFilter for display in Options section
 fn format_filter_status(filter: &StatusFilter) -> String {
@@ -60,9 +60,9 @@ impl<'a> SummaryWriter<'a> {
 
     /// Write summary to console and optionally to file
     pub fn write(&self, result: &ComparisonResult) -> crate::error::Result<()> {
-        // Write to console
+        // Write to console (Windows: CP932, others: UTF-8)
         let console_output = self.generate_summary(result, true);
-        println!("{}", console_output);
+        println_cp932(&console_output);
 
         // Write to file if specified
         if let Some(ref summary_path) = self.config.summary {
@@ -498,10 +498,11 @@ impl<'a> SummaryWriter<'a> {
             .collect();
 
         for entry in filtered_entries {
-            let path_str = entry.relative_path.to_string_lossy().to_string();
-            let parts: Vec<&str> = path_str
-                .split('/')
-                .filter(|s| !s.is_empty())
+            // Use components() for cross-platform path handling (works with both / and \)
+            let parts: Vec<String> = entry
+                .relative_path
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
                 .collect();
 
             self.insert_into_tree(&mut root, &parts, entry);
@@ -513,14 +514,14 @@ impl<'a> SummaryWriter<'a> {
     fn insert_into_tree(
         &self,
         tree: &mut BTreeMap<String, TreeNode>,
-        parts: &[&str],
+        parts: &[String],
         entry: &FileEntry,
     ) {
         if parts.is_empty() {
             return;
         }
 
-        let name = parts[0].to_string();
+        let name = parts[0].clone();
         let remaining = &parts[1..];
 
         let node = tree.entry(name.clone()).or_insert_with(|| TreeNode {
@@ -950,4 +951,63 @@ struct TreeNode {
     name: String,
     entry: Option<FileEntry>,
     children: BTreeMap<String, TreeNode>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    /// Test that path components are correctly extracted using Path::components()
+    /// This ensures cross-platform compatibility (works with both / and \ separators)
+    #[test]
+    fn test_path_components_extraction() {
+        // Test forward slash path (Unix-style)
+        let path = PathBuf::from("dir1/dir2/file.txt");
+        let parts: Vec<String> = path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(parts, vec!["dir1", "dir2", "file.txt"]);
+
+        // Test single level path
+        let path = PathBuf::from("file.txt");
+        let parts: Vec<String> = path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(parts, vec!["file.txt"]);
+
+        // Test deep nested path
+        let path = PathBuf::from("a/b/c/d/e/f.txt");
+        let parts: Vec<String> = path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(parts, vec!["a", "b", "c", "d", "e", "f.txt"]);
+    }
+
+    /// Test that paths with Japanese characters are correctly processed
+    #[test]
+    fn test_path_components_japanese() {
+        let path = PathBuf::from("日本語/ディレクトリ/ファイル.txt");
+        let parts: Vec<String> = path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(parts, vec!["日本語", "ディレクトリ", "ファイル.txt"]);
+    }
+
+    /// Test that empty path components are handled correctly
+    #[test]
+    fn test_path_components_normalized() {
+        // Path::components() normalizes paths and removes empty components
+        let path = PathBuf::from("dir1//dir2/file.txt");
+        let parts: Vec<String> = path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
+        // Note: On Unix, // is normalized to /, so we get normal components
+        assert!(parts.contains(&"dir1".to_string()));
+        assert!(parts.contains(&"file.txt".to_string()));
+    }
 }

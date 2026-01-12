@@ -2,7 +2,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::utils::is_piped;
+use crate::utils::{eprintln_cp932, is_piped};
 
 /// Progress display manager
 pub struct ProgressManager {
@@ -41,7 +41,7 @@ impl ProgressManager {
     /// Finish scanning phase
     pub fn finish_scanning(&self, count: usize) {
         if self.enabled {
-            eprintln!("Found {} items.", count);
+            eprintln_cp932(&format!("Found {} items.", count));
         }
     }
 
@@ -55,7 +55,7 @@ impl ProgressManager {
     /// Finish comparing phase
     pub fn finish_comparing(&self, count: usize) {
         if self.enabled {
-            eprintln!("Compared {} items.", count);
+            eprintln_cp932(&format!("Compared {} items.", count));
         }
     }
 
@@ -69,7 +69,7 @@ impl ProgressManager {
     /// Finish copying phase
     pub fn finish_copying(&self, count: usize) {
         if self.enabled {
-            eprintln!("Copied {} files.", count);
+            eprintln_cp932(&format!("Copied {} files.", count));
         }
     }
 
@@ -83,7 +83,7 @@ impl ProgressManager {
     /// Finish patch generation phase
     pub fn finish_patching(&self, count: usize) {
         if self.enabled {
-            eprintln!("Generated {} patches.", count);
+            eprintln_cp932(&format!("Generated {} patches.", count));
         }
     }
 
@@ -97,7 +97,7 @@ impl ProgressManager {
     /// Finish summary phase
     pub fn finish_summary(&self) {
         if self.enabled {
-            eprintln!("Completed.");
+            eprintln_cp932("Completed.");
         }
     }
 
@@ -162,7 +162,7 @@ impl ProgressPhase {
             if let Some(ref pb) = self.bar {
                 pb.set_message(msg.to_string());
             } else {
-                eprintln!("  {}", msg);
+                eprintln_cp932(&format!("  {}", msg));
             }
         }
     }

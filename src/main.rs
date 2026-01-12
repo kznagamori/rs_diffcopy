@@ -32,50 +32,11 @@ use three_way::ThreeWayComparator;
 use three_way_excel::ThreeWayExcelWriter;
 use three_way_summary::ThreeWaySummaryWriter;
 
-/// Windows console codepage manager
-/// Sets console output codepage to UTF-8 (65001) on creation and restores on drop
-#[cfg(windows)]
-struct WindowsConsoleCodepage {
-    original_output_cp: u32,
-}
-
-#[cfg(windows)]
-impl WindowsConsoleCodepage {
-    fn new() -> Self {
-        use windows_sys::Win32::System::Console::{GetConsoleOutputCP, SetConsoleOutputCP};
-
-        let original_output_cp = unsafe { GetConsoleOutputCP() };
-
-        // Set output codepage to UTF-8 (65001)
-        unsafe {
-            SetConsoleOutputCP(65001);
-        }
-
-        Self { original_output_cp }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for WindowsConsoleCodepage {
-    fn drop(&mut self) {
-        use windows_sys::Win32::System::Console::SetConsoleOutputCP;
-
-        // Restore original codepage
-        unsafe {
-            SetConsoleOutputCP(self.original_output_cp);
-        }
-    }
-}
-
 fn main() -> ExitCode {
-    // Set Windows console to UTF-8 for proper Box Drawing character display
-    #[cfg(windows)]
-    let _codepage_guard = WindowsConsoleCodepage::new();
-
     match run() {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            utils::eprintln_cp932(&format!("Error: {}", e));
             ExitCode::from(1)
         }
     }
@@ -117,7 +78,7 @@ fn run() -> error::Result<ExitCode> {
                 message: e.to_string(),
             }
         })?;
-        eprintln!("Configuration saved to: {}", save_path.display());
+        utils::eprintln_cp932(&format!("Configuration saved to: {}", save_path.display()));
     }
 
     Ok(exit_code)

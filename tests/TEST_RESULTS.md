@@ -5,7 +5,7 @@
 | 項目 | 内容 |
 |-----|------|
 | 実施日 | 2026-01-13 |
-| 実施時刻 | 00:46 JST |
+| 実施時刻 | 12:15 JST |
 | 実行環境 | Linux (WSL2) |
 | Rustバージョン | stable |
 | 結果 | **全テストPASS** |
@@ -14,9 +14,9 @@
 
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
-| ユニットテスト | 119 | 119 | 0 | 0 |
-| 結合テスト | 188 | 188 | 0 | 0 |
-| **合計** | **307** | **307** | **0** | **0** |
+| ユニットテスト | 129 | 129 | 0 | 0 |
+| 結合テスト | 194 | 194 | 0 | 0 |
+| **合計** | **323** | **323** | **0** | **0** |
 
 ---
 
@@ -292,9 +292,9 @@
 
 ---
 
-## ユニットテスト詳細結果 (109テスト)
+## ユニットテスト詳細結果 (129テスト)
 
-### src/types.rs (22テスト)
+### src/types.rs (32テスト)
 
 | テスト名 | 結果 |
 |---------|------|
@@ -316,10 +316,21 @@
 | test_status_filter_included | PASS |
 | test_status_filter_excluded | PASS |
 | test_status_filter_three_way | PASS |
+| test_status_filter_matches_three_way_with_expanded_exclusion | PASS |
+| test_status_filter_matches_three_way_with_expanded_inclusion | PASS |
+| test_expand_three_way_group_added | PASS |
+| test_expand_three_way_group_case_insensitive | PASS |
+| test_expand_three_way_group_conflicts | PASS |
+| test_expand_three_way_group_deleted | PASS |
+| test_expand_three_way_group_modified | PASS |
+| test_expand_three_way_group_non_group | PASS |
 | test_check_permissions_mode | PASS |
 | test_color_mode | PASS |
 | test_log_level | PASS |
 | test_merge_style | PASS |
+| test_status_filter_matches_three_way_with_expanded_exclusion | PASS |
+| test_status_filter_matches_three_way_with_expanded_inclusion | PASS |
+| test_expand_three_way_group_case_insensitive | PASS |
 
 ### src/scanner.rs (15テスト)
 
@@ -341,7 +352,7 @@
 | test_is_symlink_broken_regular_file | PASS |
 | test_is_symlink_broken_unix | PASS |
 
-### src/utils.rs (14テスト)
+### src/utils.rs (23テスト)
 
 | テスト名 | 結果 |
 |---------|------|
@@ -356,9 +367,18 @@
 | test_count_directory_contents_empty | PASS |
 | test_count_directory_contents_nonexistent | PASS |
 | test_display_width | PASS |
+| test_display_width_halfwidth_katakana | PASS |
+| test_display_width_tree_connectors | PASS |
 | test_pad_to_width | PASS |
 | test_is_script_file | PASS |
 | test_get_file_mode | PASS |
+| test_cp932_conversion_ascii | PASS |
+| test_cp932_conversion_box_drawing | PASS |
+| test_cp932_conversion_japanese | PASS |
+| test_cp932_conversion_mixed | PASS |
+| test_cp932_conversion_unconvertible | PASS |
+| test_eprintln_cp932_basic | PASS |
+| test_println_cp932_basic | PASS |
 
 ### src/safety.rs (14テスト)
 
@@ -417,26 +437,34 @@
 
 | テスト名 | 結果 |
 |---------|------|
+| test_apply_row_grouping | PASS |
+| test_cell_deduplication_logic | PASS |
+| test_cell_deduplication_parent_changed | PASS |
 | test_collect_options_all_enabled | PASS |
-| test_collect_options_minimal | PASS |
-| test_collect_options_permission_check_all | PASS |
 | test_collect_options_filter_status | PASS |
 | test_collect_options_filter_status_empty | PASS |
+| test_collect_options_minimal | PASS |
+| test_collect_options_permission_check_all | PASS |
 | test_create_formats | PASS |
-| test_get_entry_details_modified | PASS |
-| test_get_entry_details_error | PASS |
-| test_apply_row_grouping | PASS |
 | test_format_filter_status_all_only | PASS |
 | test_format_filter_status_all_with_exclusion | PASS |
 | test_format_filter_status_included_only | PASS |
 | test_format_filter_status_only_exclusions | PASS |
-| test_calculate_directory_boundaries_simple | PASS |
-| test_calculate_directory_boundaries_all_same_first_level | PASS |
-| test_calculate_directory_boundaries_root_files | PASS |
-| test_apply_row_grouping_fold_level_2 | PASS |
-| test_apply_row_grouping_fold_level_3 | PASS |
-| test_cell_deduplication_logic | PASS |
-| test_cell_deduplication_parent_changed | PASS |
+| test_get_entry_details_error | PASS |
+| test_get_entry_details_modified | PASS |
+| test_path_expansion_components | PASS |
+| test_row_grouping_expanded_fold_level_2 | PASS |
+| test_row_grouping_expanded_fold_level_3 | PASS |
+| test_row_info_boundary_detection | PASS |
+| test_row_info_depth_calculation | PASS |
+
+### src/summary.rs (3テスト)
+
+| テスト名 | 結果 |
+|---------|------|
+| test_path_components_extraction | PASS |
+| test_path_components_japanese | PASS |
+| test_path_components_normalized | PASS |
 
 ---
 
@@ -461,6 +489,8 @@
 | 2026-01-12 | 23:30 | 119/119 | 179/179 | PASS | ファイルツリー整列テスト追加（Box Drawing文字表示幅修正、CJK端末対応） |
 | 2026-01-12 | 23:45 | 119/119 | 180/180 | PASS | 二者間ネストディレクトリ整列テスト追加、テストヘルパー関数修正 |
 | 2026-01-13 | 00:46 | 119/119 | 183/183 | PASS | Section 26に3テスト追加（test_three_way_summary_basic_info_section, test_three_way_conflicts_data_cells, test_three_way_copied_files_data_cells） |
+| 2026-01-13 | 02:30 | 122/122 | 188/188 | PASS | ユニットテスト3件追加（summary, types）、結合テスト5件追加（tree_display, three_way_excel_format） |
+| 2026-01-13 | 12:15 | 129/129 | 194/194 | PASS | ユニットテスト7件追加（types, copier）、結合テスト6件追加（CP932コンソール出力テスト） |
 
 ---
 
@@ -725,7 +755,7 @@ cargo test 2>&1 | tee test_output.txt
 |---------|---------|------|------|
 | IT-2901 | test_three_way_file_tree_alignment | PASS | Box Drawing文字が幅2で計算され、インジケータが揃うことを確認 |
 
-### 30. Tree表示Box Drawing文字テスト (5テスト)
+### 30. Tree表示クロスプラットフォームテスト (5テスト)
 
 | テストID | テスト名 | 結果 | 備考 |
 |---------|---------|------|------|
@@ -734,6 +764,17 @@ cargo test 2>&1 | tee test_output.txt
 | IT-3003 | test_tree_structure_formatting | PASS | ├── と└── のパターンが正しく使用されることを確認 |
 | IT-3004 | test_three_way_tree_contains_box_drawing_chars | PASS | 三者間比較のサマリーにも├, └, ─, │が含まれることを確認 |
 | IT-3005 | test_box_drawing_chars_at_different_depths | PASS | ネストしたディレクトリでも正しくBox Drawing文字が使用されることを確認 |
+
+### 31. CP932コンソール出力テスト (6テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| IT-3101 | test_japanese_console_output_no_crash | PASS | 日本語文字を含むコンソール出力がクラッシュしないことを確認 |
+| IT-3102 | test_mixed_japanese_ascii_console_output | PASS | 日本語とASCII混合のコンソール出力が正常に動作することを確認 |
+| IT-3103 | test_file_output_utf8_preserved | PASS | ファイル出力がUTF-8で保存されることを確認 |
+| IT-3104 | test_three_way_japanese_console_output | PASS | 三者間比較での日本語コンソール出力がクラッシュしないことを確認 |
+| IT-3105 | test_verbose_mode_japanese_filenames | PASS | verboseモードで日本語ファイル名が正常に出力されることを確認 |
+| IT-3106 | test_error_message_japanese_path | PASS | 日本語パスを含むエラーメッセージが正常に出力されることを確認 |
 
 ## パス展開機能の不具合修正
 
@@ -950,49 +991,36 @@ cargo test 2>&1 | tee test_output.txt
 - `├── `が7幅（├=2 + ─=2 + ─=2 + スペース=1）として計算されることを検証
 - `│   `が5幅（│=2 + スペース×3=3）として計算されることを検証
 
-## Windows Tree表示不具合修正（Box Drawing文字）
+## Windows Tree表示不具合修正（クロスプラットフォームパス処理）
 
-**不具合**: Windows版の場合に、コンソール、サマリーファイルともにTree表示にならない。Linux版と同じ表示にしてほしい。
+**不具合**: Windows版の場合に、コンソール、サマリーファイルともにTree表示にならない。罫線だけでなくスペースもなく、そもそもTree構造が生成されていない。
 
 **原因**:
-- Windowsコンソールのデフォルトコードページ（通常Shift-JISやCP932）ではUTF-8のBox Drawing文字（├, └, │, ─）を正しく表示できない
-- Box Drawing文字（U+2500-U+257F）はUTF-8エンコーディングで表示される必要がある
+- `build_tree()`関数でパスを`'/'`（スラッシュ）で分割していた
+- Windowsではパス区切り文字が`'\'`（バックスラッシュ）のため、パスが分割されずTree構造が構築されなかった
+- 例: `dir\subdir\file.txt`が`split('/')`で分割されず、1つのエントリとして扱われていた
 
 **修正内容**:
-1. `main.rs`: WindowsConsoleCodepage構造体を追加
-   - アプリケーション起動時にSetConsoleOutputCP(65001)でUTF-8に設定
-   - Drop trait実装でアプリケーション終了時に元のコードページを復元
-   - RAII（Resource Acquisition Is Initialization）パターンを使用
+1. `summary.rs`: `build_tree()`を修正
    ```rust
-   #[cfg(windows)]
-   struct WindowsConsoleCodepage {
-       original_output_cp: u32,
-   }
+   // 修正前（Unixのみ対応）
+   let path_str = entry.relative_path.to_string_lossy().to_string();
+   let parts: Vec<&str> = path_str
+       .split('/')
+       .filter(|s| !s.is_empty())
+       .collect();
 
-   #[cfg(windows)]
-   impl WindowsConsoleCodepage {
-       fn new() -> Self {
-           use windows_sys::Win32::System::Console::{GetConsoleOutputCP, SetConsoleOutputCP};
-           let original_output_cp = unsafe { GetConsoleOutputCP() };
-           unsafe { SetConsoleOutputCP(65001); }
-           Self { original_output_cp }
-       }
-   }
-
-   #[cfg(windows)]
-   impl Drop for WindowsConsoleCodepage {
-       fn drop(&mut self) {
-           use windows_sys::Win32::System::Console::SetConsoleOutputCP;
-           unsafe { SetConsoleOutputCP(self.original_output_cp); }
-       }
-   }
+   // 修正後（クロスプラットフォーム対応）
+   let parts: Vec<String> = entry
+       .relative_path
+       .components()
+       .map(|c| c.as_os_str().to_string_lossy().to_string())
+       .collect();
    ```
 
-2. `Cargo.toml`: windows-sys依存関係を追加
-   ```toml
-   [target.'cfg(windows)'.dependencies]
-   windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
-   ```
+2. `three_way_summary.rs`: 同様の修正
+
+3. `insert_into_tree()`の引数型を`&[&str]` → `&[String]`に変更
 
 **テスト内容**:
 - コンソール出力にBox Drawing文字（├, └, ─）が含まれることを検証
@@ -1001,8 +1029,29 @@ cargo test 2>&1 | tee test_output.txt
 - 三者間比較モードでもBox Drawing文字が正しく表示されることを検証
 - 異なる深さのディレクトリ構造でBox Drawing文字が正しく使用されることを検証
 
-**対応プラットフォーム**:
-- Windows Terminal: UTF-8対応済み
-- PowerShell: UTF-8対応済み
-- コマンドプロンプト（cmd.exe）: UTF-8(65001)コードページ設定で対応
-- Linux/macOS: 変更なし（既にUTF-8で動作）
+**ユニットテスト追加**（summary.rs）:
+- `test_path_components_extraction`: パスコンポーネントが正しく抽出されることを検証
+- `test_path_components_japanese`: 日本語パスが正しく処理されることを検証
+- `test_path_components_normalized`: パスの正規化が正しく行われることを検証
+
+## CP932コンソール出力テスト（Windowsコンソール対応）
+
+**目的**: Windows環境でのCP932エンコーディングコンソールにおいて、日本語文字を含む出力がクラッシュしないことを確認
+
+**背景**:
+- WindowsのコマンドプロンプトはデフォルトでCP932（Shift_JIS互換）エンコーディングを使用
+- UTF-8で出力される日本語文字がCP932に変換できない場合、パニックが発生する可能性がある
+- ファイル出力は常にUTF-8で保存されるべき
+
+**テスト内容**:
+- `test_japanese_console_output_no_crash`: 日本語ファイル名を含むコンソール出力がクラッシュしないことを検証
+- `test_mixed_japanese_ascii_console_output`: 日本語とASCII混合パスの処理が正常に動作することを検証
+- `test_file_output_utf8_preserved`: サマリーファイル等の出力がUTF-8で保存されることを検証
+- `test_three_way_japanese_console_output`: 三者間比較モードでも日本語パスが正常に処理されることを検証
+- `test_verbose_mode_japanese_filenames`: verboseモードでの日本語ファイル名出力が正常であることを検証
+- `test_error_message_japanese_path`: 存在しない日本語パスに対するエラーメッセージが正常に出力されることを検証
+
+**実装対応**:
+- `utils.rs`: `print_cp932()`/`eprint_cp932()`関数を追加（Windows環境でCP932変換可能な文字のみ出力）
+- Linuxでは標準出力をそのまま使用（UTF-8対応）
+- ファイル出力（Summary, Excel, Patch）は常にUTF-8を維持

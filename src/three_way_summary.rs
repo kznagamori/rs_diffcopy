@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::types::{ColorMode, ThreeWayEntry, ThreeWayResult, ThreeWayStats, ThreeWayStatus};
-use crate::utils::{display_width, is_terminal};
+use crate::utils::{display_width, is_terminal, println_cp932};
 
 /// Summary writer for three-way comparison
 pub struct ThreeWaySummaryWriter<'a> {
@@ -28,9 +28,9 @@ impl<'a> ThreeWaySummaryWriter<'a> {
 
     /// Write summary to console and optionally to file
     pub fn write(&self, result: &ThreeWayResult) -> crate::error::Result<()> {
-        // Write to console (compact format)
+        // Write to console (Windows: CP932, others: UTF-8)
         let console_output = self.generate_summary(result, true);
-        println!("{}", console_output);
+        println_cp932(&console_output);
 
         // Write to file if specified (aligned format)
         if let Some(ref summary_path) = self.config.summary {
@@ -272,10 +272,11 @@ impl<'a> ThreeWaySummaryWriter<'a> {
             .collect();
 
         for entry in filtered_entries {
-            let path_str = entry.relative_path.to_string_lossy().to_string();
-            let parts: Vec<&str> = path_str
-                .split('/')
-                .filter(|s| !s.is_empty())
+            // Use components() for cross-platform path handling (works with both / and \)
+            let parts: Vec<String> = entry
+                .relative_path
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
                 .collect();
 
             self.insert_into_tree(&mut root, &parts, entry);
@@ -287,14 +288,14 @@ impl<'a> ThreeWaySummaryWriter<'a> {
     fn insert_into_tree(
         &self,
         tree: &mut BTreeMap<String, ThreeWayTreeNode>,
-        parts: &[&str],
+        parts: &[String],
         entry: &ThreeWayEntry,
     ) {
         if parts.is_empty() {
             return;
         }
 
-        let name = parts[0].to_string();
+        let name = parts[0].clone();
         let remaining = &parts[1..];
 
         let node = tree.entry(name.clone()).or_insert_with(|| ThreeWayTreeNode {

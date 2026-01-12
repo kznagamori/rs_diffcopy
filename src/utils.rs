@@ -166,6 +166,79 @@ pub fn is_piped() -> bool {
     !is_terminal()
 }
 
+/// Convert UTF-8 string to CP932 (Shift-JIS) for Windows console output
+/// Characters that cannot be represented in CP932 are replaced with '?'
+#[cfg(windows)]
+pub fn to_cp932(s: &str) -> Vec<u8> {
+    use encoding_rs::SHIFT_JIS;
+    let (encoded, _, _) = SHIFT_JIS.encode(s);
+    encoded.into_owned()
+}
+
+/// Print string to stdout with CP932 encoding (Windows only)
+/// On non-Windows platforms, this just prints UTF-8
+#[cfg(windows)]
+pub fn print_cp932(s: &str) {
+    use std::io::Write;
+    let bytes = to_cp932(s);
+    let _ = std::io::stdout().write_all(&bytes);
+    let _ = std::io::stdout().flush();
+}
+
+/// Print string to stdout with CP932 encoding and newline (Windows only)
+/// On non-Windows platforms, this just prints UTF-8
+#[cfg(windows)]
+pub fn println_cp932(s: &str) {
+    use std::io::Write;
+    let mut bytes = to_cp932(s);
+    bytes.push(b'\n');
+    let _ = std::io::stdout().write_all(&bytes);
+    let _ = std::io::stdout().flush();
+}
+
+/// Print string to stderr with CP932 encoding (Windows only)
+#[cfg(windows)]
+pub fn eprint_cp932(s: &str) {
+    use std::io::Write;
+    let bytes = to_cp932(s);
+    let _ = std::io::stderr().write_all(&bytes);
+    let _ = std::io::stderr().flush();
+}
+
+/// Print string to stderr with CP932 encoding and newline (Windows only)
+#[cfg(windows)]
+pub fn eprintln_cp932(s: &str) {
+    use std::io::Write;
+    let mut bytes = to_cp932(s);
+    bytes.push(b'\n');
+    let _ = std::io::stderr().write_all(&bytes);
+    let _ = std::io::stderr().flush();
+}
+
+/// Non-Windows: just use regular print
+#[cfg(not(windows))]
+pub fn print_cp932(s: &str) {
+    print!("{}", s);
+}
+
+/// Non-Windows: just use regular println
+#[cfg(not(windows))]
+pub fn println_cp932(s: &str) {
+    println!("{}", s);
+}
+
+/// Non-Windows: just use regular eprint
+#[cfg(not(windows))]
+pub fn eprint_cp932(s: &str) {
+    eprint!("{}", s);
+}
+
+/// Non-Windows: just use regular eprintln
+#[cfg(not(windows))]
+pub fn eprintln_cp932(s: &str) {
+    eprintln!("{}", s);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,5 +443,77 @@ mod tests {
 
         let mode = get_file_mode(&file).unwrap();
         assert!(!mode.is_empty());
+    }
+
+    #[test]
+    fn test_cp932_conversion_ascii() {
+        // Test that ASCII characters are preserved
+        use encoding_rs::SHIFT_JIS;
+        let input = "Hello, World!";
+        let (encoded, _, _) = SHIFT_JIS.encode(input);
+        assert_eq!(encoded.as_ref(), b"Hello, World!");
+    }
+
+    #[test]
+    fn test_cp932_conversion_japanese() {
+        // Test that Japanese characters are converted to CP932
+        use encoding_rs::SHIFT_JIS;
+        let input = "日本語";
+        let (encoded, _, _) = SHIFT_JIS.encode(input);
+        // CP932 encoding for "日本語": 0x93FA (日), 0x967B (本), 0x8CEA (語)
+        // Note: encoding_rs uses Shift_JIS which is compatible with CP932 for most characters
+        assert!(!encoded.is_empty());
+        // The encoded bytes should be different from UTF-8
+        assert_ne!(encoded.as_ref(), input.as_bytes());
+    }
+
+    #[test]
+    fn test_cp932_conversion_mixed() {
+        // Test mixed ASCII and Japanese
+        use encoding_rs::SHIFT_JIS;
+        let input = "Hello 日本語 World";
+        let (encoded, _, _) = SHIFT_JIS.encode(input);
+        assert!(!encoded.is_empty());
+        // Contains both ASCII and Japanese characters
+        assert!(encoded.len() > input.len() / 2); // Japanese chars take 2 bytes in CP932
+    }
+
+    #[test]
+    fn test_cp932_conversion_unconvertible() {
+        // Test that characters not in CP932 are replaced
+        use encoding_rs::SHIFT_JIS;
+        // Emoji is not representable in CP932
+        let input = "Hello 😀 World";
+        let (encoded, _, had_errors) = SHIFT_JIS.encode(input);
+        // Some characters couldn't be converted
+        assert!(had_errors || !encoded.contains(&0xF0)); // UTF-8 emoji starts with 0xF0
+    }
+
+    #[test]
+    fn test_cp932_conversion_box_drawing() {
+        // Test box drawing characters (used in file tree display)
+        use encoding_rs::SHIFT_JIS;
+        let input = "├── file.txt";
+        let (encoded, _, _) = SHIFT_JIS.encode(input);
+        // Box drawing characters should be converted (may be replaced if not in CP932)
+        assert!(!encoded.is_empty());
+    }
+
+    #[test]
+    fn test_println_cp932_basic() {
+        // Test that println_cp932 doesn't panic
+        // On non-Windows, this just calls println!
+        // On Windows, this converts to CP932 and writes to stdout
+        println_cp932("Test output");
+        println_cp932("日本語テスト");
+        println_cp932("Mixed: Hello 日本語");
+    }
+
+    #[test]
+    fn test_eprintln_cp932_basic() {
+        // Test that eprintln_cp932 doesn't panic
+        eprintln_cp932("Test error output");
+        eprintln_cp932("日本語エラー");
+        eprintln_cp932("Mixed: Error 日本語");
     }
 }

@@ -495,26 +495,27 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
-### Section 30: Tree表示Box Drawing文字テスト（tree_display_tests）
+### Section 30: Tree表示クロスプラットフォームテスト（tree_display_tests）
 
 **背景**: 以下の機能を検証
-1. WindowsコンソールでBox Drawing文字（├, └, │, ─）が正しく表示されること
+1. コンソール出力でBox Drawing文字（├, └, │, ─）が正しく表示されること
 2. サマリーファイル出力でもBox Drawing文字が正しく含まれること
 3. File Tree構造が正しくフォーマットされること
 4. 三者間比較モードでもBox Drawing文字が正しく表示されること
 5. 異なる深さのディレクトリ構造でBox Drawing文字が正しく使用されること
 
-**Windows対応**:
-- アプリケーション起動時に自動的にコンソールの出力コードページをUTF-8 (65001)に設定
-- これによりBox Drawing文字（├, └, │, ─等）を含むFile Treeが正しく表示される
-- Windows Terminal、PowerShell、コマンドプロンプトすべてで動作
-- アプリケーション終了時に元のコードページに復元
+**不具合（修正済み）**: Windows版の場合に、コンソール、サマリーファイルともにTree表示にならない
 
-**実装内容**:
-1. `main.rs`: WindowsConsoleCodepage構造体を追加
-   - 起動時にSetConsoleOutputCP(65001)でUTF-8に設定
-   - Drop trait実装で元のコードページを復元
-2. `Cargo.toml`: windows-sys依存関係を追加（Win32_System_Console feature）
+**原因**:
+- `build_tree()`関数でパスを`'/'`（スラッシュ）で分割していた
+- Windowsではパス区切り文字が`'\'`（バックスラッシュ）のため、パスが分割されずTree構造が構築されなかった
+
+**修正内容**:
+1. `summary.rs`: `build_tree()`を修正
+   - `path.split('/')` → `path.components()` に変更
+   - `Path::components()`は全プラットフォームで正しくパスを分割
+2. `three_way_summary.rs`: 同様の修正
+3. `insert_into_tree()`の引数型を`&[&str]` → `&[String]`に変更
 
 | ID | テスト関数名 | 概要 | 期待結果 | 分類 |
 |----|-------------|------|---------|------|
@@ -523,6 +524,29 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 | IT-3003 | test_tree_structure_formatting | Tree構造フォーマット確認 | ├── と└── のパターンが正しく使用される | 正常系 |
 | IT-3004 | test_three_way_tree_contains_box_drawing_chars | 三者間Tree Box Drawing文字確認 | 三者間比較のサマリーにも├, └, ─, │が含まれる | 正常系 |
 | IT-3005 | test_box_drawing_chars_at_different_depths | 異なる深さでのBox Drawing文字確認 | ネストしたディレクトリでも正しくBox Drawing文字が使用される | 正常系 |
+
+---
+
+### Section 31: CP932コンソール出力テスト（cp932_output_tests）
+
+**背景**: 以下の機能を検証
+1. Windows版でコンソール出力をCP932（Shift-JIS）でエンコードして出力すること
+2. パイプでclipコマンド等にコピーする際の互換性確保
+3. ファイル出力（--summary等）はUTF-8のままであること
+4. CP932で表現できない文字は置換されること
+
+**注意**:
+- この機能はWindows版のみ有効。Linux/macOSでは常にUTF-8
+- テストは全プラットフォームで実行可能（クラッシュしないことを確認）
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| IT-3101 | test_japanese_console_output_no_crash | 日本語コンソール出力 | 日本語ファイル名でクラッシュしない | 正常系 |
+| IT-3102 | test_mixed_japanese_ascii_console_output | 日本語ASCII混合出力 | 混合文字列でクラッシュしない | 正常系 |
+| IT-3103 | test_file_output_utf8_preserved | ファイル出力UTF-8維持 | --summaryファイルはUTF-8で正しく出力される | 正常系 |
+| IT-3104 | test_three_way_japanese_console_output | 三者間日本語出力 | 三者間比較で日本語パスがクラッシュしない | 正常系 |
+| IT-3105 | test_verbose_mode_japanese_filenames | 冗長モード日本語ファイル名 | -vオプション付きで日本語ファイル名がクラッシュしない | 正常系 |
+| IT-3106 | test_error_message_japanese_path | 日本語パスエラーメッセージ | 存在しない日本語パスのエラーメッセージが出力される | 準正常系 |
 
 ---
 
@@ -605,4 +629,5 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-09 | 2.2 | 三者間グループキーワード除外テスト追加（^added, ^deleted, ^modified, ^conflictsグループ除外） |
 | 2026-01-12 | 2.3 | ファイルツリー整列テスト追加（Box Drawing文字の表示幅修正、CJK端末対応） |
 | 2026-01-13 | 2.4 | データセルには外枠罫線適用テスト追加 |
-| 2026-01-13 | 2.5 | Tree表示Box Drawing文字テスト追加（Windows UTF-8コンソール対応） |
+| 2026-01-13 | 2.5 | Tree表示クロスプラットフォームテスト追加（Windowsパス区切り文字対応） |
+| 2026-01-13 | 2.6 | CP932コンソール出力テスト追加（Windows版コンソール出力のCP932エンコーディング対応） |

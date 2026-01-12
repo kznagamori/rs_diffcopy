@@ -815,6 +815,7 @@ dependencies = [
  "clap",
  "colored",
  "crossterm",
+ "encoding_rs",
  "filetime",
  "glob",
  "globset",
@@ -830,7 +831,6 @@ dependencies = [
  "toml",
  "unicode-width",
  "walkdir",
- "windows-sys 0.59.0",
 ]
 
 [[package]]

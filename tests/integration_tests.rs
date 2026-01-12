@@ -6670,3 +6670,159 @@ mod tree_display_tests {
         assert!(has_tree_chars, "Summary should contain tree connector patterns");
     }
 }
+
+
+// ============================================================================
+// CP932 Console Output Tests
+// ============================================================================
+
+mod cp932_output_tests {
+    use super::*;
+
+    /// Test that Japanese characters in console output do not cause crashes
+    #[test]
+    fn test_japanese_console_output_no_crash() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create files with Japanese names
+        fs::write(target.join("日本語ファイル.txt"), "content").unwrap();
+        fs::write(target.join("テスト.txt"), "test").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        // Should complete without crash
+        assert!(result.status.success() || result.status.code() == Some(0));
+    }
+
+    /// Test that mixed Japanese and ASCII console output works
+    #[test]
+    fn test_mixed_japanese_ascii_console_output() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create mixed content files
+        fs::create_dir_all(target.join("docs/日本語")).unwrap();
+        fs::write(target.join("docs/日本語/readme.txt"), "日本語とEnglish混合").unwrap();
+        fs::write(target.join("config.toml"), "setting = \"設定\"").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        // Should complete without crash
+        assert!(result.status.success() || result.status.code() == Some(0));
+    }
+
+    /// Test that file output remains UTF-8 while console uses CP932 (Windows)
+    #[test]
+    fn test_file_output_utf8_preserved() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+        let summary_path = dir.path().join("summary.txt");
+
+        // Create files with Japanese content
+        fs::write(target.join("ファイル.txt"), "日本語の内容").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(0));
+
+        // Verify summary file is valid UTF-8
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+        assert!(summary_content.contains("ファイル.txt"),
+            "Summary file should contain Japanese filename in UTF-8");
+    }
+
+    /// Test three-way comparison with Japanese paths
+    #[test]
+    fn test_three_way_japanese_console_output() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join("base");
+        let ours = dir.path().join("ours");
+        let theirs = dir.path().join("theirs");
+        let output = dir.path().join("output");
+
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&ours).unwrap();
+        fs::create_dir_all(&theirs).unwrap();
+
+        // Create Japanese named files
+        fs::write(base.join("設定.txt"), "base").unwrap();
+        fs::write(ours.join("設定.txt"), "ours").unwrap();
+        fs::write(theirs.join("設定.txt"), "theirs").unwrap();
+
+        let result = run_diffcopy(&[
+            "-3",
+            "-B", base.to_str().unwrap(),
+            "-S", ours.to_str().unwrap(),
+            "-T", theirs.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        // Should complete without crash (may have conflicts)
+        assert!(result.status.code().is_some(), "Command should complete");
+    }
+
+    /// Test verbose mode with Japanese filenames
+    #[test]
+    fn test_verbose_mode_japanese_filenames() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create files with Japanese names
+        fs::create_dir_all(target.join("ディレクトリ")).unwrap();
+        fs::write(target.join("ディレクトリ/ファイル.txt"), "内容").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-v",
+            "--dry-run",
+        ]);
+
+        // Should complete without crash
+        assert!(result.status.success() || result.status.code() == Some(0));
+    }
+
+    /// Test error messages with Japanese paths
+    #[test]
+    fn test_error_message_japanese_path() {
+        let dir = tempdir().unwrap();
+        let nonexistent = dir.path().join("存在しないディレクトリ");
+        let target = dir.path().join("target");
+        let output = dir.path().join("output");
+
+        fs::create_dir_all(&target).unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", nonexistent.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+        ]);
+
+        // Should fail with exit code 1
+        assert_eq!(result.status.code(), Some(1));
+
+        // Error message should be output (not crash)
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!stderr.is_empty(), "Should have error message in stderr");
+    }
+}
+
