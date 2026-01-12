@@ -1755,6 +1755,7 @@ Conflict Details
 
 #### Summaryシート詳細
 
+- **基本情報セクション（Base, Ours, Theirs, Output, Date）**: 外枠罫線を適用
 - **Options**: オプションセクションには外枠罫線を適用
 - **Change Matrix**: 統計情報セクションには外枠罫線を適用
 - 三者間モードでも以下のオプションがOptionsセクションに表示される：
@@ -1787,6 +1788,7 @@ Conflict Details
 
 - ヘッダー行の背景色は全列（9列）に適用
 - パスは「Directory」と「Filename」に分離して表示
+- **データセルには外枠罫線を適用**
 
 #### Copied Filesシート詳細
 
@@ -1799,6 +1801,7 @@ Conflict Details
 
 - ヘッダー行の背景色は全列（4列）に適用
 - パスは「Directory」と「Filename」に分離して表示
+- **データセルには外枠罫線を適用**
 
 #### ステータスの色分け
 

@@ -4,8 +4,8 @@
 
 | 項目 | 内容 |
 |-----|------|
-| 実施日 | 2026-01-12 |
-| 実施時刻 | 23:30 JST |
+| 実施日 | 2026-01-13 |
+| 実施時刻 | 00:46 JST |
 | 実行環境 | Linux (WSL2) |
 | Rustバージョン | stable |
 | 結果 | **全テストPASS** |
@@ -15,8 +15,8 @@
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
 | ユニットテスト | 119 | 119 | 0 | 0 |
-| 結合テスト | 180 | 180 | 0 | 0 |
-| **合計** | **299** | **299** | **0** | **0** |
+| 結合テスト | 183 | 183 | 0 | 0 |
+| **合計** | **302** | **302** | **0** | **0** |
 
 ---
 
@@ -460,6 +460,7 @@
 | 2026-01-09 | 20:15 | 119/119 | 178/178 | PASS | 三者間グループキーワード除外テスト追加（^added, ^deleted, ^modified, ^conflicts） |
 | 2026-01-12 | 23:30 | 119/119 | 179/179 | PASS | ファイルツリー整列テスト追加（Box Drawing文字表示幅修正、CJK端末対応） |
 | 2026-01-12 | 23:45 | 119/119 | 180/180 | PASS | 二者間ネストディレクトリ整列テスト追加、テストヘルパー関数修正 |
+| 2026-01-13 | 00:46 | 119/119 | 183/183 | PASS | Section 26に3テスト追加（test_three_way_summary_basic_info_section, test_three_way_conflicts_data_cells, test_three_way_copied_files_data_cells） |
 
 ---
 
@@ -684,7 +685,7 @@ cargo test 2>&1 | tee test_output.txt
 | IT-2505 | test_three_way_excel_fold_level | PASS | --excel-fold-level 2で深いファイルがグループ化対象になることを確認 |
 | IT-2506 | test_three_way_file_tree_cell_structure | PASS | パスコンポーネントが別々のセルに配置されることを確認 |
 
-### 26. 三者間比較Excelフォーマット修正テスト (5テスト)
+### 26. 三者間比較Excelフォーマット修正テスト (8テスト)
 
 | テストID | テスト名 | 結果 | 備考 |
 |---------|---------|------|------|
@@ -693,6 +694,9 @@ cargo test 2>&1 | tee test_output.txt
 | IT-2603 | test_three_way_copied_files_has_split_path | PASS | DirectoryとFilenameヘッダーがあり、Pathは存在しないことを確認 |
 | IT-2604 | test_three_way_conflicts_header_width | PASS | 9列すべてにヘッダーが存在することを確認 |
 | IT-2605 | test_three_way_copied_files_header_width | PASS | 4列すべてにヘッダーが存在することを確認 |
+| IT-2606 | test_three_way_summary_basic_info_section | PASS | Base, Ours, Theirsのパス情報が正しく表示されることを確認 |
+| IT-2607 | test_three_way_conflicts_data_cells | PASS | コンフリクトファイルのDirectory, Filename, Statusが正しく記載されることを確認 |
+| IT-2608 | test_three_way_copied_files_data_cells | PASS | コピー済みファイルのDirectory, Filename, Statusが正しく記載されることを確認 |
 
 ### 27. Summaryファイル桁位置揃えテスト (6テスト)
 

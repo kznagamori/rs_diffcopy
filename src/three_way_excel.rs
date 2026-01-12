@@ -61,8 +61,6 @@ impl<'a> ThreeWayExcelWriter<'a> {
             .set_background_color(Color::RGB(0x4472C4))
             .set_font_color(Color::White);
 
-        let label_format = Format::new().set_bold();
-
         // Border formats for sections
         let border_format = Format::new().set_border(FormatBorder::Thin);
         let label_border_format = Format::new().set_bold().set_border(FormatBorder::Thin);
@@ -71,35 +69,35 @@ impl<'a> ThreeWayExcelWriter<'a> {
         worksheet.write_string(0, 0, "rs_diffcopy Summary (Three-way)").ok();
         worksheet.set_row_format(0, &title_format).ok();
 
-        // Basic info
+        // Basic info (with borders)
         let mut row = 2;
 
         let base_path = self.config.base.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-        worksheet.write_string_with_format(row, 0, "Base:", &label_format).ok();
-        worksheet.write_string(row, 1, &base_path).ok();
+        worksheet.write_string_with_format(row, 0, "Base:", &label_border_format).ok();
+        worksheet.write_string_with_format(row, 1, &base_path, &border_format).ok();
         row += 1;
 
-        worksheet.write_string_with_format(row, 0, "Ours:", &label_format).ok();
+        worksheet.write_string_with_format(row, 0, "Ours:", &label_border_format).ok();
         worksheet
-            .write_string(row, 1, &self.config.source.display().to_string())
+            .write_string_with_format(row, 1, &self.config.source.display().to_string(), &border_format)
             .ok();
         row += 1;
 
-        worksheet.write_string_with_format(row, 0, "Theirs:", &label_format).ok();
+        worksheet.write_string_with_format(row, 0, "Theirs:", &label_border_format).ok();
         worksheet
-            .write_string(row, 1, &self.config.target.display().to_string())
+            .write_string_with_format(row, 1, &self.config.target.display().to_string(), &border_format)
             .ok();
         row += 1;
 
-        worksheet.write_string_with_format(row, 0, "Output:", &label_format).ok();
+        worksheet.write_string_with_format(row, 0, "Output:", &label_border_format).ok();
         worksheet
-            .write_string(row, 1, &self.config.output.display().to_string())
+            .write_string_with_format(row, 1, &self.config.output.display().to_string(), &border_format)
             .ok();
         row += 1;
 
-        worksheet.write_string_with_format(row, 0, "Date:", &label_format).ok();
+        worksheet.write_string_with_format(row, 0, "Date:", &label_border_format).ok();
         worksheet
-            .write_string(row, 1, &Local::now().format("%Y-%m-%d %H:%M:%S").to_string())
+            .write_string_with_format(row, 1, &Local::now().format("%Y-%m-%d %H:%M:%S").to_string(), &border_format)
             .ok();
         row += 2;
 
@@ -614,10 +612,15 @@ impl<'a> ThreeWayExcelWriter<'a> {
         let header_format = Format::new()
             .set_bold()
             .set_background_color(Color::RGB(0x4472C4))
-            .set_font_color(Color::White);
+            .set_font_color(Color::White)
+            .set_border(FormatBorder::Thin);
 
         let conflict_format = Format::new()
-            .set_font_color(Color::RGB(0xCC0000));
+            .set_font_color(Color::RGB(0xCC0000))
+            .set_border(FormatBorder::Thin);
+
+        let data_format = Format::new()
+            .set_border(FormatBorder::Thin);
 
         // Headers - write individually with format to each column (9 columns total)
         worksheet.write_string_with_format(0, 0, "Directory", &header_format).ok();
@@ -671,17 +674,17 @@ impl<'a> ThreeWayExcelWriter<'a> {
             let ours_hash = entry.ours_hash.as_ref().map(|h| &h[..8.min(h.len())]).unwrap_or("-");
             let theirs_hash = entry.theirs_hash.as_ref().map(|h| &h[..8.min(h.len())]).unwrap_or("-");
 
-            worksheet.write_string(row, 3, base_hash).ok();
-            worksheet.write_string(row, 4, ours_hash).ok();
-            worksheet.write_string(row, 5, theirs_hash).ok();
+            worksheet.write_string_with_format(row, 3, base_hash, &data_format).ok();
+            worksheet.write_string_with_format(row, 4, ours_hash, &data_format).ok();
+            worksheet.write_string_with_format(row, 5, theirs_hash, &data_format).ok();
 
             let base_size = entry.base_size.map(|s| s.to_string()).unwrap_or("-".to_string());
             let ours_size = entry.ours_size.map(|s| s.to_string()).unwrap_or("-".to_string());
             let theirs_size = entry.theirs_size.map(|s| s.to_string()).unwrap_or("-".to_string());
 
-            worksheet.write_string(row, 6, &base_size).ok();
-            worksheet.write_string(row, 7, &ours_size).ok();
-            worksheet.write_string(row, 8, &theirs_size).ok();
+            worksheet.write_string_with_format(row, 6, &base_size, &data_format).ok();
+            worksheet.write_string_with_format(row, 7, &ours_size, &data_format).ok();
+            worksheet.write_string_with_format(row, 8, &theirs_size, &data_format).ok();
 
             row += 1;
         }
@@ -712,7 +715,11 @@ impl<'a> ThreeWayExcelWriter<'a> {
         let header_format = Format::new()
             .set_bold()
             .set_background_color(Color::RGB(0x4472C4))
-            .set_font_color(Color::White);
+            .set_font_color(Color::White)
+            .set_border(FormatBorder::Thin);
+
+        let data_format = Format::new()
+            .set_border(FormatBorder::Thin);
 
         // Headers - write individually with format to each column (4 columns total)
         worksheet.write_string_with_format(0, 0, "Directory", &header_format).ok();
@@ -777,10 +784,10 @@ impl<'a> ThreeWayExcelWriter<'a> {
                 ("".to_string(), path_str)
             };
 
-            worksheet.write_string(row, 0, &directory).ok();
-            worksheet.write_string(row, 1, &filename).ok();
-            worksheet.write_string(row, 2, entry.status.as_str()).ok();
-            worksheet.write_string(row, 3, source).ok();
+            worksheet.write_string_with_format(row, 0, &directory, &data_format).ok();
+            worksheet.write_string_with_format(row, 1, &filename, &data_format).ok();
+            worksheet.write_string_with_format(row, 2, entry.status.as_str(), &data_format).ok();
+            worksheet.write_string_with_format(row, 3, source, &data_format).ok();
 
             row += 1;
         }

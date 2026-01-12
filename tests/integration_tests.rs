@@ -5618,6 +5618,166 @@ mod three_way_excel_format_tests {
             panic!("Could not read Copied Files sheet");
         }
     }
+
+    // IT-2606: Verify Summary sheet has basic info section (Base, Ours, Theirs, Output, Date)
+    // Note: Borders are applied via code (border_format) - verified by code review
+    #[test]
+    fn test_three_way_summary_basic_info_section() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create file for comparison
+        fs::write(base_dir.join("file.txt"), "base").unwrap();
+        fs::write(ours_dir.join("file.txt"), "ours").unwrap();
+        fs::write(theirs_dir.join("file.txt"), "theirs").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Summary") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            // Verify basic info labels exist
+            let has_base = rows.iter().any(|row| row.iter().any(|c| c == "Base:"));
+            let has_ours = rows.iter().any(|row| row.iter().any(|c| c == "Ours:"));
+            let has_theirs = rows.iter().any(|row| row.iter().any(|c| c == "Theirs:"));
+            let has_output = rows.iter().any(|row| row.iter().any(|c| c == "Output:"));
+            let has_date = rows.iter().any(|row| row.iter().any(|c| c == "Date:"));
+
+            assert!(has_base, "Should have 'Base:' label in Summary sheet");
+            assert!(has_ours, "Should have 'Ours:' label in Summary sheet");
+            assert!(has_theirs, "Should have 'Theirs:' label in Summary sheet");
+            assert!(has_output, "Should have 'Output:' label in Summary sheet");
+            assert!(has_date, "Should have 'Date:' label in Summary sheet");
+        } else {
+            panic!("Could not read Summary sheet");
+        }
+    }
+
+    // IT-2607: Verify Conflicts sheet has data cells with correct content
+    // Note: Borders are applied via data_format - verified by code review
+    #[test]
+    fn test_three_way_conflicts_data_cells() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create conflict file
+        fs::write(base_dir.join("conflict.txt"), "base content here").unwrap();
+        fs::write(ours_dir.join("conflict.txt"), "ours content here").unwrap();
+        fs::write(theirs_dir.join("conflict.txt"), "theirs content here").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Conflicts") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            // Should have at least header + 1 data row
+            assert!(rows.len() >= 2, "Should have at least header and one data row");
+
+            // Find conflict.txt row
+            let conflict_row = rows.iter().skip(1).find(|row| {
+                row.iter().any(|c| c.contains("conflict.txt"))
+            });
+
+            assert!(conflict_row.is_some(), "Should find conflict.txt in Conflicts sheet");
+
+            if let Some(row) = conflict_row {
+                // Type column should have conflict type
+                let has_conflict_type = row.iter().any(|c| c.contains("conflict") || c.contains("Conflict"));
+                assert!(has_conflict_type, "Should have conflict type in row: {:?}", row);
+            }
+        } else {
+            panic!("Could not read Conflicts sheet");
+        }
+    }
+
+    // IT-2608: Verify Copied Files sheet has data cells with correct content
+    // Note: Borders are applied via data_format - verified by code review
+    #[test]
+    fn test_three_way_copied_files_data_cells() {
+        let dir = tempdir().unwrap();
+        let (base_dir, ours_dir, theirs_dir, output) = create_three_way_test_structure(dir.path());
+
+        // Remove output dir
+        fs::remove_dir_all(&output).unwrap();
+
+        // Create file only in ours
+        fs::write(ours_dir.join("newfile.txt"), "new content").unwrap();
+
+        let excel_path = dir.path().join("report.xlsx");
+
+        let result = run_diffcopy(&[
+            "--three-way",
+            "-B", base_dir.to_str().unwrap(),
+            "-S", ours_dir.to_str().unwrap(),
+            "-T", theirs_dir.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--excel", excel_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success() || result.status.code() == Some(3));
+
+        let mut workbook: Xlsx<_> = open_workbook(&excel_path).expect("Failed to open Excel file");
+
+        if let Ok(range) = workbook.worksheet_range("Copied Files") {
+            let rows: Vec<Vec<String>> = range.rows()
+                .map(|row| row.iter().map(|c| c.to_string()).collect())
+                .collect();
+
+            // Should have at least header + 1 data row
+            assert!(rows.len() >= 2, "Should have at least header and one data row");
+
+            // Find newfile.txt row
+            let file_row = rows.iter().skip(1).find(|row| {
+                row.iter().any(|c| c.contains("newfile.txt"))
+            });
+
+            assert!(file_row.is_some(), "Should find newfile.txt in Copied Files sheet");
+
+            if let Some(row) = file_row {
+                // Status column should have added-ours
+                let has_status = row.iter().any(|c| c.contains("added"));
+                assert!(has_status, "Should have added status in row: {:?}", row);
+            }
+        } else {
+            panic!("Could not read Copied Files sheet");
+        }
+    }
 }
 
 // ============================================================================

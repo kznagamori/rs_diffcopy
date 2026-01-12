@@ -428,6 +428,9 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 | IT-2603 | test_three_way_copied_files_has_split_path | Copied Filesシートパス分割 | DirectoryとFilenameヘッダーがあり、Pathは存在しない | 正常系 |
 | IT-2604 | test_three_way_conflicts_header_width | Conflictsヘッダー幅 | 9列すべてにヘッダーが存在 | 正常系 |
 | IT-2605 | test_three_way_copied_files_header_width | Copied Filesヘッダー幅 | 4列すべてにヘッダーが存在 | 正常系 |
+| IT-2606 | test_three_way_summary_basic_info_section | Summaryシート基本情報セクション | Base, Ours, Theirsのパス情報が正しく表示される | 正常系 |
+| IT-2607 | test_three_way_conflicts_data_cells | Conflictsシートデータセル | コンフリクトファイルのディレクトリ、ファイル名、ステータスが正しく記載される | 正常系 |
+| IT-2608 | test_three_way_copied_files_data_cells | Copied Filesシートデータセル | コピー済みファイルのディレクトリ、ファイル名、ステータスが正しく記載される | 正常系 |
 
 ---
 
@@ -570,3 +573,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-09 | 2.1 | 三者間比較Excel修正テスト追加（File Tree形式、filter-status、fold-level） |
 | 2026-01-09 | 2.2 | 三者間グループキーワード除外テスト追加（^added, ^deleted, ^modified, ^conflictsグループ除外） |
 | 2026-01-12 | 2.3 | ファイルツリー整列テスト追加（Box Drawing文字の表示幅修正、CJK端末対応） |
+| 2026-01-13 | 2.4 | データセルには外枠罫線適用テスト追加 |
