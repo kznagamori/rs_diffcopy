@@ -4,8 +4,8 @@
 
 | 項目 | 内容 |
 |-----|------|
-| 実施日 | 2026-01-09 |
-| 実施時刻 | 20:15 JST |
+| 実施日 | 2026-01-12 |
+| 実施時刻 | 23:30 JST |
 | 実行環境 | Linux (WSL2) |
 | Rustバージョン | stable |
 | 結果 | **全テストPASS** |
@@ -15,8 +15,8 @@
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
 | ユニットテスト | 119 | 119 | 0 | 0 |
-| 結合テスト | 178 | 178 | 0 | 0 |
-| **合計** | **297** | **297** | **0** | **0** |
+| 結合テスト | 180 | 180 | 0 | 0 |
+| **合計** | **299** | **299** | **0** | **0** |
 
 ---
 
@@ -457,6 +457,9 @@
 | 2026-01-09 | 12:00 | 109/109 | 163/163 | PASS | 三者間比較Excel修正テスト追加（File Tree形式、filter-status、fold-level） |
 | 2026-01-09 | 14:00 | 109/109 | 168/168 | PASS | 三者間比較Excelフォーマット修正テスト追加（Summary罫線、Conflicts/Copied Filesパス分割・ヘッダー幅） |
 | 2026-01-09 | 16:00 | 111/111 | 173/173 | PASS | Summaryファイル桁位置揃え機能テスト追加（二者間/三者間、日本語対応、表示幅計算） |
+| 2026-01-09 | 20:15 | 119/119 | 178/178 | PASS | 三者間グループキーワード除外テスト追加（^added, ^deleted, ^modified, ^conflicts） |
+| 2026-01-12 | 23:30 | 119/119 | 179/179 | PASS | ファイルツリー整列テスト追加（Box Drawing文字表示幅修正、CJK端末対応） |
+| 2026-01-12 | 23:45 | 119/119 | 180/180 | PASS | 二者間ネストディレクトリ整列テスト追加、テストヘルパー関数修正 |
 
 ---
 
@@ -691,7 +694,7 @@ cargo test 2>&1 | tee test_output.txt
 | IT-2604 | test_three_way_conflicts_header_width | PASS | 9列すべてにヘッダーが存在することを確認 |
 | IT-2605 | test_three_way_copied_files_header_width | PASS | 4列すべてにヘッダーが存在することを確認 |
 
-### 27. Summaryファイル桁位置揃えテスト (5テスト)
+### 27. Summaryファイル桁位置揃えテスト (6テスト)
 
 | テストID | テスト名 | 結果 | 備考 |
 |---------|---------|------|------|
@@ -700,6 +703,7 @@ cargo test 2>&1 | tee test_output.txt
 | IT-2703 | test_three_way_summary_file_alignment | PASS | 異なる長さのパスでもインジケータが同じ位置に揃うことを確認 |
 | IT-2704 | test_three_way_summary_file_alignment_japanese | PASS | 日本語ファイル名でも表示幅でインジケータが揃うことを確認 |
 | IT-2705 | test_console_output_not_aligned | PASS | コンソール出力はコンパクト形式（整列なし）のままであることを確認 |
+| IT-2706 | test_two_way_file_tree_alignment_nested | PASS | ネストディレクトリでBox Drawing文字を考慮した整列を確認 |
 
 ### 28. 三者間グループキーワード除外テスト (5テスト)
 
@@ -710,6 +714,12 @@ cargo test 2>&1 | tee test_output.txt
 | IT-2803 | test_group_keyword_exclusion_modified | PASS | ^modifiedで変更系ステータスが除外されることを確認 |
 | IT-2804 | test_group_keyword_exclusion_conflicts | PASS | ^conflictsでコンフリクト系が除外されることを確認 |
 | IT-2805 | test_group_keyword_inclusion_added | PASS | addedでadded-*のみ表示されることを確認 |
+
+### 29. ファイルツリー整列テスト (1テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| IT-2901 | test_three_way_file_tree_alignment | PASS | Box Drawing文字が幅2で計算され、インジケータが揃うことを確認 |
 
 ## パス展開機能の不具合修正
 
@@ -884,3 +894,44 @@ cargo test 2>&1 | tee test_output.txt
 - `^modified`でours-only, theirs-only, both-same, conflictが除外されることを検証
 - `^conflicts`でconflict, added-both-diff, modify-delete, delete-modifyが除外されることを検証
 - `added`でadded-*のみが表示されることを検証
+
+## ファイルツリー整列テスト（Box Drawing文字表示幅修正）
+
+**不具合**: Summaryファイル出力のFile Treeで、異なる深さのファイルのインジケータ位置がずれる問題
+
+**例**:
+```
+│   │   │       └── kas.yml      [○  =  M] theirs-only
+│   │   │   └── submit-job.sh    [○  =  M] theirs-only     <-- 13桁から開始（ずれている）
+│   │       └── kas-build.sh     [○  =  M] theirs-only
+```
+
+**原因**:
+1. `unicode_width`クレートがBox Drawing文字（U+2500-U+257F: │, └, ├, ─等）を幅1として返す
+2. しかし日本語/CJK端末ではBox Drawing文字は幅2で表示される
+3. `render_tree()`の`new_prefix`計算で`is_last=true`の場合に4スペース使用していたが、`│`(幅2)+3スペース=5幅に合わせる必要があった
+
+**修正内容**:
+1. `utils.rs`: `display_width()`関数でBox Drawing文字（U+2500-U+257F）を幅2として扱う
+   ```rust
+   if ('\u{2500}'..='\u{257F}').contains(&c) {
+       2
+   } else {
+       UnicodeWidthChar::width(c).unwrap_or(0)
+   }
+   ```
+2. `three_way_summary.rs`: `new_prefix`計算で`is_last=true`の場合に5スペースを使用
+   ```rust
+   if is_last {
+       format!("{}     ", prefix)  // 5 spaces to match │(2)+3 = 5 width
+   } else {
+       format!("{}│   ", prefix)   // │(2) + 3 spaces = 5 width
+   }
+   ```
+3. `summary.rs`: 同様の修正
+
+**テスト内容**:
+- 異なる深さのディレクトリ構造で、すべてのファイルのインジケータ位置が揃うことを検証
+- Box Drawing文字の表示幅が正しく2として計算されることを検証（ユニットテスト）
+- `├── `が7幅（├=2 + ─=2 + ─=2 + スペース=1）として計算されることを検証
+- `│   `が5幅（│=2 + スペース×3=3）として計算されることを検証

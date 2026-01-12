@@ -5626,11 +5626,19 @@ mod three_way_excel_format_tests {
 
 mod summary_alignment_tests {
     use super::*;
-    use unicode_width::UnicodeWidthStr;
+    use unicode_width::UnicodeWidthChar;
 
     /// Calculate display width of string up to a given byte position
+    /// Box Drawing characters (U+2500-U+257F) are treated as width 2 for CJK terminal compatibility
     fn display_width_up_to(s: &str, byte_pos: usize) -> usize {
-        s[..byte_pos].width()
+        s[..byte_pos].chars().map(|c| {
+            // Box Drawing characters (U+2500-U+257F) are displayed as width 2 in CJK terminals
+            if ('\u{2500}'..='\u{257F}').contains(&c) {
+                2
+            } else {
+                UnicodeWidthChar::width(c).unwrap_or(0)
+            }
+        }).sum()
     }
 
     // IT-2701: Verify two-way summary file has aligned status tags
@@ -5859,7 +5867,76 @@ mod summary_alignment_tests {
         }
     }
 
-    // IT-2705: Verify console output is NOT aligned (compact format)
+    // IT-2706: Verify two-way summary file alignment with nested directories (box drawing chars)
+    #[test]
+    fn test_two_way_file_tree_alignment_nested() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        let output = dir.path().join("output");
+
+        // Create structure with files at different depths
+        fs::create_dir_all(source.join("project/src/module")).unwrap();
+        fs::create_dir_all(source.join("project/tests")).unwrap();
+        fs::create_dir_all(source.join("project/docs")).unwrap();
+
+        fs::create_dir_all(target.join("project/src/module")).unwrap();
+        fs::create_dir_all(target.join("project/tests")).unwrap();
+        fs::create_dir_all(target.join("project/docs")).unwrap();
+
+        // Files at different depths
+        fs::write(source.join("project/src/module/core.rs"), "content").unwrap();
+        fs::write(target.join("project/src/module/core.rs"), "modified").unwrap();
+
+        fs::write(source.join("project/tests/test.rs"), "content").unwrap();
+        fs::write(target.join("project/tests/test.rs"), "modified").unwrap();
+
+        fs::write(source.join("project/docs/readme.md"), "content").unwrap();
+        fs::write(target.join("project/docs/readme.md"), "modified").unwrap();
+
+        let summary_path = dir.path().join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+        ]);
+
+        assert!(result.status.success());
+
+        let summary = fs::read_to_string(&summary_path).expect("Failed to read summary");
+
+        // Find lines with status tags
+        let tree_lines: Vec<&str> = summary.lines()
+            .filter(|line| line.contains("[modified]"))
+            .collect();
+
+        assert!(tree_lines.len() >= 3, "Should have at least 3 modified files");
+
+        // Check that all status tags are aligned by display width
+        // (considering box drawing chars as width 2)
+        let display_positions: Vec<usize> = tree_lines.iter()
+            .map(|line| {
+                let byte_pos = line.find('[').unwrap_or(0);
+                display_width_up_to(line, byte_pos)
+            })
+            .collect();
+
+        let first_pos = display_positions[0];
+        for (i, pos) in display_positions.iter().enumerate() {
+            assert_eq!(
+                *pos, first_pos,
+                "Status tags should be aligned at same display width position.\n\
+                 Line {}: position {}\n\
+                 Expected: {}\n\
+                 Lines: {:?}",
+                i, pos, first_pos, tree_lines
+            );
+        }
+    }
+
+    // IT-2707: Verify console output is NOT aligned (compact format)
     #[test]
     fn test_console_output_not_aligned() {
         let dir = tempdir().unwrap();
@@ -6139,5 +6216,101 @@ mod group_keyword_exclusion_tests {
         assert!(!summary.contains("ours_only.txt"), "ours_only should be excluded");
         assert!(!summary.contains("conflict.txt"), "conflict should be excluded");
         assert!(!summary.contains("deleted_ours"), "deleted_ours should be excluded");
+    }
+}
+
+// Test for file tree alignment in summary file (three-way)
+// Files at the same depth should have their status indicators aligned
+#[test]
+fn test_three_way_file_tree_alignment() {
+    use std::process::Command;
+    use std::fs;
+    use tempfile::tempdir;
+
+    let temp = tempdir().unwrap();
+    let base = temp.path().join("base");
+    let ours = temp.path().join("ours");
+    let theirs = temp.path().join("theirs");
+    let output = temp.path().join("output");
+    let summary = temp.path().join("summary.txt");
+
+    // Create structure with files at same depth
+    for dir in &[&base, &ours, &theirs] {
+        fs::create_dir_all(dir.join("project/src")).unwrap();
+        fs::create_dir_all(dir.join("project/tests")).unwrap();
+        fs::create_dir_all(dir.join("project/docs")).unwrap();
+    }
+
+    // Base files - all at same depth
+    fs::write(base.join("project/src/main.rs"), "content").unwrap();
+    fs::write(base.join("project/tests/test.rs"), "content").unwrap();
+    fs::write(base.join("project/docs/readme.md"), "content").unwrap();
+
+    // Ours - same as base
+    fs::write(ours.join("project/src/main.rs"), "content").unwrap();
+    fs::write(ours.join("project/tests/test.rs"), "content").unwrap();
+    fs::write(ours.join("project/docs/readme.md"), "content").unwrap();
+
+    // Theirs - modified
+    fs::write(theirs.join("project/src/main.rs"), "modified").unwrap();
+    fs::write(theirs.join("project/tests/test.rs"), "modified").unwrap();
+    fs::write(theirs.join("project/docs/readme.md"), "modified").unwrap();
+
+    let result = Command::new("cargo")
+        .args(["run", "--", "-3",
+               "-B", base.to_str().unwrap(),
+               "-S", ours.to_str().unwrap(),
+               "-T", theirs.to_str().unwrap(),
+               "-O", output.to_str().unwrap(),
+               "-s", summary.to_str().unwrap(),
+               "--dry-run"])
+        .output()
+        .expect("Failed to execute");
+
+    assert!(result.status.success(), "Command failed: {:?}", String::from_utf8_lossy(&result.stderr));
+
+    let content = fs::read_to_string(&summary).unwrap();
+
+    // Helper function: calculate display width with box drawing chars as width 2
+    fn display_width_cjk(s: &str) -> usize {
+        s.chars().map(|c| {
+            // Box Drawing characters (U+2500-U+257F) are width 2 in CJK terminals
+            if ('\u{2500}'..='\u{257F}').contains(&c) {
+                2
+            } else if c.is_ascii() {
+                1
+            } else {
+                match unicode_width::UnicodeWidthChar::width(c) {
+                    Some(w) => w,
+                    None => 1
+                }
+            }
+        }).sum()
+    }
+
+    // Find file lines and check alignment
+    let file_lines: Vec<&str> = content.lines()
+        .filter(|l| l.contains("[○") && (l.contains("main.rs") || l.contains("test.rs") || l.contains("readme.md")))
+        .collect();
+
+    assert_eq!(file_lines.len(), 3, "Expected 3 file lines");
+
+    // Calculate indicator positions
+    let mut positions = Vec::new();
+    for line in &file_lines {
+        if let Some(idx) = line.find("[○") {
+            let prefix = &line[..idx];
+            let width = display_width_cjk(prefix);
+            positions.push(width);
+        }
+    }
+
+    // All positions should be the same (files at same depth)
+    let first_pos = positions[0];
+    for (i, pos) in positions.iter().enumerate() {
+        assert_eq!(*pos, first_pos,
+            "Alignment mismatch: file {} at position {}, expected {}",
+            file_lines[i].split("└── ").last().unwrap_or("?").split_whitespace().next().unwrap_or("?"),
+            pos, first_pos);
     }
 }

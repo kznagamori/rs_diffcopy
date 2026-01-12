@@ -2,11 +2,21 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::UnicodeWidthChar;
 
-/// Calculate display width considering CJK characters (2-width)
+/// Calculate display width considering CJK characters and box drawing characters
+/// Box drawing characters (U+2500-U+257F) are treated as width 2 for Japanese terminal compatibility
 pub fn display_width(s: &str) -> usize {
-    UnicodeWidthStr::width(s)
+    s.chars()
+        .map(|c| {
+            // Box Drawing characters (U+2500-U+257F) are displayed as width 2 in many CJK terminals
+            if ('\u{2500}'..='\u{257F}').contains(&c) {
+                2
+            } else {
+                UnicodeWidthChar::width(c).unwrap_or(0)
+            }
+        })
+        .sum()
 }
 
 /// Pad string to specified width considering CJK characters
@@ -181,14 +191,14 @@ mod tests {
 
     #[test]
     fn test_display_width_tree_connectors() {
-        // Tree connectors are multi-byte but display as width 1 each
-        // ├, └, │, ─ are all width 1
-        assert_eq!(display_width("├── "), 4);  // ├(1) + ─(1) + ─(1) + space(1) = 4
-        assert_eq!(display_width("└── "), 4);  // └(1) + ─(1) + ─(1) + space(1) = 4
-        assert_eq!(display_width("│   "), 4);  // │(1) + space(1) + space(1) + space(1) = 4
-        assert_eq!(display_width("├── file.txt"), 12); // 4 + 8 = 12
+        // Tree connectors (Box Drawing characters U+2500-U+257F) are width 2 for CJK terminal compatibility
+        // ├, └, │, ─ are all width 2
+        assert_eq!(display_width("├── "), 7);  // ├(2) + ─(2) + ─(2) + space(1) = 7
+        assert_eq!(display_width("└── "), 7);  // └(2) + ─(2) + ─(2) + space(1) = 7
+        assert_eq!(display_width("│   "), 5);  // │(2) + space(1) + space(1) + space(1) = 5
+        assert_eq!(display_width("├── file.txt"), 15); // 7 + 8 = 15
         // 日本語 = 6 width (each CJK is 2), .txt = 4 width
-        assert_eq!(display_width("├── 日本語.txt"), 14); // 4 + 6 + 4 = 14
+        assert_eq!(display_width("├── 日本語.txt"), 17); // 7 + 6 + 4 = 17
     }
 
     #[test]

@@ -446,6 +446,7 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 | IT-2703 | test_three_way_summary_file_alignment | 三者間Summaryファイル整列 | 異なる長さのパスでもインジケータが同じ位置に揃う | 正常系 |
 | IT-2704 | test_three_way_summary_file_alignment_japanese | 三者間日本語ファイル名整列 | 日本語ファイル名でも表示幅でインジケータが揃う | 正常系 |
 | IT-2705 | test_console_output_not_aligned | コンソール出力コンパクト形式 | コンソール出力は整列されず、コンパクト形式 | 正常系 |
+| IT-2706 | test_two_way_file_tree_alignment_nested | 二者間ネストディレクトリ整列 | 異なる深さのパスでもBox Drawing文字を考慮して整列 | 正常系 |
 
 ---
 
@@ -466,6 +467,28 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 | IT-2803 | test_group_keyword_exclusion_modified | ^modifiedグループ除外 | ours-only, theirs-only, both-same, conflictが除外される | 正常系 |
 | IT-2804 | test_group_keyword_exclusion_conflicts | ^conflictsグループ除外 | conflict, added-both-diff, modify-delete, delete-modifyが除外される | 正常系 |
 | IT-2805 | test_group_keyword_inclusion_added | addedグループ包含 | added-*のみが表示され、他は除外される | 正常系 |
+
+---
+
+### Section 29: ファイルツリー整列テスト（test_three_way_file_tree_alignment）
+
+**背景**: 以下の不具合を検証
+1. File TreeのBox Drawing文字（罫線）が日本語端末で表示幅2として扱われるべきなのに幅1として計算されていた
+2. これにより、異なる深さのファイルでインジケータ位置がずれる問題が発生
+
+**原因**:
+1. `unicode_width`クレートがBox Drawing文字（U+2500-U+257F）を幅1として返す
+2. しかし日本語/CJK端末ではBox Drawing文字は幅2で表示される
+3. `new_prefix`の計算で`is_last=true`の場合に4スペース使用していたが、`│`+3スペース=5幅に合わせる必要があった
+
+**修正内容**:
+1. `utils.rs`: `display_width()`関数でBox Drawing文字（U+2500-U+257F）を幅2として扱う
+2. `three_way_summary.rs`: `new_prefix`計算で`is_last=true`の場合に5スペースを使用
+3. `summary.rs`: 同様の修正
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| IT-2901 | test_three_way_file_tree_alignment | 三者間File Tree整列 | 異なる深さのファイルでもインジケータが同じ位置に揃う | 正常系 |
 
 ---
 
@@ -546,3 +569,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-09 | 2.0 | パス展開テスト追加（深いパスの中間ディレクトリを個別行に展開する機能） |
 | 2026-01-09 | 2.1 | 三者間比較Excel修正テスト追加（File Tree形式、filter-status、fold-level） |
 | 2026-01-09 | 2.2 | 三者間グループキーワード除外テスト追加（^added, ^deleted, ^modified, ^conflictsグループ除外） |
+| 2026-01-12 | 2.3 | ファイルツリー整列テスト追加（Box Drawing文字の表示幅修正、CJK端末対応） |

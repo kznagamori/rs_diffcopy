@@ -455,12 +455,13 @@ impl<'a> SummaryWriter<'a> {
                 "├── "
             };
 
+            // new_prefix width must match: │(2) + 3 spaces = 5, so use 5 spaces when is_last
             let new_prefix = if is_root {
                 prefix.to_string()
             } else if is_last {
-                format!("{}    ", prefix)
+                format!("{}     ", prefix)  // 5 spaces to match │(2)+3 = 5 width
             } else {
-                format!("{}│   ", prefix)
+                format!("{}│   ", prefix)   // │(2) + 3 spaces = 5 width
             };
 
             // Only count files with entries (not directory-only nodes)
@@ -557,12 +558,13 @@ impl<'a> SummaryWriter<'a> {
                 "├── "
             };
 
+            // new_prefix width must match: │(2) + 3 spaces = 5, so use 5 spaces when is_last
             let new_prefix = if is_root {
                 prefix.to_string()
             } else if is_last {
-                format!("{}    ", prefix)
+                format!("{}     ", prefix)  // 5 spaces to match │(2)+3 = 5 width
             } else {
-                format!("{}│   ", prefix)
+                format!("{}│   ", prefix)   // │(2) + 3 spaces = 5 width
             };
 
             let status_tag = if let Some(ref entry) = node.entry {
