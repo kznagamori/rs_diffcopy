@@ -495,6 +495,37 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
+### Section 30: Tree表示Box Drawing文字テスト（tree_display_tests）
+
+**背景**: 以下の機能を検証
+1. WindowsコンソールでBox Drawing文字（├, └, │, ─）が正しく表示されること
+2. サマリーファイル出力でもBox Drawing文字が正しく含まれること
+3. File Tree構造が正しくフォーマットされること
+4. 三者間比較モードでもBox Drawing文字が正しく表示されること
+5. 異なる深さのディレクトリ構造でBox Drawing文字が正しく使用されること
+
+**Windows対応**:
+- アプリケーション起動時に自動的にコンソールの出力コードページをUTF-8 (65001)に設定
+- これによりBox Drawing文字（├, └, │, ─等）を含むFile Treeが正しく表示される
+- Windows Terminal、PowerShell、コマンドプロンプトすべてで動作
+- アプリケーション終了時に元のコードページに復元
+
+**実装内容**:
+1. `main.rs`: WindowsConsoleCodepage構造体を追加
+   - 起動時にSetConsoleOutputCP(65001)でUTF-8に設定
+   - Drop trait実装で元のコードページを復元
+2. `Cargo.toml`: windows-sys依存関係を追加（Win32_System_Console feature）
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| IT-3001 | test_console_output_contains_box_drawing_chars | コンソール出力Box Drawing文字確認 | コンソール出力に├, └, ─が含まれる | 正常系 |
+| IT-3002 | test_summary_file_contains_box_drawing_chars | サマリーファイルBox Drawing文字確認 | サマリーファイル出力に├, └, ─, │が含まれる | 正常系 |
+| IT-3003 | test_tree_structure_formatting | Tree構造フォーマット確認 | ├── と└── のパターンが正しく使用される | 正常系 |
+| IT-3004 | test_three_way_tree_contains_box_drawing_chars | 三者間Tree Box Drawing文字確認 | 三者間比較のサマリーにも├, └, ─, │が含まれる | 正常系 |
+| IT-3005 | test_box_drawing_chars_at_different_depths | 異なる深さでのBox Drawing文字確認 | ネストしたディレクトリでも正しくBox Drawing文字が使用される | 正常系 |
+
+---
+
 ## 終了コード一覧
 
 | 終了コード | 意味 |
@@ -574,3 +605,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-09 | 2.2 | 三者間グループキーワード除外テスト追加（^added, ^deleted, ^modified, ^conflictsグループ除外） |
 | 2026-01-12 | 2.3 | ファイルツリー整列テスト追加（Box Drawing文字の表示幅修正、CJK端末対応） |
 | 2026-01-13 | 2.4 | データセルには外枠罫線適用テスト追加 |
+| 2026-01-13 | 2.5 | Tree表示Box Drawing文字テスト追加（Windows UTF-8コンソール対応） |

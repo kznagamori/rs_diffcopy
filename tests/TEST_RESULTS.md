@@ -15,8 +15,8 @@
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
 | ユニットテスト | 119 | 119 | 0 | 0 |
-| 結合テスト | 183 | 183 | 0 | 0 |
-| **合計** | **302** | **302** | **0** | **0** |
+| 結合テスト | 188 | 188 | 0 | 0 |
+| **合計** | **307** | **307** | **0** | **0** |
 
 ---
 
@@ -725,6 +725,16 @@ cargo test 2>&1 | tee test_output.txt
 |---------|---------|------|------|
 | IT-2901 | test_three_way_file_tree_alignment | PASS | Box Drawing文字が幅2で計算され、インジケータが揃うことを確認 |
 
+### 30. Tree表示Box Drawing文字テスト (5テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| IT-3001 | test_console_output_contains_box_drawing_chars | PASS | コンソール出力に├, └, ─が含まれることを確認 |
+| IT-3002 | test_summary_file_contains_box_drawing_chars | PASS | サマリーファイル出力に├, └, ─, │が含まれることを確認 |
+| IT-3003 | test_tree_structure_formatting | PASS | ├── と└── のパターンが正しく使用されることを確認 |
+| IT-3004 | test_three_way_tree_contains_box_drawing_chars | PASS | 三者間比較のサマリーにも├, └, ─, │が含まれることを確認 |
+| IT-3005 | test_box_drawing_chars_at_different_depths | PASS | ネストしたディレクトリでも正しくBox Drawing文字が使用されることを確認 |
+
 ## パス展開機能の不具合修正
 
 **不具合**: 最初のパスが`a/b/c/d/e/f.txt`のように深い場合、`--excel-fold-level 2`指定でも全体が折りたたまれてしまう
@@ -939,3 +949,60 @@ cargo test 2>&1 | tee test_output.txt
 - Box Drawing文字の表示幅が正しく2として計算されることを検証（ユニットテスト）
 - `├── `が7幅（├=2 + ─=2 + ─=2 + スペース=1）として計算されることを検証
 - `│   `が5幅（│=2 + スペース×3=3）として計算されることを検証
+
+## Windows Tree表示不具合修正（Box Drawing文字）
+
+**不具合**: Windows版の場合に、コンソール、サマリーファイルともにTree表示にならない。Linux版と同じ表示にしてほしい。
+
+**原因**:
+- Windowsコンソールのデフォルトコードページ（通常Shift-JISやCP932）ではUTF-8のBox Drawing文字（├, └, │, ─）を正しく表示できない
+- Box Drawing文字（U+2500-U+257F）はUTF-8エンコーディングで表示される必要がある
+
+**修正内容**:
+1. `main.rs`: WindowsConsoleCodepage構造体を追加
+   - アプリケーション起動時にSetConsoleOutputCP(65001)でUTF-8に設定
+   - Drop trait実装でアプリケーション終了時に元のコードページを復元
+   - RAII（Resource Acquisition Is Initialization）パターンを使用
+   ```rust
+   #[cfg(windows)]
+   struct WindowsConsoleCodepage {
+       original_output_cp: u32,
+   }
+
+   #[cfg(windows)]
+   impl WindowsConsoleCodepage {
+       fn new() -> Self {
+           use windows_sys::Win32::System::Console::{GetConsoleOutputCP, SetConsoleOutputCP};
+           let original_output_cp = unsafe { GetConsoleOutputCP() };
+           unsafe { SetConsoleOutputCP(65001); }
+           Self { original_output_cp }
+       }
+   }
+
+   #[cfg(windows)]
+   impl Drop for WindowsConsoleCodepage {
+       fn drop(&mut self) {
+           use windows_sys::Win32::System::Console::SetConsoleOutputCP;
+           unsafe { SetConsoleOutputCP(self.original_output_cp); }
+       }
+   }
+   ```
+
+2. `Cargo.toml`: windows-sys依存関係を追加
+   ```toml
+   [target.'cfg(windows)'.dependencies]
+   windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+   ```
+
+**テスト内容**:
+- コンソール出力にBox Drawing文字（├, └, ─）が含まれることを検証
+- サマリーファイル出力にBox Drawing文字（├, └, ─, │）が含まれることを検証
+- Tree構造のフォーマット（├── と└── パターン）が正しいことを検証
+- 三者間比較モードでもBox Drawing文字が正しく表示されることを検証
+- 異なる深さのディレクトリ構造でBox Drawing文字が正しく使用されることを検証
+
+**対応プラットフォーム**:
+- Windows Terminal: UTF-8対応済み
+- PowerShell: UTF-8対応済み
+- コマンドプロンプト（cmd.exe）: UTF-8(65001)コードページ設定で対応
+- Linux/macOS: 変更なし（既にUTF-8で動作）

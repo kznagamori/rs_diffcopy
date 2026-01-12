@@ -63,6 +63,10 @@ crossterm = "0.28"
 # Determine if stdout is a terminal
 is-terminal = "0.4"
 
+# Windows console codepage support
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+
 [dev-dependencies]
 tempfile = "3"
 calamine = "0.26"

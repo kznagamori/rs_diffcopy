@@ -6474,3 +6474,199 @@ fn test_three_way_file_tree_alignment() {
             pos, first_pos);
     }
 }
+
+// ============================================================================
+// 30. Windows/Linux Tree Display Tests
+// ============================================================================
+
+mod tree_display_tests {
+    use super::*;
+
+    /// Test that console output contains Box Drawing characters for tree display
+    #[test]
+    fn test_console_output_contains_box_drawing_chars() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create nested structure
+        fs::create_dir_all(source.join("subdir")).unwrap();
+        fs::create_dir_all(target.join("subdir")).unwrap();
+        fs::write(source.join("file1.txt"), "old content").unwrap();
+        fs::write(target.join("file1.txt"), "new content").unwrap();
+        fs::write(target.join("subdir/file2.txt"), "added content").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success());
+        let stdout = String::from_utf8_lossy(&result.stdout);
+
+        // Verify Box Drawing characters are present in the output
+        // ├ (U+251C), └ (U+2514), │ (U+2502), ─ (U+2500)
+        assert!(stdout.contains('├') || stdout.contains('└'),
+            "Console output should contain Box Drawing characters (├ or └), got:\n{}", stdout);
+    }
+
+    /// Test that summary file contains Box Drawing characters for tree display
+    #[test]
+    fn test_summary_file_contains_box_drawing_chars() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+        let summary_path = dir.path().join("summary.txt");
+
+        // Create nested structure
+        fs::create_dir_all(source.join("subdir")).unwrap();
+        fs::create_dir_all(target.join("subdir")).unwrap();
+        fs::write(source.join("file1.txt"), "old content").unwrap();
+        fs::write(target.join("file1.txt"), "new content").unwrap();
+        fs::write(target.join("subdir/file2.txt"), "added content").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success());
+
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+
+        // Verify Box Drawing characters are present in the summary file
+        assert!(summary_content.contains('├') || summary_content.contains('└'),
+            "Summary file should contain Box Drawing characters (├ or └), got:\n{}", summary_content);
+        assert!(summary_content.contains('│') || summary_content.contains("└── ") || summary_content.contains("├── "),
+            "Summary file should contain tree connectors");
+    }
+
+    /// Test that tree structure is correctly formatted with proper indentation
+    #[test]
+    fn test_tree_structure_formatting() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+        let summary_path = dir.path().join("summary.txt");
+
+        // Create nested structure
+        fs::create_dir_all(source.join("a/b/c")).unwrap();
+        fs::create_dir_all(target.join("a/b/c")).unwrap();
+        fs::write(source.join("a/b/c/deep.txt"), "old").unwrap();
+        fs::write(target.join("a/b/c/deep.txt"), "new").unwrap();
+        fs::write(target.join("a/top.txt"), "added").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success());
+
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+
+        // Check that directory hierarchy is present
+        assert!(summary_content.contains("a/") || summary_content.contains("a"),
+            "Tree should contain directory 'a'");
+
+        // Check for proper tree connectors
+        let has_tree_chars = summary_content.contains("├── ") || summary_content.contains("└── ");
+        assert!(has_tree_chars, "Summary should contain tree connector patterns (├── or └── )");
+    }
+
+    /// Test three-way comparison also uses Box Drawing characters
+    #[test]
+    fn test_three_way_tree_contains_box_drawing_chars() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join("base");
+        let ours = dir.path().join("ours");
+        let theirs = dir.path().join("theirs");
+        let output = dir.path().join("output");
+        let summary_path = dir.path().join("summary.txt");
+
+        // Create directories
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&ours).unwrap();
+        fs::create_dir_all(&theirs).unwrap();
+        fs::create_dir_all(base.join("subdir")).unwrap();
+        fs::create_dir_all(ours.join("subdir")).unwrap();
+        fs::create_dir_all(theirs.join("subdir")).unwrap();
+
+        // Create files
+        fs::write(base.join("file.txt"), "base").unwrap();
+        fs::write(ours.join("file.txt"), "ours").unwrap();
+        fs::write(theirs.join("file.txt"), "theirs").unwrap();
+        fs::write(base.join("subdir/nested.txt"), "base").unwrap();
+        fs::write(ours.join("subdir/nested.txt"), "base").unwrap();
+        fs::write(theirs.join("subdir/nested.txt"), "modified").unwrap();
+
+        let result = run_diffcopy(&[
+            "-3",
+            "-B", base.to_str().unwrap(),
+            "-S", ours.to_str().unwrap(),
+            "-T", theirs.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        // Command should run (may have conflicts)
+        let stdout = String::from_utf8_lossy(&result.stdout);
+
+        // Check console output
+        assert!(stdout.contains('├') || stdout.contains('└') || stdout.contains("├── ") || stdout.contains("└── "),
+            "Three-way console output should contain Box Drawing characters, got:\n{}", stdout);
+
+        // Check summary file if it was created
+        if summary_path.exists() {
+            let summary_content = fs::read_to_string(&summary_path).unwrap();
+            assert!(summary_content.contains('├') || summary_content.contains('└'),
+                "Three-way summary file should contain Box Drawing characters");
+        }
+    }
+
+    /// Test that Box Drawing characters are used consistently across different file depths
+    #[test]
+    fn test_box_drawing_chars_at_different_depths() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+        let summary_path = dir.path().join("summary.txt");
+
+        // Create structure with siblings to ensure │ characters are used
+        fs::write(target.join("root.txt"), "root level").unwrap();
+
+        fs::create_dir_all(target.join("dir_a")).unwrap();
+        fs::write(target.join("dir_a/a1.txt"), "a1").unwrap();
+        fs::write(target.join("dir_a/a2.txt"), "a2").unwrap();
+
+        fs::create_dir_all(target.join("dir_b")).unwrap();
+        fs::write(target.join("dir_b/b1.txt"), "b1").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success());
+
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+
+        // Count occurrences of tree connectors
+        let branch_count = summary_content.matches("├── ").count() + summary_content.matches("└── ").count();
+
+        // Should have multiple tree connectors for the structure
+        assert!(branch_count >= 3, "Should have at least 3 branch connectors (├── or └── ), found {}\nContent:\n{}", branch_count, summary_content);
+
+        // Check that tree connectors are present (either ├── or └── or │)
+        let has_tree_chars = summary_content.contains("├── ") || summary_content.contains("└── ");
+        assert!(has_tree_chars, "Summary should contain tree connector patterns");
+    }
+}
