@@ -221,7 +221,8 @@ fn is_console_handle(handle: std::os::windows::io::RawHandle) -> bool {
     use winapi::um::fileapi::GetFileType;
     use winapi::um::winbase::FILE_TYPE_CHAR;
 
-    let file_type = unsafe { GetFileType(handle as *mut _) };
+    // RawHandle is *mut c_void on Windows, safe to cast to HANDLE
+    let file_type = unsafe { GetFileType(handle as winapi::um::winnt::HANDLE) };
     file_type == FILE_TYPE_CHAR
 }
 
@@ -235,11 +236,11 @@ fn write_console_w(handle: std::os::windows::io::RawHandle, s: &str) {
         return;
     }
 
-    let mut written = 0u32;
+    let mut written: u32 = 0;
     unsafe {
         WriteConsoleW(
-            handle as *mut _,
-            wide.as_ptr(),
+            handle as winapi::um::winnt::HANDLE,
+            wide.as_ptr() as *const _,  // Let compiler infer the target type
             wide.len() as u32,
             &mut written,
             std::ptr::null_mut(),
