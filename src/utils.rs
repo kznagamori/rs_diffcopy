@@ -215,44 +215,124 @@ pub fn to_cp932(s: &str) -> Vec<u8> {
     result
 }
 
+/// Check if a handle is a console (Windows only)
+#[cfg(windows)]
+fn is_console_handle(handle: std::os::windows::io::RawHandle) -> bool {
+    use winapi::um::fileapi::GetFileType;
+    use winapi::um::winbase::FILE_TYPE_CHAR;
+
+    let file_type = unsafe { GetFileType(handle as *mut _) };
+    file_type == FILE_TYPE_CHAR
+}
+
+/// Write string to console using WriteConsoleW (Windows only)
+#[cfg(windows)]
+fn write_console_w(handle: std::os::windows::io::RawHandle, s: &str) {
+    use winapi::um::consoleapi::WriteConsoleW;
+
+    let wide: Vec<u16> = s.encode_utf16().collect();
+    if wide.is_empty() {
+        return;
+    }
+
+    let mut written = 0u32;
+    unsafe {
+        WriteConsoleW(
+            handle as *mut _,
+            wide.as_ptr(),
+            wide.len() as u32,
+            &mut written,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
 /// Print string to stdout with CP932 encoding (Windows only)
+/// Uses WriteConsoleW for console output, CP932 for redirected output
 /// On non-Windows platforms, this just prints UTF-8
 #[cfg(windows)]
 pub fn print_cp932(s: &str) {
     use std::io::Write;
-    let bytes = to_cp932(s);
-    let _ = std::io::stdout().write_all(&bytes);
-    let _ = std::io::stdout().flush();
+    use std::os::windows::io::AsRawHandle;
+
+    let handle = std::io::stdout().as_raw_handle();
+
+    if is_console_handle(handle) {
+        // Console output - use WriteConsoleW with UTF-16
+        write_console_w(handle, s);
+    } else {
+        // Redirected output - use CP932
+        let bytes = to_cp932(s);
+        let _ = std::io::stdout().write_all(&bytes);
+        let _ = std::io::stdout().flush();
+    }
 }
 
 /// Print string to stdout with CP932 encoding and newline (Windows only)
+/// Uses WriteConsoleW for console output, CP932 for redirected output
 /// On non-Windows platforms, this just prints UTF-8
 #[cfg(windows)]
 pub fn println_cp932(s: &str) {
     use std::io::Write;
-    let mut bytes = to_cp932(s);
-    bytes.push(b'\n');
-    let _ = std::io::stdout().write_all(&bytes);
-    let _ = std::io::stdout().flush();
+    use std::os::windows::io::AsRawHandle;
+
+    let handle = std::io::stdout().as_raw_handle();
+
+    if is_console_handle(handle) {
+        // Console output - use WriteConsoleW with UTF-16
+        let mut text = s.to_string();
+        text.push('\n');
+        write_console_w(handle, &text);
+    } else {
+        // Redirected output - use CP932
+        let mut bytes = to_cp932(s);
+        bytes.push(b'\n');
+        let _ = std::io::stdout().write_all(&bytes);
+        let _ = std::io::stdout().flush();
+    }
 }
 
 /// Print string to stderr with CP932 encoding (Windows only)
+/// Uses WriteConsoleW for console output, CP932 for redirected output
 #[cfg(windows)]
 pub fn eprint_cp932(s: &str) {
     use std::io::Write;
-    let bytes = to_cp932(s);
-    let _ = std::io::stderr().write_all(&bytes);
-    let _ = std::io::stderr().flush();
+    use std::os::windows::io::AsRawHandle;
+
+    let handle = std::io::stderr().as_raw_handle();
+
+    if is_console_handle(handle) {
+        // Console output - use WriteConsoleW with UTF-16
+        write_console_w(handle, s);
+    } else {
+        // Redirected output - use CP932
+        let bytes = to_cp932(s);
+        let _ = std::io::stderr().write_all(&bytes);
+        let _ = std::io::stderr().flush();
+    }
 }
 
 /// Print string to stderr with CP932 encoding and newline (Windows only)
+/// Uses WriteConsoleW for console output, CP932 for redirected output
 #[cfg(windows)]
 pub fn eprintln_cp932(s: &str) {
     use std::io::Write;
-    let mut bytes = to_cp932(s);
-    bytes.push(b'\n');
-    let _ = std::io::stderr().write_all(&bytes);
-    let _ = std::io::stderr().flush();
+    use std::os::windows::io::AsRawHandle;
+
+    let handle = std::io::stderr().as_raw_handle();
+
+    if is_console_handle(handle) {
+        // Console output - use WriteConsoleW with UTF-16
+        let mut text = s.to_string();
+        text.push('\n');
+        write_console_w(handle, &text);
+    } else {
+        // Redirected output - use CP932
+        let mut bytes = to_cp932(s);
+        bytes.push(b'\n');
+        let _ = std::io::stderr().write_all(&bytes);
+        let _ = std::io::stderr().flush();
+    }
 }
 
 /// Non-Windows: just use regular print

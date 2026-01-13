@@ -599,6 +599,40 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
+### Section 34: レビュー指摘修正テスト（review_fix_tests）
+
+**背景**: レビュー指摘により以下の不具合が修正されました：
+1. `--stats-only` がファイル出力にも影響し、要件どおり「コンソールのみ簡略、ファイルは完全サマリー」になっていなかった
+2. `--filter-status` の別名（add/a/modify/m/delete/d/same/u/sym/link/spec/perm/err）が受け付けられなかった
+3. `--filter-status unchanged` を指定しても `--show-unchanged` が無い場合にエラー/補正されず、Tree/Detailsが空になった
+4. `--filter-status` の `all` が大文字小文字を区別し、ALL/All などが想定どおり動作しなかった
+
+**修正内容**:
+1. `summary.rs` / `three_way_summary.rs`: `for_console` パラメータを使用して、`stats_only` をコンソール出力のみに適用
+2. `cli.rs` / `config.rs`: `FileStatus::from_str()` で別名を正規名に正規化してから格納
+3. `config.rs`: `filter_status` に `unchanged` が含まれる場合、自動的に `show_unchanged` を有効化
+4. `cli.rs` / `config.rs`: ループの最初で `to_lowercase()` を実行し、`all` 判定も小文字化後に実行
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| REV-001 | test_stats_only_console_vs_file_output | --stats-onlyがコンソールのみに影響 | コンソール出力にFile Tree/Detailsが含まれない、ファイル出力には含まれる | 正常系 |
+| REV-002 | test_filter_status_aliases | --filter-status の別名動作確認 | 別名 'm' で modified のみ表示 | 正常系 |
+| REV-003 | test_filter_status_multiple_aliases | 複数別名の組み合わせ | 別名 'a,m' で added と modified のみ表示 | 正常系 |
+| REV-004 | test_filter_status_unchanged_auto_enables_show_unchanged | unchanged自動有効化 | --show-unchanged なしでも unchanged ファイルが表示 | 正常系 |
+| REV-005 | test_filter_status_all_case_insensitive | all の大文字小文字非依存 | 'ALL,^unchanged' が正しく動作 | 正常系 |
+| REV-006 | test_filter_status_all_mixed_case | all の混合ケース | 'All,^MODIFIED' が正しく動作 | 正常系 |
+| REV-007 | test_filter_status_alias_with_exclusion | 別名での除外指定 | 'all,^d' で deleted が除外される | 正常系 |
+| REV-008 | test_three_way_stats_only_console_vs_file | 三者間でのstats-only動作 | 三者間比較でもコンソール/ファイルで出力が異なる | 正常系 |
+
+**追加ユニットテスト**:
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| UT-3401 | test_file_status_all_aliases | FileStatusの全別名確認 | add/modify/delete/same/u/sym/link/spec/perm/err が正しく認識される | 正常系 |
+| UT-3402 | test_file_status_case_insensitive | FileStatusの大文字小文字非依存 | ADDED/Modified/A/M などが正しく認識される | 正常系 |
+
+---
+
 ## 終了コード一覧
 
 | 終了コード | 意味 |
@@ -681,3 +715,5 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-13 | 2.5 | Tree表示クロスプラットフォームテスト追加（Windowsパス区切り文字対応） |
 | 2026-01-13 | 2.6 | CP932コンソール出力テスト追加（Windows版コンソール出力のCP932エンコーディング対応） |
 | 2026-01-13 | 2.7 | CompareDirectoryルートノード表示テスト追加、CP932罫線明示マッピングテスト追加 |
+| 2026-01-13 | 2.8 | レビュー指摘修正テスト追加（--stats-only、filter-status別名、unchanged自動有効化、all大文字小文字対応） |
+| 2026-01-13 | 2.9 | Windows コンソール出力修正（WriteConsoleW使用、UTF-16出力、罫線表示修正） |

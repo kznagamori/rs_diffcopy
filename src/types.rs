@@ -960,4 +960,33 @@ mod tests {
         assert!(!filter.matches_three_way(ThreeWayStatus::DeletedOurs));
         assert!(!filter.matches_three_way(ThreeWayStatus::Conflict));
     }
+
+    // Additional alias tests for comprehensive coverage
+    #[test]
+    fn test_file_status_all_aliases() {
+        // Test all aliases for each status
+        assert_eq!(FileStatus::from_str("add"), Some(FileStatus::Added));
+        assert_eq!(FileStatus::from_str("modify"), Some(FileStatus::Modified));
+        assert_eq!(FileStatus::from_str("delete"), Some(FileStatus::Deleted));
+        assert_eq!(FileStatus::from_str("same"), Some(FileStatus::Unchanged));
+        assert_eq!(FileStatus::from_str("u"), Some(FileStatus::Unchanged));
+        assert_eq!(FileStatus::from_str("sym"), Some(FileStatus::Symlink));
+        assert_eq!(FileStatus::from_str("link"), Some(FileStatus::Symlink));
+        assert_eq!(FileStatus::from_str("spec"), Some(FileStatus::Special));
+        assert_eq!(FileStatus::from_str("perm"), Some(FileStatus::Permission));
+        assert_eq!(FileStatus::from_str("err"), Some(FileStatus::Error));
+    }
+
+    #[test]
+    fn test_file_status_case_insensitive() {
+        // Test case insensitivity for all variants
+        assert_eq!(FileStatus::from_str("ADDED"), Some(FileStatus::Added));
+        assert_eq!(FileStatus::from_str("Modified"), Some(FileStatus::Modified));
+        assert_eq!(FileStatus::from_str("DELETED"), Some(FileStatus::Deleted));
+        assert_eq!(FileStatus::from_str("UnChanged"), Some(FileStatus::Unchanged));
+        assert_eq!(FileStatus::from_str("A"), Some(FileStatus::Added));
+        assert_eq!(FileStatus::from_str("M"), Some(FileStatus::Modified));
+        assert_eq!(FileStatus::from_str("D"), Some(FileStatus::Deleted));
+        assert_eq!(FileStatus::from_str("U"), Some(FileStatus::Unchanged));
+    }
 }

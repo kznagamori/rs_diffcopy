@@ -7006,3 +7006,259 @@ mod cp932_output_tests {
     }
 }
 
+// Tests for review fixes
+mod review_fix_tests {
+    use super::*;
+
+    #[test]
+    fn test_stats_only_console_vs_file_output() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create modified file
+        fs::write(source.join("file.txt"), "old content").unwrap();
+        fs::write(target.join("file.txt"), "new content").unwrap();
+
+        let summary_file = output.join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_file.to_str().unwrap(),
+            "--stats-only",
+        ]);
+
+        assert!(result.status.success(), "Command should succeed");
+
+        // Console output should NOT contain File Tree
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(!stdout.contains("File Tree"),
+            "Console output with --stats-only should not contain File Tree");
+        assert!(!stdout.contains("Modified Files"),
+            "Console output with --stats-only should not contain details");
+
+        // File output SHOULD contain File Tree (full summary)
+        let summary_content = fs::read_to_string(&summary_file).unwrap();
+        assert!(summary_content.contains("File Tree"),
+            "File output should contain File Tree even with --stats-only");
+        assert!(summary_content.contains("Modified Files"),
+            "File output should contain details even with --stats-only");
+    }
+
+    #[test]
+    fn test_filter_status_aliases() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create test files
+        fs::write(target.join("added.txt"), "added content").unwrap();
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+        fs::write(source.join("deleted.txt"), "will be deleted").unwrap();
+
+        // Test with alias 'm' for modified
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--filter-status", "m",
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success(), "Command should succeed with alias 'm'");
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("modified.txt"), "Should show modified file");
+        assert!(!stdout.contains("added.txt"), "Should not show added file");
+        assert!(!stdout.contains("deleted.txt"), "Should not show deleted file");
+        assert!(stdout.contains("(filtered out)"), "Should show filtered out statuses");
+    }
+
+    #[test]
+    fn test_filter_status_multiple_aliases() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create test files
+        fs::write(target.join("added.txt"), "added content").unwrap();
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+        fs::write(source.join("deleted.txt"), "will be deleted").unwrap();
+
+        // Test with aliases 'a' and 'm'
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--filter-status", "a,m",
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success(), "Command should succeed with aliases 'a,m'");
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("added.txt"), "Should show added file");
+        assert!(stdout.contains("modified.txt"), "Should show modified file");
+        assert!(!stdout.contains("deleted.txt"), "Should not show deleted file");
+    }
+
+    #[test]
+    fn test_filter_status_unchanged_auto_enables_show_unchanged() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create unchanged file
+        fs::write(source.join("same.txt"), "same content").unwrap();
+        fs::write(target.join("same.txt"), "same content").unwrap();
+        // Create modified file
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+
+        // Test with --filter-status unchanged WITHOUT explicit --show-unchanged
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--filter-status", "unchanged",
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success(),
+            "Command should succeed with --filter-status unchanged");
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("same.txt"),
+            "Should show unchanged file even without --show-unchanged");
+        assert!(stdout.contains("[unchanged]"),
+            "Should show unchanged tag");
+        assert!(!stdout.contains("modified.txt"),
+            "Should not show modified file when filtering by unchanged");
+    }
+
+    #[test]
+    fn test_filter_status_all_case_insensitive() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create test files
+        fs::write(target.join("added.txt"), "added content").unwrap();
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+
+        // Test with uppercase "ALL"
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--filter-status", "ALL,^unchanged",
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success(),
+            "Command should succeed with uppercase 'ALL'");
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("added.txt"), "Should show added file with uppercase ALL");
+        assert!(stdout.contains("modified.txt"), "Should show modified file with uppercase ALL");
+    }
+
+    #[test]
+    fn test_filter_status_all_mixed_case() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create test files
+        fs::write(target.join("added.txt"), "added content").unwrap();
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+
+        // Test with mixed case "All" and uppercase exclusion "^MODIFIED"
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--filter-status", "All,^MODIFIED",
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success(),
+            "Command should succeed with mixed case 'All' and '^MODIFIED'");
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("added.txt"),
+            "Should show added file with mixed case");
+        assert!(!stdout.contains("modified.txt") || stdout.contains("(filtered out)"),
+            "Modified file should be filtered out or marked as filtered");
+    }
+
+    #[test]
+    fn test_filter_status_alias_with_exclusion() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+
+        // Create test files
+        fs::write(target.join("added.txt"), "added content").unwrap();
+        fs::write(source.join("modified.txt"), "old").unwrap();
+        fs::write(target.join("modified.txt"), "new").unwrap();
+        fs::write(source.join("deleted.txt"), "will be deleted").unwrap();
+
+        // Test with "all" and exclusion using alias "^d"
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "--filter-status", "all,^d",
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success(),
+            "Command should succeed with alias exclusion '^d'");
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("added.txt"), "Should show added file");
+        assert!(stdout.contains("modified.txt"), "Should show modified file");
+        assert!(!stdout.contains("deleted.txt") || stdout.contains("(filtered out)"),
+            "Deleted file should be filtered out or marked as filtered");
+    }
+
+    #[test]
+    fn test_three_way_stats_only_console_vs_file() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join("base");
+        let ours = dir.path().join("ours");
+        let theirs = dir.path().join("theirs");
+        let output = dir.path().join("output");
+
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&ours).unwrap();
+        fs::create_dir_all(&theirs).unwrap();
+
+        // Create base file
+        fs::write(base.join("file.txt"), "base content").unwrap();
+        // Modify in ours
+        fs::write(ours.join("file.txt"), "ours content").unwrap();
+        // Keep same in theirs
+        fs::write(theirs.join("file.txt"), "base content").unwrap();
+
+        let summary_file = output.join("summary.txt");
+
+        let result = run_diffcopy(&[
+            "-3",
+            "-B", base.to_str().unwrap(),
+            "-S", ours.to_str().unwrap(),
+            "-T", theirs.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_file.to_str().unwrap(),
+            "--stats-only",
+        ]);
+
+        assert!(result.status.success(),
+            "Three-way command should succeed with --stats-only");
+
+        // Console output should NOT contain File Tree
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(!stdout.contains("File Tree"),
+            "Console output with --stats-only should not contain File Tree (three-way)");
+
+        // File output SHOULD contain File Tree
+        let summary_content = fs::read_to_string(&summary_file).unwrap();
+        assert!(summary_content.contains("File Tree"),
+            "File output should contain File Tree even with --stats-only (three-way)");
+    }
+}
+

@@ -831,6 +831,7 @@ dependencies = [
  "toml",
  "unicode-width",
  "walkdir",
+ "winapi",
 ]
 
 [[package]]

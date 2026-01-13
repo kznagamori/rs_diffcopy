@@ -97,13 +97,17 @@ impl<'a> SummaryWriter<'a> {
         }
 
         // File Tree (unless --stats-only or --no-tree)
-        if !self.config.stats_only && !self.config.no_tree {
+        // Note: --stats-only only affects console output, not file output
+        let skip_tree = (for_console && self.config.stats_only) || self.config.no_tree;
+        if !skip_tree {
             output.push_str(&self.generate_file_tree(&result.entries, for_console));
             output.push('\n');
         }
 
         // Details sections (unless --stats-only or --no-details)
-        if !self.config.stats_only && !self.config.no_details {
+        // Note: --stats-only only affects console output, not file output
+        let skip_details = (for_console && self.config.stats_only) || self.config.no_details;
+        if !skip_details {
             output.push_str(&self.generate_details(&result.entries, for_console));
 
             // Permission Changes

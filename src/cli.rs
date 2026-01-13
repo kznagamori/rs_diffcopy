@@ -171,27 +171,41 @@ impl Cli {
         }
 
         for status_str in &self.filter_status {
-            if status_str == "all" {
+            let lowered = status_str.to_lowercase();
+
+            if lowered == "all" {
                 filter.include_all = true;
                 continue;
             }
 
-            if let Some(stripped) = status_str.strip_prefix('^') {
-                let lowered = stripped.to_lowercase();
-                // Always insert the original keyword (for two-way mode compatibility)
-                filter.excluded.insert(lowered.clone());
+            if let Some(stripped) = lowered.strip_prefix('^') {
+                // Normalize alias to canonical name using FileStatus::from_str
+                let canonical = if let Some(status) = crate::types::FileStatus::from_str(stripped) {
+                    status.as_str().to_string()
+                } else {
+                    // Not a FileStatus alias, keep as-is (might be three-way status or group keyword)
+                    stripped.to_string()
+                };
+                // Always insert the canonical keyword (for two-way mode compatibility)
+                filter.excluded.insert(canonical.clone());
                 // Also expand group keywords for three-way mode
-                if let Some(expanded) = StatusFilter::expand_three_way_group(&lowered) {
+                if let Some(expanded) = StatusFilter::expand_three_way_group(&canonical) {
                     for s in expanded {
                         filter.excluded.insert(s.to_string());
                     }
                 }
             } else {
-                let lowered = status_str.to_lowercase();
-                // Always insert the original keyword (for two-way mode compatibility)
-                filter.included.insert(lowered.clone());
+                // Normalize alias to canonical name using FileStatus::from_str
+                let canonical = if let Some(status) = crate::types::FileStatus::from_str(&lowered) {
+                    status.as_str().to_string()
+                } else {
+                    // Not a FileStatus alias, keep as-is (might be three-way status or group keyword)
+                    lowered.clone()
+                };
+                // Always insert the canonical keyword (for two-way mode compatibility)
+                filter.included.insert(canonical.clone());
                 // Also expand group keywords for three-way mode
-                if let Some(expanded) = StatusFilter::expand_three_way_group(&lowered) {
+                if let Some(expanded) = StatusFilter::expand_three_way_group(&canonical) {
                     for s in expanded {
                         filter.included.insert(s.to_string());
                     }
