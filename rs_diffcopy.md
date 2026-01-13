@@ -241,7 +241,7 @@ rs_diffcopy [OPTIONS]
 - `added`
 - `modified`
 - `deleted`
-- `unchanged`（`--show-unchanged` が必要）
+- `unchanged`（指定時に `--show-unchanged` が自動で有効化される）
 - `symlink`
 - `special`
 - `error`
@@ -251,7 +251,7 @@ rs_diffcopy [OPTIONS]
 - `add` / `a`
 - `modify` / `m`
 - `delete` / `d`
-- `same` / `u`（`--show-unchanged` が必要）
+- `same` / `u`（指定時に `--show-unchanged` が自動で有効化される）
 - `sym` / `link`
 - `spec`
 - `err`
@@ -283,7 +283,8 @@ rs_diffcopy [OPTIONS]
 
 **`--summary` の出力先**
 
-`--summary` で指定したファイルにサマリーを出力します。コンソール出力は `--stats-only` / `--no-tree` / `--no-details` / `--filter-status` の指定に従います。
+`--summary` で指定したファイルには**常に完全なサマリー**（ヘッダー、Options、統計情報、File Tree、詳細セクション）が出力されます。
+コンソール出力は `--stats-only` / `--no-tree` / `--no-details` / `--filter-status` の指定に従いますが、`--summary` ファイル出力は影響を受けません。
 
 **`--summary` と `--excel` の併用**
 
@@ -798,19 +799,37 @@ Completed.
 
 ### 9.3 Windows版コンソール出力のエンコーディング
 
-Windows版では、コンソール出力（標準出力・標準エラー出力）をCP932（Shift-JIS）でエンコードして出力します。
+Windows版では、出力先を自動検出してエンコーディングを切り替えます。
 
-| 項目 | 動作 |
-|------|------|
-| 対象OS | Windows のみ |
-| 対象出力 | コンソール出力（標準出力・標準エラー出力） |
-| エンコーディング | CP932（Shift-JIS） |
-| ファイル出力 | UTF-8（変更なし） |
-| 変換不能文字 | `?` に置換 |
+| 出力先 | エンコーディング | API/方法 | 備考 |
+|------|----------------|---------|------|
+| コンソール（PowerShell、cmd.exe） | UTF-16 | WriteConsoleW API | Box Drawing文字（├, └, │, ─）が正しく表示される |
+| リダイレクト（パイプ、ファイル） | CP932（Shift-JIS） | バイトストリーム | `clip`コマンド等との互換性確保 |
+| `--summary` ファイル出力 | UTF-8 | 通常のファイルI/O | 変更なし |
+| `--excel` ファイル出力 | UTF-8 | xlsxライブラリ | 変更なし |
 
-**目的**: パイプで`clip`コマンド等にコピーする際の互換性確保
+**動作詳細**:
 
-**注意**: CP932で表現できない文字（一部のUnicode文字、絵文字等）は `?` に置換されます。ファイル出力（`--summary`、`--excel`等）は従来通りUTF-8で出力されます。
+1. **コンソール出力時**（標準出力がターミナル）:
+   - Windows API `WriteConsoleW` を使用してUTF-16で出力
+   - Box Drawing文字（├, └, │, ─）やUnicode文字が正しく表示される
+   - 日本語パスも正しく表示される
+
+2. **リダイレクト出力時**（標準出力がパイプまたはファイル）:
+   - CP932（Shift-JIS）バイトストリームに変換して出力
+   - `rs_diffcopy ... | clip` などのパイプで互換性が保たれる
+   - CP932で表現できない文字は `?` に置換される
+
+3. **ファイル出力**（`--summary`、`--excel`）:
+   - 常にUTF-8で出力（従来通り）
+
+**目的**:
+- コンソールでの正しい表示（Box Drawing文字、日本語）
+- パイプでの互換性確保（`clip`コマンド等）
+
+**注意**:
+- Linux/macOSでは常にUTF-8で出力（プラットフォームの標準動作）
+- リダイレクト出力時、CP932で表現できない文字は `?` に置換される
 
 ---
 
@@ -1526,7 +1545,8 @@ Delete and continue? [y/N]:
 
 | 条件 | エンコーディング |
 |------|-----------------|
-| コンソール出力（Windows） | CP932（Shift-JIS） |
+| コンソール出力（Windowsターミナル） | UTF-16（WriteConsoleW API） |
+| リダイレクト出力（Windows） | CP932（Shift-JIS） |
 | コンソール出力（Linux/macOS） | UTF-8 |
 | サマリーファイル (`-s`) | UTF-8 |
 | Excelファイル (`--excel`) | UTF-8 |
@@ -1536,8 +1556,11 @@ Delete and continue? [y/N]:
 
 - 日本語ファイルパスを正しく処理
 - サマリーファイル、Excelファイル、パッチファイルは常にUTF-8で出力
-- Windows版コンソール出力はCP932でエンコード（`| clip`等のパイプ互換性のため）
-- CP932で表現できない文字は`?`に置換される（詳細は「9.3 Windows版コンソール出力のエンコーディング」参照）
+- Windows版コンソール出力：
+  - ターミナルへの直接出力：WriteConsoleW APIでUTF-16出力（Box Drawing文字、日本語が正しく表示）
+  - リダイレクト/パイプ出力：CP932でエンコード（`| clip`等のパイプ互換性のため）
+  - CP932で表現できない文字は`?`に置換される（リダイレクト時のみ）
+  - 詳細は「9.3 Windows版コンソール出力のエンコーディング」参照
 
 ### クロスプラットフォームパス処理
 

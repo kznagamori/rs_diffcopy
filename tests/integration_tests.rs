@@ -6780,6 +6780,128 @@ mod tree_display_tests {
         assert!(!compare_dir_line.contains("very/deep/path") && !compare_dir_line.contains("another/deep/path"),
             "CompareDirectory line should not contain full path components, got: {}", compare_dir_line);
     }
+
+    /// Test that first-level items have tree connectors (regression test for tree format fix)
+    #[test]
+    fn test_first_level_items_have_connectors() {
+        let dir = tempdir().unwrap();
+        let (source, target, output) = create_test_structure(dir.path());
+        let summary_path = dir.path().join("summary.txt");
+
+        // Create first-level files to test
+        fs::write(source.join("file1.txt"), "old content").unwrap();
+        fs::write(target.join("file1.txt"), "new content").unwrap();
+        fs::write(target.join("file2.txt"), "added file").unwrap();
+        fs::write(source.join("file3.txt"), "deleted file").unwrap();
+
+        let result = run_diffcopy(&[
+            "-S", source.to_str().unwrap(),
+            "-T", target.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success());
+
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+
+        // First-level items should have connectors (├── or └──), not be at the same level as CompareDirectory
+        // This was the bug: first-level items had no prefix
+
+        // Check that there are tree connectors immediately after CompareDirectory line
+        let lines: Vec<&str> = summary_content.lines().collect();
+        let compare_dir_idx = lines.iter().position(|l| l.contains("CompareDirectory"));
+        assert!(compare_dir_idx.is_some(), "Should have CompareDirectory line");
+
+        // The next non-empty line after CompareDirectory should have a connector (├ or └)
+        let mut found_first_level_with_connector = false;
+        if let Some(idx) = compare_dir_idx {
+            for line in &lines[idx+1..] {
+                if !line.trim().is_empty() && !line.contains("====") {
+                    // First content line should have a connector
+                    if line.contains("├") || line.contains("└") {
+                        found_first_level_with_connector = true;
+                        break;
+                    }
+                    // If it doesn't have a connector but has content, that's a problem
+                    if line.contains("[") && (line.contains("added]") || line.contains("modified]") || line.contains("deleted]")) {
+                        panic!("First-level item found without connector: {}", line);
+                    }
+                }
+            }
+        }
+
+        assert!(found_first_level_with_connector,
+            "First-level items should have tree connectors (├ or └), but none were found.\nContent:\n{}", summary_content);
+
+        // Verify that all file items have connectors
+        let file_lines: Vec<&str> = summary_content.lines()
+            .filter(|l| l.contains("[added]") || l.contains("[modified]") || l.contains("[deleted]"))
+            .collect();
+
+        for line in &file_lines {
+            assert!(line.contains("├") || line.contains("└"),
+                "File line should have tree connector (├ or └), but got: {}", line);
+        }
+    }
+
+    /// Test that three-way first-level items also have connectors
+    #[test]
+    fn test_three_way_first_level_items_have_connectors() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join("base");
+        let ours = dir.path().join("ours");
+        let theirs = dir.path().join("theirs");
+        let output = dir.path().join("output");
+        let summary_path = dir.path().join("summary.txt");
+
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&ours).unwrap();
+        fs::create_dir_all(&theirs).unwrap();
+
+        // Create first-level files
+        fs::write(base.join("file1.txt"), "base").unwrap();
+        fs::write(ours.join("file1.txt"), "ours modified").unwrap();
+        fs::write(theirs.join("file1.txt"), "base").unwrap();
+
+        fs::write(ours.join("file2.txt"), "new in ours").unwrap();
+
+        let result = run_diffcopy(&[
+            "-3",
+            "-B", base.to_str().unwrap(),
+            "-S", ours.to_str().unwrap(),
+            "-T", theirs.to_str().unwrap(),
+            "-O", output.to_str().unwrap(),
+            "-s", summary_path.to_str().unwrap(),
+            "--dry-run",
+        ]);
+
+        assert!(result.status.success());
+
+        let summary_content = fs::read_to_string(&summary_path).unwrap();
+
+        // Verify first-level items have connectors
+        let lines: Vec<&str> = summary_content.lines().collect();
+        let compare_dir_idx = lines.iter().position(|l| l.contains("CompareDirectory"));
+        assert!(compare_dir_idx.is_some(), "Should have CompareDirectory line");
+
+        let mut found_first_level_with_connector = false;
+        if let Some(idx) = compare_dir_idx {
+            for line in &lines[idx+1..] {
+                if !line.trim().is_empty() && !line.contains("====") && !line.contains("Legend:") && !line.contains("B  O  T") {
+                    // First content line should have a connector
+                    if line.contains("├") || line.contains("└") {
+                        found_first_level_with_connector = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        assert!(found_first_level_with_connector,
+            "Three-way first-level items should have tree connectors (├ or └).\nContent:\n{}", summary_content);
+    }
 }
 
 

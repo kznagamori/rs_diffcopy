@@ -633,6 +633,53 @@ cargo test --test integration_tests -- --test-threads=1 2>&1 | tee test_output.t
 
 ---
 
+### Section 35: Treeフォーマット改善テスト（tree_display_tests内）
+
+**背景**: Tree出力のフォーマット改善を実施：
+1. 最初のレベルのディレクトリ・ファイルにツリー接続線（├── または └──）を追加
+2. CompareDirectory の子要素として、一般的な `tree` コマンドと同じ形式で表示
+3. 従来は最初のレベルに接続線がなく、CompareDirectoryと同じレベルに見える問題があった
+
+**修正前の出力**:
+```
+CompareDirectory{source, target}
+file1.txt                  [modified]
+file2.txt                  [added]
+```
+
+**修正後の出力**:
+```
+CompareDirectory{source, target}
+├file1.txt                  [modified]
+└file2.txt                  [added]
+```
+
+**修正内容**:
+1. `summary.rs` (L441, L444): `render_tree()` と `calculate_max_path_width()` の呼び出しで `is_root` パラメータを `true` → `false` に変更
+2. `three_way_summary.rs` (L198, L221): 同様の修正
+3. `summary.rs` tests: 最初のレベルの接続線検証用ユニットテスト追加
+   - `test_tree_format_first_level_connectors`: 最初のレベルにconnector（├── or └──）があることを確認
+   - `test_tree_format_nested_structure`: ネスト構造で縦線（│）が正しく使用されることを確認
+4. `three_way_summary.rs` tests: 三者間比較の同様のユニットテスト追加
+   - `test_three_way_tree_format_first_level_connectors`
+   - `test_three_way_tree_format_nested_structure`
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| TREE-001 | test_first_level_items_have_connectors | 最初のレベルの接続線確認 | CompareDirectory直下の全アイテムに├または└が付く | 正常系 |
+| TREE-002 | test_three_way_first_level_items_have_connectors | 三者間最初のレベル接続線確認 | 三者間比較でもCompareDirectory直下のアイテムに接続線が付く | 正常系 |
+
+**追加ユニットテスト**:
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| UT-3501 | test_tree_format_first_level_connectors | 最初のレベルconnector確認（二者間） | 最初のレベルのファイルに├または└が付く | 正常系 |
+| UT-3502 | test_tree_format_nested_structure | ネスト構造connector確認（二者間） | ネスト構造で│が使用される | 正常系 |
+| UT-3503 | test_three_way_tree_format_first_level_connectors | 最初のレベルconnector確認（三者間） | 三者間でも最初のレベルに├または└が付く | 正常系 |
+| UT-3504 | test_three_way_tree_format_nested_structure | ネスト構造connector確認（三者間） | 三者間でもネスト構造で│が使用される | 正常系 |
+
+---
+
 ## 終了コード一覧
 
 | 終了コード | 意味 |
@@ -717,3 +764,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-13 | 2.7 | CompareDirectoryルートノード表示テスト追加、CP932罫線明示マッピングテスト追加 |
 | 2026-01-13 | 2.8 | レビュー指摘修正テスト追加（--stats-only、filter-status別名、unchanged自動有効化、all大文字小文字対応） |
 | 2026-01-13 | 2.9 | Windows コンソール出力修正（WriteConsoleW使用、UTF-16出力、罫線表示修正） |
+| 2026-01-13 | 3.0 | Treeフォーマット改善テスト追加（最初のレベルにツリー接続線を追加、tree コマンド標準形式対応） |

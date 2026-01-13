@@ -438,10 +438,10 @@ impl<'a> SummaryWriter<'a> {
         let max_width = if for_console {
             0 // Not used for console
         } else {
-            self.calculate_max_path_width(&tree, "", true)
+            self.calculate_max_path_width(&tree, "", false)
         };
 
-        output.push_str(&self.render_tree(&tree, "", true, for_console, max_width));
+        output.push_str(&self.render_tree(&tree, "", false, for_console, max_width));
 
         output
     }
@@ -967,6 +967,9 @@ struct TreeNode {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::types::{FileEntry, FileStatus};
     use std::path::PathBuf;
 
     /// Test that path components are correctly extracted using Path::components()
@@ -1021,5 +1024,125 @@ mod tests {
         // Note: On Unix, // is normalized to /, so we get normal components
         assert!(parts.contains(&"dir1".to_string()));
         assert!(parts.contains(&"file.txt".to_string()));
+    }
+
+    /// Test that first-level items in tree have proper connectors (├── or └──)
+    #[test]
+    fn test_tree_format_first_level_connectors() {
+        // Create a minimal config
+        let mut config = Config::default();
+        config.source = PathBuf::from("source");
+        config.target = PathBuf::from("target");
+        config.output = PathBuf::from("output");
+
+        // Create test entries with first-level files
+        let entries = vec![
+            FileEntry {
+                relative_path: PathBuf::from("file1.txt"),
+                status: FileStatus::Modified,
+                is_directory: false,
+                source_size: Some(100),
+                target_size: Some(100),
+                source_hash: None,
+                target_hash: None,
+                symlink_info: None,
+                special_type: None,
+                permission_change: None,
+                error_message: None,
+            },
+            FileEntry {
+                relative_path: PathBuf::from("file2.txt"),
+                status: FileStatus::Added,
+                is_directory: false,
+                source_size: None,
+                target_size: Some(200),
+                source_hash: None,
+                target_hash: None,
+                symlink_info: None,
+                special_type: None,
+                permission_change: None,
+                error_message: None,
+            },
+        ];
+
+        // Generate tree
+        let writer = SummaryWriter::new(&config);
+        let tree_output = writer.generate_file_tree(&entries, true);
+
+        // Verify that first-level items have connectors
+        // The output should contain "├── file1.txt" or "└── file1.txt"
+        assert!(
+            tree_output.contains("├── file1.txt") || tree_output.contains("└── file1.txt"),
+            "First-level file should have tree connector (├── or └──), but got:\n{}",
+            tree_output
+        );
+
+        // Verify both files appear with connectors
+        let has_connectors = tree_output.contains("├──") || tree_output.contains("└──");
+        assert!(
+            has_connectors,
+            "Tree output should contain connectors (├── or └──) for first-level items, but got:\n{}",
+            tree_output
+        );
+
+        // Verify CompareDirectory header is present
+        assert!(
+            tree_output.contains("CompareDirectory"),
+            "Tree output should contain CompareDirectory header"
+        );
+    }
+
+    /// Test that nested items in tree have proper indentation and connectors
+    #[test]
+    fn test_tree_format_nested_structure() {
+        let mut config = Config::default();
+        config.source = PathBuf::from("source");
+        config.target = PathBuf::from("target");
+        config.output = PathBuf::from("output");
+
+        // Create entries with nested structure
+        let entries = vec![
+            FileEntry {
+                relative_path: PathBuf::from("dir1/file.txt"),
+                status: FileStatus::Modified,
+                is_directory: false,
+                source_size: Some(100),
+                target_size: Some(100),
+                source_hash: None,
+                target_hash: None,
+                symlink_info: None,
+                special_type: None,
+                permission_change: None,
+                error_message: None,
+            },
+            FileEntry {
+                relative_path: PathBuf::from("file2.txt"),
+                status: FileStatus::Added,
+                is_directory: false,
+                source_size: None,
+                target_size: Some(200),
+                source_hash: None,
+                target_hash: None,
+                symlink_info: None,
+                special_type: None,
+                permission_change: None,
+                error_message: None,
+            },
+        ];
+
+        let writer = SummaryWriter::new(&config);
+        let tree_output = writer.generate_file_tree(&entries, true);
+
+        // Verify that directory and files both have connectors
+        assert!(
+            tree_output.contains("├── ") || tree_output.contains("└── "),
+            "Tree output should contain connectors for first-level items"
+        );
+
+        // Verify vertical line │ for nested structure
+        assert!(
+            tree_output.contains("│"),
+            "Tree output should contain vertical lines (│) for nested structure"
+        );
     }
 }

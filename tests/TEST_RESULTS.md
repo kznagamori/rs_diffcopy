@@ -5,7 +5,7 @@
 | 項目 | 内容 |
 |-----|------|
 | 実施日 | 2026-01-13 |
-| 実施時刻 | 16:30 JST |
+| 実施時刻 | 17:40 JST |
 | 実行環境 | Linux (WSL2) |
 | Rustバージョン | stable |
 | 結果 | **全テストPASS** |
@@ -14,9 +14,45 @@
 
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
-| ユニットテスト | 132 | 132 | 0 | 0 |
-| 結合テスト | 207 | 207 | 0 | 0 |
-| **合計** | **339** | **339** | **0** | **0** |
+| ユニットテスト | 136 | 136 | 0 | 0 |
+| 結合テスト | 209 | 209 | 0 | 0 |
+| **合計** | **345** | **345** | **0** | **0** |
+
+## 変更内容（v3.0）
+
+### Treeフォーマット改善
+
+**問題**: Tree出力で最初のレベルのディレクトリ・ファイルに接続線（├── または └──）が表示されず、CompareDirectoryと同じレベルに見えてしまう不具合
+
+**修正前の出力**:
+```
+CompareDirectory{source, target}
+file1.txt                  [modified]
+file2.txt                  [added]
+```
+
+**修正後の出力**:
+```
+CompareDirectory{source, target}
+├file1.txt                  [modified]
+└file2.txt                  [added]
+```
+
+**修正内容**:
+1. `summary.rs` (L441, L444): `render_tree()` と `calculate_max_path_width()` の呼び出しで `is_root` パラメータを `true` → `false` に変更
+2. `three_way_summary.rs` (L198, L221): 同様の修正により、三者間比較でも同じフォーマットに対応
+
+**追加テスト**:
+- 結合テスト: 2件追加（TREE-001, TREE-002）
+  - `test_first_level_items_have_connectors`: 二者間比較で最初のレベルに接続線が付くことを検証
+  - `test_three_way_first_level_items_have_connectors`: 三者間比較で最初のレベルに接続線が付くことを検証
+- ユニットテスト: 4件追加（UT-3501 ~ UT-3504）
+  - `summary.rs`: `test_tree_format_first_level_connectors`, `test_tree_format_nested_structure`
+  - `three_way_summary.rs`: `test_three_way_tree_format_first_level_connectors`, `test_three_way_tree_format_nested_structure`
+
+**検証結果**: 全テストPASS（345件）
+
+---
 
 ## 変更内容（v2.8）
 

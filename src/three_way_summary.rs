@@ -195,7 +195,7 @@ impl<'a> ThreeWaySummaryWriter<'a> {
         let max_width = if for_console {
             0 // Not used for console
         } else {
-            self.calculate_max_path_width(&tree, "", true)
+            self.calculate_max_path_width(&tree, "", false)
         };
 
         if !for_console {
@@ -218,7 +218,7 @@ impl<'a> ThreeWaySummaryWriter<'a> {
         output.push_str(&format!("CompareDirectory{{{}, {}, {}}}\n", base_name, ours_name, theirs_name));
 
         // Render tree with max_width
-        output.push_str(&self.render_tree(&tree, "", true, for_console, max_width));
+        output.push_str(&self.render_tree(&tree, "", false, for_console, max_width));
 
         output
     }
@@ -541,4 +541,138 @@ struct ThreeWayTreeNode {
     name: String,
     entry: Option<ThreeWayEntry>,
     children: BTreeMap<String, ThreeWayTreeNode>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::types::{ThreeWayEntry, ThreeWayStatus};
+    use std::path::PathBuf;
+
+    /// Test that first-level items in three-way tree have proper connectors
+    #[test]
+    fn test_three_way_tree_format_first_level_connectors() {
+        // Create a minimal config
+        let mut config = Config::default();
+        config.base = Some(PathBuf::from("base"));
+        config.source = PathBuf::from("ours");
+        config.target = PathBuf::from("theirs");
+        config.output = PathBuf::from("output");
+
+        // Create test entries with first-level files
+        let entries = vec![
+            ThreeWayEntry {
+                relative_path: PathBuf::from("file1.txt"),
+                status: ThreeWayStatus::OursOnly,
+                is_directory: false,
+                base_exists: true,
+                ours_exists: true,
+                theirs_exists: false,
+                base_hash: None,
+                ours_hash: None,
+                theirs_hash: None,
+                base_size: None,
+                ours_size: None,
+                theirs_size: None,
+            },
+            ThreeWayEntry {
+                relative_path: PathBuf::from("file2.txt"),
+                status: ThreeWayStatus::AddedOurs,
+                is_directory: false,
+                base_exists: false,
+                ours_exists: true,
+                theirs_exists: false,
+                base_hash: None,
+                ours_hash: None,
+                theirs_hash: None,
+                base_size: None,
+                ours_size: None,
+                theirs_size: None,
+            },
+        ];
+
+        // Generate tree
+        let writer = ThreeWaySummaryWriter::new(&config);
+        let tree_output = writer.generate_file_tree(&entries, true);
+
+        // Verify that first-level items have connectors
+        // The output should contain "├── file1.txt" or "└── file1.txt"
+        assert!(
+            tree_output.contains("├── file1.txt") || tree_output.contains("└── file1.txt"),
+            "First-level file should have tree connector (├── or └──), but got:\n{}",
+            tree_output
+        );
+
+        // Verify connectors are present
+        let has_connectors = tree_output.contains("├──") || tree_output.contains("└──");
+        assert!(
+            has_connectors,
+            "Tree output should contain connectors (├── or └──) for first-level items, but got:\n{}",
+            tree_output
+        );
+
+        // Verify CompareDirectory header is present
+        assert!(
+            tree_output.contains("CompareDirectory"),
+            "Tree output should contain CompareDirectory header"
+        );
+    }
+
+    /// Test that nested items in three-way tree have proper structure
+    #[test]
+    fn test_three_way_tree_format_nested_structure() {
+        let mut config = Config::default();
+        config.base = Some(PathBuf::from("base"));
+        config.source = PathBuf::from("ours");
+        config.target = PathBuf::from("theirs");
+        config.output = PathBuf::from("output");
+
+        // Create entries with nested structure
+        let entries = vec![
+            ThreeWayEntry {
+                relative_path: PathBuf::from("dir1/file.txt"),
+                status: ThreeWayStatus::OursOnly,
+                is_directory: false,
+                base_exists: true,
+                ours_exists: true,
+                theirs_exists: false,
+                base_hash: None,
+                ours_hash: None,
+                theirs_hash: None,
+                base_size: None,
+                ours_size: None,
+                theirs_size: None,
+            },
+            ThreeWayEntry {
+                relative_path: PathBuf::from("file2.txt"),
+                status: ThreeWayStatus::AddedOurs,
+                is_directory: false,
+                base_exists: false,
+                ours_exists: true,
+                theirs_exists: false,
+                base_hash: None,
+                ours_hash: None,
+                theirs_hash: None,
+                base_size: None,
+                ours_size: None,
+                theirs_size: None,
+            },
+        ];
+
+        let writer = ThreeWaySummaryWriter::new(&config);
+        let tree_output = writer.generate_file_tree(&entries, true);
+
+        // Verify that directory and files both have connectors
+        assert!(
+            tree_output.contains("├── ") || tree_output.contains("└── "),
+            "Tree output should contain connectors for first-level items"
+        );
+
+        // Verify vertical line │ for nested structure
+        assert!(
+            tree_output.contains("│"),
+            "Tree output should contain vertical lines (│) for nested structure"
+        );
+    }
 }
