@@ -8,7 +8,7 @@ use std::path::Path;
 use crate::config::Config;
 use crate::types::{
     ColorMode, ComparisonResult, ComparisonStats, FileEntry, FileStatus, PatchResult,
-    PermissionChange, SpecialFileType, StatusFilter,
+    PermissionChange, SpecialFileType, StatusFilter, SymlinkChangeType,
 };
 use crate::utils::{display_width, is_terminal, println_cp932};
 
@@ -166,6 +166,10 @@ impl<'a> SummaryWriter<'a> {
             || self.config.patch_file.is_some()
             || !self.config.exclude.is_empty()
             || !self.config.filter_status.is_empty()
+            || self.config.show_unchanged
+            || self.config.stats_only
+            || self.config.no_tree
+            || self.config.no_details
     }
 
     fn generate_options(&self) -> String {
@@ -205,6 +209,22 @@ impl<'a> SummaryWriter<'a> {
                 "  Combined patch file: {}\n",
                 patch_file.display()
             ));
+        }
+
+        if self.config.show_unchanged {
+            output.push_str("  Show unchanged: Yes\n");
+        }
+
+        if self.config.stats_only {
+            output.push_str("  Stats only: Yes\n");
+        }
+
+        if self.config.no_tree {
+            output.push_str("  No tree: Yes\n");
+        }
+
+        if self.config.no_details {
+            output.push_str("  No details: Yes\n");
         }
 
         if !self.config.filter_status.is_empty() {
@@ -261,52 +281,44 @@ impl<'a> SummaryWriter<'a> {
         ));
 
         // Symlinks
-        if stats.symlink_files > 0 {
-            output.push_str(&self.format_stat_line_simple(
-                "Symlinks",
-                stats.symlink_files,
-                "files",
-                filter.matches(FileStatus::Symlink),
-                for_console,
-                is_filtered,
-            ));
-        }
+        output.push_str(&self.format_stat_line_simple(
+            "Symlinks",
+            stats.symlink_files,
+            "files",
+            filter.matches(FileStatus::Symlink),
+            for_console,
+            is_filtered,
+        ));
 
         // Special Files
-        if stats.special_files > 0 {
-            output.push_str(&self.format_stat_line_simple(
-                "Special Files",
-                stats.special_files,
-                "file",
-                filter.matches(FileStatus::Special),
-                for_console,
-                is_filtered,
-            ));
-        }
+        output.push_str(&self.format_stat_line_simple(
+            "Special Files",
+            stats.special_files,
+            "file",
+            filter.matches(FileStatus::Special),
+            for_console,
+            is_filtered,
+        ));
 
         // Permissions
-        if stats.permission_files > 0 {
-            output.push_str(&self.format_stat_line_simple(
-                "Permissions",
-                stats.permission_files,
-                "files",
-                filter.matches(FileStatus::Permission),
-                for_console,
-                is_filtered,
-            ));
-        }
+        output.push_str(&self.format_stat_line_simple(
+            "Permissions",
+            stats.permission_files,
+            "files",
+            filter.matches(FileStatus::Permission),
+            for_console,
+            is_filtered,
+        ));
 
         // Errors
-        if stats.error_files > 0 {
-            output.push_str(&self.format_stat_line_simple(
-                "Errors",
-                stats.error_files,
-                "file",
-                filter.matches(FileStatus::Error),
-                for_console,
-                is_filtered,
-            ));
-        }
+        output.push_str(&self.format_stat_line_simple(
+            "Errors",
+            stats.error_files,
+            "file",
+            filter.matches(FileStatus::Error),
+            for_console,
+            is_filtered,
+        ));
 
         // Unchanged
         output.push_str(&self.format_stat_line_simple(
@@ -620,35 +632,40 @@ impl<'a> SummaryWriter<'a> {
 
     fn format_status_tag(&self, entry: &FileEntry, for_console: bool) -> String {
         let tag = match entry.status {
-            FileStatus::Added => "[added]",
-            FileStatus::Modified => "[modified]",
-            FileStatus::Deleted => "[deleted]",
-            FileStatus::Unchanged => "[unchanged]",
+            FileStatus::Added => "[added]".to_string(),
+            FileStatus::Modified => "[modified]".to_string(),
+            FileStatus::Deleted => "[deleted]".to_string(),
+            FileStatus::Unchanged => "[unchanged]".to_string(),
             FileStatus::Symlink => {
                 if let Some(ref info) = entry.symlink_info {
+                    let change_str = match info.change_type {
+                        SymlinkChangeType::Added => "added",
+                        SymlinkChangeType::Deleted => "deleted",
+                        SymlinkChangeType::Changed => "changed",
+                    };
                     if info.is_broken {
-                        "[symlink: broken]"
+                        format!("[symlink: {}, broken]", change_str)
                     } else {
-                        "[symlink]"
+                        format!("[symlink: {}]", change_str)
                     }
                 } else {
-                    "[symlink]"
+                    "[symlink]".to_string()
                 }
             }
             FileStatus::Special => {
                 if let Some(ref st) = entry.special_type {
                     match st {
-                        SpecialFileType::Socket => "[special: socket]",
-                        SpecialFileType::Fifo => "[special: fifo]",
-                        SpecialFileType::BlockDevice => "[special: block device]",
-                        SpecialFileType::CharDevice => "[special: char device]",
+                        SpecialFileType::Socket => "[special: socket]".to_string(),
+                        SpecialFileType::Fifo => "[special: fifo]".to_string(),
+                        SpecialFileType::BlockDevice => "[special: block device]".to_string(),
+                        SpecialFileType::CharDevice => "[special: char device]".to_string(),
                     }
                 } else {
-                    "[special]"
+                    "[special]".to_string()
                 }
             }
-            FileStatus::Permission => "[permission]",
-            FileStatus::Error => "[permission denied]",
+            FileStatus::Permission => "[permission]".to_string(),
+            FileStatus::Error => "[permission denied]".to_string(),
         };
 
         if for_console && self.use_color {
@@ -663,7 +680,7 @@ impl<'a> SummaryWriter<'a> {
                 FileStatus::Error => tag.red().to_string(),
             }
         } else {
-            tag.to_string()
+            tag
         }
     }
 
@@ -763,18 +780,123 @@ impl<'a> SummaryWriter<'a> {
 
         output.push_str("================\nSymlink Details\n================\n");
 
-        for entry in entries {
-            if let Some(ref info) = entry.symlink_info {
-                output.push_str(&format!(
-                    "  {} -> {}\n",
-                    entry.relative_path.display(),
-                    info.target.display()
-                ));
-                let type_str = if info.is_directory { "directory" } else { "file" };
-                let status_str = if info.is_broken { "BROKEN" } else { "OK" };
-                output.push_str(&format!("    Type: {} | Status: {}\n", type_str, status_str));
-            } else {
-                // symlink_info が取得できなかった場合もパスを表示
+        // Separate by change type
+        let added: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                e.symlink_info
+                    .as_ref()
+                    .map(|i| i.change_type == SymlinkChangeType::Added)
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        let deleted: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                e.symlink_info
+                    .as_ref()
+                    .map(|i| i.change_type == SymlinkChangeType::Deleted)
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        let changed: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                e.symlink_info
+                    .as_ref()
+                    .map(|i| i.change_type == SymlinkChangeType::Changed)
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        // Added symlinks
+        if !added.is_empty() {
+            output.push_str("Added:\n");
+            for entry in added {
+                if let Some(ref info) = entry.symlink_info {
+                    output.push_str(&format!(
+                        "  {} -> {}\n",
+                        entry.relative_path.display(),
+                        info.target.display()
+                    ));
+                    let type_str = if info.is_directory { "directory" } else { "file" };
+                    if info.is_broken {
+                        output.push_str(&format!(
+                            "    Type: {} | Status: BROKEN (target does not exist)\n",
+                            type_str
+                        ));
+                    } else {
+                        output.push_str(&format!("    Type: {} | Status: OK\n", type_str));
+                    }
+                    output.push('\n');
+                }
+            }
+        }
+
+        // Deleted symlinks
+        if !deleted.is_empty() {
+            output.push_str("Deleted:\n");
+            for entry in deleted {
+                if let Some(ref info) = entry.symlink_info {
+                    output.push_str(&format!(
+                        "  {} -> {}\n",
+                        entry.relative_path.display(),
+                        info.target.display()
+                    ));
+                    let type_str = if info.is_directory { "directory" } else { "file" };
+                    output.push_str(&format!("    Type: {}\n", type_str));
+                    output.push('\n');
+                }
+            }
+        }
+
+        // Changed symlinks
+        if !changed.is_empty() {
+            output.push_str("Changed:\n");
+            for entry in changed {
+                if let Some(ref info) = entry.symlink_info {
+                    output.push_str(&format!("  {}\n", entry.relative_path.display()));
+
+                    // Before (old state)
+                    if let Some(ref old_target) = info.old_target {
+                        let type_str = if info.is_directory { "file" } else { "file" }; // Old type unknown, assume file
+                        let old_status = if info.old_is_broken.unwrap_or(false) {
+                            "BROKEN"
+                        } else {
+                            "OK"
+                        };
+                        output.push_str(&format!(
+                            "    Before: {} ({}, {})\n",
+                            old_target.display(),
+                            type_str,
+                            old_status
+                        ));
+                    }
+
+                    // After (new state)
+                    let type_str = if info.is_directory { "directory" } else { "file" };
+                    let new_status = if info.is_broken { "BROKEN" } else { "OK" };
+                    output.push_str(&format!(
+                        "    After:  {} ({}, {})\n",
+                        info.target.display(),
+                        type_str,
+                        new_status
+                    ));
+                    output.push('\n');
+                }
+            }
+        }
+
+        // Handle entries without symlink_info (should be rare)
+        let unknown: Vec<_> = entries
+            .iter()
+            .filter(|e| e.symlink_info.is_none())
+            .collect();
+
+        if !unknown.is_empty() {
+            for entry in unknown {
                 output.push_str(&format!(
                     "  {} (symlink info unavailable)\n",
                     entry.relative_path.display()

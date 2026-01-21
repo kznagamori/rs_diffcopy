@@ -75,7 +75,8 @@ impl<'a> Copier<'a> {
             FileStatus::Added => true,
             FileStatus::Modified => true,
             FileStatus::Permission => true,
-            FileStatus::Deleted => self.config.copy_deleted,
+            // Only copy deleted FILES (not directories) - per spec, --copy-deleted only applies to files
+            FileStatus::Deleted => self.config.copy_deleted && !entry.is_directory,
             _ => false,
         }
     }

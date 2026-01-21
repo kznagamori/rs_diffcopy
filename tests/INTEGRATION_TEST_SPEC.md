@@ -738,6 +738,51 @@ cargo test --test integration_tests -- --nocapture
 cargo test --test integration_tests 2>&1 | tee test_output.txt
 ```
 
+### Section 36: レビュー指摘修正テスト V2（review_fix_tests_v2）
+
+**背景**: レビューにより以下の不具合が修正されました：
+1. 三方向比較でディレクトリの変更が検出されない
+2. 三方向比較で統計がフィルタリング後に計算される（正：フィルタリング前に計算）
+3. シンボリックリンクのタグにAdded/Deleted/Changed状態が含まれない
+4. `--filter-status`に無効な値を指定してもエラーにならない
+5. 統計行が0件の場合に表示されない
+6. `--copy-deleted`でディレクトリもコピーされる（正：ファイルのみ）
+
+**修正内容**:
+1. `three_way.rs`: `compare_path_unfiltered`関数を追加、統計計算後にフィルタリング
+2. `three_way.rs`: `determine_directory_status`関数を追加、ディレクトリ変更検出
+3. `types.rs`: `SymlinkChangeType`列挙型を追加（Added/Deleted/Changed）
+4. `cli.rs`/`config.rs`: `StatusFilter::is_valid_status()`で無効値をエラー終了
+5. `summary.rs`: 統計行を常に表示（条件分岐を削除）
+6. `copier.rs`: `--copy-deleted`でディレクトリをスキップ
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| REV2-001 | test_three_way_directory_change_detection | 三方向ディレクトリ変更検出 | ディレクトリの追加/削除が検出される | 正常系 |
+| REV2-002 | test_three_way_statistics_before_filtering | 三方向統計計算タイミング | フィルタリング後もUnchangedが正しく表示 | 正常系 |
+| REV2-003 | test_filter_status_invalid_value_error | 無効値でエラー終了 | 終了コード1、エラーメッセージ表示 | 異常系 |
+| REV2-004 | test_filter_status_invalid_with_valid_error | 有効/無効混在でエラー | 終了コード1 | 異常系 |
+| REV2-005 | test_statistics_rows_always_shown | 統計行が常に表示 | Added/Modified/Deletedが0でも表示 | 正常系 |
+| REV2-006 | test_statistics_shows_zero_counts | 0件表示確認 | 差分なし時も全統計行表示 | 正常系 |
+| REV2-007 | test_copy_deleted_files_only_not_directories | copy-deletedファイルのみ | 削除ファイルはコピー、ディレクトリはスキップ | 正常系 |
+
+---
+
+### Section 37: シンボリックリンク変更タイプテスト（symlink_change_type_tests）（Unix only）
+
+**背景**: シンボリックリンクのタグにAdded/Deleted/Changed状態を含める修正を検証
+
+**修正内容**:
+1. `types.rs`: `SymlinkChangeType`列挙型を追加
+2. `summary.rs`: `format_status_tag`でシンボリックリンクの変更タイプを表示
+3. `summary.rs`: `generate_symlink_details`でAdded/Deleted/Changedでグループ化
+
+| ID | テスト関数名 | 概要 | 期待結果 | 分類 |
+|----|-------------|------|---------|------|
+| SYM-CHANGE-001 | test_symlink_added_tag_format | 追加シンボリックリンクタグ | `[symlink: added]`形式で表示 | 準正常系 |
+| SYM-CHANGE-002 | test_symlink_deleted_tag_format | 削除シンボリックリンクタグ | `[symlink: deleted]`形式で表示 | 準正常系 |
+| SYM-CHANGE-003 | test_symlink_changed_tag_format | 変更シンボリックリンクタグ | `[symlink: changed, old -> new]`形式で表示 | 準正常系 |
+
 ---
 
 ## 変更履歴
@@ -765,3 +810,4 @@ cargo test --test integration_tests 2>&1 | tee test_output.txt
 | 2026-01-13 | 2.8 | レビュー指摘修正テスト追加（--stats-only、filter-status別名、unchanged自動有効化、all大文字小文字対応） |
 | 2026-01-13 | 2.9 | Windows コンソール出力修正（WriteConsoleW使用、UTF-16出力、罫線表示修正） |
 | 2026-01-13 | 3.0 | Treeフォーマット改善テスト追加（最初のレベルにツリー接続線を追加、tree コマンド標準形式対応） |
+| 2026-01-21 | 3.1 | レビュー指摘修正テストV2追加（三方向ディレクトリ検出、統計計算タイミング、filter-status無効値エラー、統計行常時表示、copy-deletedファイルのみ）、シンボリックリンク変更タイプテスト追加 |

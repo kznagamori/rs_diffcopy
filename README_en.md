@@ -56,7 +56,7 @@ rs_diffcopy --three-way -B <base> -S <ours> -T <theirs> -O <output>
 rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./merged
 ```
 
-## Main Options
+## All Options
 
 | Option | Short | Description |
 |--------|-------|-------------|
@@ -66,18 +66,37 @@ rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./merged
 | `--config` | `-c` | Configuration file path |
 | `--exclude` | `-e` | Exclude patterns (glob format, can be specified multiple times) |
 | `--force` | `-f` | Force overwrite output directory |
+| `--summary` | `-s` | Save summary to file |
+| `--verbose` | `-v` | Verbose output mode (show file names during processing) |
 | `--dry-run` | `-n` | Dry run (don't actually copy files) |
 | `--both-versions` | `-b` | Copy both old and new versions (.old/.new) |
+| `--check-permissions <MODE>` | `-P` | Permission check (none/scripts/all) |
 | `--patch` | `-p` | Generate individual patch files |
 | `--patch-file` | `-F` | Generate combined patch file |
 | `--excel` | `-E` | Generate Excel report |
-| `--summary` | `-s` | Save summary to file |
-| `--verbose` | `-v` | Verbose output mode |
+| `--excel-fold-level <LEVEL>` | `-L` | Excel file tree fold level |
 | `--show-unchanged` | `-u` | Show unchanged files |
+| `--save-config <PATH>` | `-C` | Save current options to config file |
+| `--filter-status <STATUS>` | | Status filter (comma-separated, `^` to exclude) |
+| `--stats-only` | | Show only header/options/statistics |
+| `--no-tree` | | Hide File Tree section |
+| `--no-details` | | Hide details sections |
+| `--copy-deleted` | | Copy deleted files (.deleted) |
+| `--preserve-timestamps` | | Preserve file timestamps |
+| `--workers <NUM>` | `-j` | Number of parallel workers |
+| `--temp-dir <PATH>` | | Temporary directory for intermediate files |
+| `--color <MODE>` | | Color output (auto/always/never) |
+| `--log-level <LEVEL>` | | Log level (error/warn/info/debug) |
 | `--three-way` | `-3` | Three-way comparison mode |
 | `--base` | `-B` | Base directory for three-way comparison |
 | `--merge-style` | `-M` | Merge style (all/ours/theirs) |
 | `--conflict-only` | | Output only conflicts |
+| `--help` | `-h` | Show help |
+| `--version` | `-V` | Show version |
+
+> Note: `--stats-only` affects **console output only**. `--summary` and `--excel` still contain the full report.
+
+For the allowed filter values and group keywords, see "Output filter" in `rs_diffcopy.md`.
 
 ## Output Examples
 
@@ -129,6 +148,7 @@ rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./merged
 ## Configuration File
 
 You can use a TOML format configuration file.
+For application-wide `settings.toml`, see "Application settings file (settings.toml)" in `rs_diffcopy.md`.
 
 ```toml
 # config.toml
@@ -155,14 +175,24 @@ rs_diffcopy -S ./old -T ./new -O ./diff -e "*.log" --save-config config.toml
 
 ## Advanced Usage
 
-### Comparing Only Specific File Types
+### Exclude Patterns
 
 ```bash
 # Exclude log files and node_modules
 rs_diffcopy -S ./old -T ./new -O ./diff -e "*.log" -e "node_modules"
 ```
 
-### Generating Patch Files
+### Output and Reports
+
+```bash
+# Save summary to file
+rs_diffcopy -S ./old -T ./new -O ./diff --summary summary.txt
+
+# Generate Excel report
+rs_diffcopy -S ./old -T ./new -O ./diff --excel report.xlsx
+```
+
+### Patch Generation
 
 ```bash
 # Generate individual patch files
@@ -175,21 +205,101 @@ rs_diffcopy -S ./old -T ./new -O ./diff --patch-file changes.patch
 rs_diffcopy -S ./old -T ./new -O ./diff --patch --patch-file changes.patch
 ```
 
-### Generating Excel Reports
+### Copy Options
 
 ```bash
-rs_diffcopy -S ./old -T ./new -O ./diff --excel report.xlsx
+# Copy both old and new versions of modified files
+rs_diffcopy -S ./old -T ./new -O ./diff --both-versions
+
+# Copy deleted files
+rs_diffcopy -S ./old -T ./new -O ./diff --copy-deleted
+
+# Preserve timestamps when copying
+rs_diffcopy -S ./old -T ./new -O ./diff --preserve-timestamps
 ```
 
-### Three-way Comparison with Conflicts Only
+### Filters and Display Control
 
 ```bash
+# Show only added and modified (copy targets are also filtered)
+rs_diffcopy -S ./old -T ./new -O ./diff --filter-status added,modified
+
+# Show everything except unchanged (implicit all + exclusion)
+rs_diffcopy -S ./old -T ./new -O ./diff --filter-status ^unchanged
+
+# Show everything except added and deleted (all + exclusions)
+rs_diffcopy -S ./old -T ./new -O ./diff --filter-status all,^added,^deleted
+
+# Show only added (aliases also accepted: add/a)
+rs_diffcopy -S ./old -T ./new -O ./diff --filter-status add
+
+# Show only errors and symlinks
+rs_diffcopy -S ./old -T ./new -O ./diff --filter-status error,symlink
+
+# Show statistics only (copy still runs)
+rs_diffcopy -S ./old -T ./new -O ./diff --stats-only
+
+# Hide File Tree section
+rs_diffcopy -S ./old -T ./new -O ./diff --no-tree
+
+# Hide details sections
+rs_diffcopy -S ./old -T ./new -O ./diff --no-details
+```
+
+> Note: `--stats-only` affects **console output only**. `--summary` and `--excel` still contain the full report.
+
+### Color and Logging
+
+```bash
+# Always use colored output
+rs_diffcopy -S ./old -T ./new -O ./diff --color always
+
+# Set log level to debug
+rs_diffcopy -S ./old -T ./new -O ./diff --log-level debug
+```
+
+### Performance Tuning
+
+```bash
+# Set number of workers
+rs_diffcopy -S ./old -T ./new -O ./diff --workers 4
+
+# Set temp directory
+rs_diffcopy -S ./old -T ./new -O ./diff --temp-dir /tmp/rs_diffcopy
+```
+
+### Permission Checks
+
+```bash
+# Check permission changes for script files only
+rs_diffcopy -S ./old -T ./new -O ./diff --check-permissions scripts
+
+# Check permission changes for all files
+rs_diffcopy -S ./old -T ./new -O ./diff --check-permissions all
+```
+
+### Saving a Config File
+
+```bash
+# Save current options to a config file (diff processing still runs)
+rs_diffcopy -S ./old -T ./new -O ./diff -e "*.log" --save-config diffcopy.toml
+```
+
+### Three-way Comparison
+
+```bash
+# Output conflicts only
 rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./output --conflict-only
-```
 
-### Specifying Merge Style
+# Show conflicts only (group keyword)
+rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./output --filter-status conflicts
 
-```bash
+# Show only added (group keyword expands)
+rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./output --filter-status added
+
+# Exclude added (implicit all + exclusion)
+rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./output --filter-status ^added
+
 # Prefer ours
 rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./output --merge-style ours
 

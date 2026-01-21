@@ -56,7 +56,7 @@ rs_diffcopy --three-way -B <ベース> -S <Ours> -T <Theirs> -O <出力先>
 rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./merged
 ```
 
-## 主要なオプション
+## 全オプション
 
 | オプション | 短縮形 | 説明 |
 |-----------|--------|------|
@@ -66,18 +66,37 @@ rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./merged
 | `--config` | `-c` | 設定ファイルのパス |
 | `--exclude` | `-e` | 除外パターン（glob形式、複数指定可） |
 | `--force` | `-f` | 出力ディレクトリを強制上書き |
+| `--summary` | `-s` | サマリーをファイルに保存 |
+| `--verbose` | `-v` | 詳細出力モード（処理中ファイル名を表示） |
 | `--dry-run` | `-n` | ドライラン（実際にコピーしない） |
 | `--both-versions` | `-b` | 新旧両バージョンをコピー（.old/.new） |
+| `--check-permissions <MODE>` | `-P` | 権限変更チェック（none/scripts/all） |
 | `--patch` | `-p` | 個別パッチファイルを生成 |
 | `--patch-file` | `-F` | 統合パッチファイルを生成 |
 | `--excel` | `-E` | Excelレポートを生成 |
-| `--summary` | `-s` | サマリーをファイルに保存 |
-| `--verbose` | `-v` | 詳細出力モード |
+| `--excel-fold-level <LEVEL>` | `-L` | Excelファイルツリーの折りたたみレベル |
 | `--show-unchanged` | `-u` | 未変更ファイルも表示 |
+| `--save-config <PATH>` | `-C` | 現在のオプションを設定ファイルに保存 |
+| `--filter-status <STATUS>` | | ステータスフィルタ（カンマ区切り、`^`で除外） |
+| `--stats-only` | | ヘッダー/Options/統計情報のみ表示 |
+| `--no-tree` | | File Treeセクション非表示 |
+| `--no-details` | | 詳細セクション非表示 |
+| `--copy-deleted` | | 削除ファイルもコピー（.deleted） |
+| `--preserve-timestamps` | | タイムスタンプを保持 |
+| `--workers <NUM>` | `-j` | 並列ワーカー数 |
+| `--temp-dir <PATH>` | | 一時ファイルの保存先 |
+| `--color <MODE>` | | カラー出力（auto/always/never） |
+| `--log-level <LEVEL>` | | ログレベル（error/warn/info/debug） |
 | `--three-way` | `-3` | 三方向比較モード |
 | `--base` | `-B` | 三方向比較のベースディレクトリ |
 | `--merge-style` | `-M` | マージスタイル（all/ours/theirs） |
 | `--conflict-only` | | コンフリクトのみ出力 |
+| `--help` | `-h` | ヘルプ表示 |
+| `--version` | `-V` | バージョン表示 |
+
+> 注意: `--stats-only` は**コンソール出力のみ**に影響します。`--summary` や `--excel` には完全なサマリーが出力されます。
+
+フィルタの有効値やグループキーワード一覧は `rs_diffcopy.md` の「出力フィルター機能」を参照してください。
 
 ## 出力例
 
@@ -129,6 +148,7 @@ rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./merged
 ## 設定ファイル
 
 TOML形式の設定ファイルを使用できます。
+アプリケーション共通の `settings.toml` については `rs_diffcopy.md` の「アプリケーション設定ファイル（settings.toml）」を参照してください。
 
 ```toml
 # config.toml
@@ -155,14 +175,24 @@ rs_diffcopy -S ./old -T ./new -O ./diff -e "*.log" --save-config config.toml
 
 ## 高度な使い方
 
-### 特定のファイルタイプのみ比較
+### 除外パターン
 
 ```bash
 # ログファイルとnode_modulesを除外
 rs_diffcopy -S ./old -T ./new -O ./diff -e "*.log" -e "node_modules"
 ```
 
-### パッチファイルの生成
+### 出力とレポート
+
+```bash
+# サマリーをファイルに出力
+rs_diffcopy -S ./old -T ./new -O ./diff --summary summary.txt
+
+# Excelレポートの生成
+rs_diffcopy -S ./old -T ./new -O ./diff --excel report.xlsx
+```
+
+### パッチ生成
 
 ```bash
 # 個別のパッチファイルを生成
@@ -175,21 +205,101 @@ rs_diffcopy -S ./old -T ./new -O ./diff --patch-file changes.patch
 rs_diffcopy -S ./old -T ./new -O ./diff --patch --patch-file changes.patch
 ```
 
-### Excelレポートの生成
+### コピーオプション
 
 ```bash
-rs_diffcopy -S ./old -T ./new -O ./diff --excel report.xlsx
+# 変更ファイルの新旧両方をコピー
+rs_diffcopy -S ./old -T ./new -O ./diff --both-versions
+
+# 削除ファイルもコピー
+rs_diffcopy -S ./old -T ./new -O ./diff --copy-deleted
+
+# タイムスタンプ保持でコピー
+rs_diffcopy -S ./old -T ./new -O ./diff --preserve-timestamps
 ```
 
-### 三方向比較でコンフリクトのみ出力
+### フィルタ・表示制御
 
 ```bash
+# 追加と変更のみ表示（コピー対象もフィルタされる）
+rs_diffcopy -S ./old -T ./new -O ./diff --filter-status added,modified
+
+# 変更なし以外すべて表示（暗黙の all + 除外）
+rs_diffcopy -S ./old -T ./new -O ./diff --filter-status ^unchanged
+
+# 追加と削除以外を表示（all + 除外）
+rs_diffcopy -S ./old -T ./new -O ./diff --filter-status all,^added,^deleted
+
+# 追加のみ表示（エイリアスも可: add/a）
+rs_diffcopy -S ./old -T ./new -O ./diff --filter-status add
+
+# エラーとシンボリックリンクのみ表示
+rs_diffcopy -S ./old -T ./new -O ./diff --filter-status error,symlink
+
+# 統計情報のみ表示（コピーは通常通り）
+rs_diffcopy -S ./old -T ./new -O ./diff --stats-only
+
+# File Treeを非表示
+rs_diffcopy -S ./old -T ./new -O ./diff --no-tree
+
+# 詳細セクションを非表示
+rs_diffcopy -S ./old -T ./new -O ./diff --no-details
+```
+
+> 注意: `--stats-only` は**コンソール出力のみ**に影響します。`--summary` や `--excel` には完全なサマリーが出力されます。
+
+### 出力色とログ
+
+```bash
+# 常にカラー出力
+rs_diffcopy -S ./old -T ./new -O ./diff --color always
+
+# ログレベルをデバッグに
+rs_diffcopy -S ./old -T ./new -O ./diff --log-level debug
+```
+
+### パフォーマンス調整
+
+```bash
+# ワーカー数を指定
+rs_diffcopy -S ./old -T ./new -O ./diff --workers 4
+
+# 一時ディレクトリを指定
+rs_diffcopy -S ./old -T ./new -O ./diff --temp-dir /tmp/rs_diffcopy
+```
+
+### 権限チェック
+
+```bash
+# スクリプトファイルのみ権限変更チェック
+rs_diffcopy -S ./old -T ./new -O ./diff --check-permissions scripts
+
+# すべてのファイルの権限変更チェック
+rs_diffcopy -S ./old -T ./new -O ./diff --check-permissions all
+```
+
+### 設定ファイルの保存
+
+```bash
+# 現在のオプションを設定ファイルに保存（差分処理も実行される）
+rs_diffcopy -S ./old -T ./new -O ./diff -e "*.log" --save-config diffcopy.toml
+```
+
+### 三方向比較
+
+```bash
+# コンフリクトのみ出力
 rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./output --conflict-only
-```
 
-### マージスタイルの指定
+# コンフリクト系のみ表示（グループ指定）
+rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./output --filter-status conflicts
 
-```bash
+# 追加系のみ表示（added グループが展開される）
+rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./output --filter-status added
+
+# 追加系を除外（暗黙の all + 除外）
+rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./output --filter-status ^added
+
 # Oursを優先
 rs_diffcopy --three-way -B ./base -S ./ours -T ./theirs -O ./output --merge-style ours
 

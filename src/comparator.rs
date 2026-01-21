@@ -132,8 +132,8 @@ impl<'a> Comparator<'a> {
                     if self.should_check_permissions(relative_path) {
                         (self.check_directory_permissions(relative_path, &source_path, &target_path), false)
                     } else {
-                        // Unchanged directory - count as unchanged
-                        (None, true)
+                        // Unchanged directory - do NOT count as unchanged (spec says "unchanged files" count)
+                        (None, false)
                     }
                 } else {
                     // File exists in both - compare content
@@ -220,6 +220,8 @@ impl<'a> Comparator<'a> {
         in_source: bool,
         in_target: bool,
     ) -> Option<FileEntry> {
+        use crate::types::SymlinkChangeType;
+
         let mut entry = FileEntry::new(relative_path.to_path_buf(), FileStatus::Symlink, false);
 
         match (in_source && source_path.is_symlink(), in_target && target_path.is_symlink()) {
@@ -232,6 +234,9 @@ impl<'a> Comparator<'a> {
                     target,
                     is_directory: target_path.is_dir(),
                     is_broken: is_symlink_broken(target_path),
+                    change_type: SymlinkChangeType::Added,
+                    old_target: None,
+                    old_is_broken: None,
                 });
             }
             (true, false) => {
@@ -243,21 +248,32 @@ impl<'a> Comparator<'a> {
                     target,
                     is_directory: source_path.is_dir(),
                     is_broken: is_symlink_broken(source_path),
+                    change_type: SymlinkChangeType::Deleted,
+                    old_target: None,
+                    old_is_broken: None,
                 });
             }
             (true, true) => {
-                // Both are symlinks - check if target changed
+                // Both are symlinks - check if target changed or broken status changed
                 let source_target = get_symlink_target(source_path);
                 let target_target = get_symlink_target(target_path);
-                if source_target != target_target {
-                    // Symlink target changed
+                let source_broken = is_symlink_broken(source_path);
+                let target_broken = is_symlink_broken(target_path);
+
+                if source_target != target_target || source_broken != target_broken {
+                    // Symlink target or broken status changed
+                    let old_target = source_target
+                        .unwrap_or_else(|| PathBuf::from("(unknown target)"));
                     let target = target_target
                         .unwrap_or_else(|| PathBuf::from("(unknown target)"));
                     entry.symlink_info = Some(SymlinkInfo {
                         path: relative_path.to_path_buf(),
                         target,
                         is_directory: target_path.is_dir(),
-                        is_broken: is_symlink_broken(target_path),
+                        is_broken: target_broken,
+                        change_type: SymlinkChangeType::Changed,
+                        old_target: Some(old_target),
+                        old_is_broken: Some(source_broken),
                     });
                 } else {
                     // Symlink unchanged - don't report

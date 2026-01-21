@@ -407,10 +407,10 @@ impl Config {
 
         // Filter status
         let filter_status = if !cli.filter_status.is_empty() {
-            cli.parse_filter_status()
+            cli.parse_filter_status()?
         } else if let Some(ref ic) = input_config {
             if !ic.filter_status.is_empty() {
-                parse_filter_status_vec(&ic.filter_status)
+                parse_filter_status_vec(&ic.filter_status)?
             } else {
                 StatusFilter::new()
             }
@@ -617,11 +617,11 @@ impl Config {
     }
 }
 
-fn parse_filter_status_vec(statuses: &[String]) -> StatusFilter {
+fn parse_filter_status_vec(statuses: &[String]) -> crate::error::Result<StatusFilter> {
     let mut filter = StatusFilter::new();
 
     if statuses.is_empty() {
-        return filter;
+        return Ok(filter);
     }
 
     // Check if first filter is exclusion
@@ -637,6 +637,16 @@ fn parse_filter_status_vec(statuses: &[String]) -> StatusFilter {
         if lowered == "all" {
             filter.include_all = true;
             continue;
+        }
+
+        // Get the value to validate (strip ^ prefix if present)
+        let value_to_check = lowered.strip_prefix('^').unwrap_or(&lowered);
+
+        // Validate the status value
+        if !StatusFilter::is_valid_status(value_to_check) {
+            return Err(crate::error::DiffCopyError::InvalidFilterStatus(
+                status_str.clone(),
+            ));
         }
 
         if let Some(stripped) = lowered.strip_prefix('^') {
@@ -674,7 +684,7 @@ fn parse_filter_status_vec(statuses: &[String]) -> StatusFilter {
         }
     }
 
-    filter
+    Ok(filter)
 }
 
 fn num_cpus() -> usize {

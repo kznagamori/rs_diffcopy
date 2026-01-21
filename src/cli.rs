@@ -155,11 +155,11 @@ impl Cli {
         LogLevel::from_str(&self.log_level)
     }
 
-    pub fn parse_filter_status(&self) -> StatusFilter {
+    pub fn parse_filter_status(&self) -> crate::error::Result<StatusFilter> {
         let mut filter = StatusFilter::new();
 
         if self.filter_status.is_empty() {
-            return filter;
+            return Ok(filter);
         }
 
         // Check if first filter is exclusion (starts with ^)
@@ -176,6 +176,16 @@ impl Cli {
             if lowered == "all" {
                 filter.include_all = true;
                 continue;
+            }
+
+            // Get the value to validate (strip ^ prefix if present)
+            let value_to_check = lowered.strip_prefix('^').unwrap_or(&lowered);
+
+            // Validate the status value
+            if !StatusFilter::is_valid_status(value_to_check) {
+                return Err(crate::error::DiffCopyError::InvalidFilterStatus(
+                    status_str.clone(),
+                ));
             }
 
             if let Some(stripped) = lowered.strip_prefix('^') {
@@ -213,6 +223,6 @@ impl Cli {
             }
         }
 
-        filter
+        Ok(filter)
     }
 }

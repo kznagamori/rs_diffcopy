@@ -119,14 +119,26 @@ impl ThreeWayStatus {
     }
 }
 
+/// Type of symlink change
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymlinkChangeType {
+    Added,
+    Deleted,
+    Changed,
+}
+
 /// Symlink status details
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SymlinkInfo {
     pub path: PathBuf,
     pub target: PathBuf,
     pub is_directory: bool,
     pub is_broken: bool,
+    pub change_type: SymlinkChangeType,
+    /// For Changed symlinks, store the old target
+    pub old_target: Option<PathBuf>,
+    /// For Changed symlinks, store whether old link was broken
+    pub old_is_broken: Option<bool>,
 }
 
 /// Special file type (Unix only)
@@ -513,6 +525,51 @@ impl StatusFilter {
             ]),
             _ => None,
         }
+    }
+
+    /// Check if a status value is valid
+    /// Returns true for valid two-way statuses, three-way statuses, group keywords, and aliases
+    pub fn is_valid_status(value: &str) -> bool {
+        let lowered = value.to_lowercase();
+
+        // Special keywords
+        if lowered == "all" {
+            return true;
+        }
+
+        // Two-way statuses (via FileStatus::from_str which handles aliases)
+        if FileStatus::from_str(&lowered).is_some() {
+            return true;
+        }
+
+        // Group keywords for three-way mode
+        if Self::expand_three_way_group(&lowered).is_some() {
+            return true;
+        }
+
+        // Three-way individual statuses
+        let three_way_statuses = [
+            "unchanged",
+            "ours-only", "ours_only",
+            "theirs-only", "theirs_only",
+            "both-same", "both_same",
+            "conflict",
+            "added-ours", "added_ours",
+            "added-theirs", "added_theirs",
+            "added-both-same", "added_both_same",
+            "added-both-diff", "added_both_diff",
+            "deleted-ours", "deleted_ours",
+            "deleted-theirs", "deleted_theirs",
+            "deleted-both", "deleted_both",
+            "modify-delete", "modify_delete",
+            "delete-modify", "delete_modify",
+        ];
+
+        if three_way_statuses.contains(&lowered.as_str()) {
+            return true;
+        }
+
+        false
     }
 }
 

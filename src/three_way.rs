@@ -55,15 +55,15 @@ impl<'a> ThreeWayComparator<'a> {
 
         let all_paths: Vec<PathBuf> = all_paths.into_iter().collect();
 
-        // Compare in parallel
-        let result = Arc::new(Mutex::new(ThreeWayResult::new()));
+        // Compare in parallel - collect ALL entries first (no filtering)
+        let all_entries = Arc::new(Mutex::new(Vec::new()));
         let chunk_size = (all_paths.len() / self.config.workers).max(1);
 
         all_paths
             .par_chunks(chunk_size)
             .for_each(|paths| {
                 for path in paths {
-                    let entry = self.compare_path(
+                    let entry = self.compare_path_unfiltered(
                         path,
                         base_path,
                         &base_paths,
@@ -71,25 +71,46 @@ impl<'a> ThreeWayComparator<'a> {
                         &theirs_paths,
                     );
                     if let Some(entry) = entry {
-                        let mut res = result.lock().unwrap();
-                        res.entries.push(entry);
+                        let mut entries = all_entries.lock().unwrap();
+                        entries.push(entry);
                     }
                     progress.inc();
                 }
             });
 
-        let mut result = Arc::try_unwrap(result).unwrap().into_inner().unwrap();
+        let mut all_entries = Arc::try_unwrap(all_entries).unwrap().into_inner().unwrap();
 
         // Sort entries by path
-        result.entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        all_entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
-        // Calculate statistics
-        result.stats = self.calculate_stats(&result.entries);
+        // Calculate statistics from ALL entries (before filtering)
+        let stats = self.calculate_stats(&all_entries);
+
+        // Now apply filtering for display
+        let filtered_entries: Vec<ThreeWayEntry> = all_entries
+            .into_iter()
+            .filter(|entry| {
+                // Skip unchanged unless showing them
+                if entry.status == ThreeWayStatus::Unchanged && !self.config.show_unchanged {
+                    return false;
+                }
+                // Skip non-conflicts if conflict_only mode
+                if self.config.conflict_only && !entry.status.is_conflict() {
+                    return false;
+                }
+                true
+            })
+            .collect();
+
+        let mut result = ThreeWayResult::new();
+        result.entries = filtered_entries;
+        result.stats = stats;
 
         Ok(result)
     }
 
-    fn compare_path(
+    /// Compare a single path without applying any filters
+    fn compare_path_unfiltered(
         &self,
         relative_path: &Path,
         base_path: &Path,
@@ -108,36 +129,37 @@ impl<'a> ThreeWayComparator<'a> {
         // Determine if it's a directory
         let is_dir = base_full.is_dir() || ours_full.is_dir() || theirs_full.is_dir();
 
-        // Skip directories for now (focus on files)
-        if is_dir {
-            return None;
-        }
+        // For directories, compare by existence only (not by hash)
+        let (base_hash, ours_hash, theirs_hash) = if is_dir {
+            (None, None, None)
+        } else {
+            // Get hashes for files
+            let base_hash = if in_base { hash_file(&base_full).ok() } else { None };
+            let ours_hash = if in_ours { hash_file(&ours_full).ok() } else { None };
+            let theirs_hash = if in_theirs { hash_file(&theirs_full).ok() } else { None };
+            (base_hash, ours_hash, theirs_hash)
+        };
 
-        // Get hashes
-        let base_hash = if in_base { hash_file(&base_full).ok() } else { None };
-        let ours_hash = if in_ours { hash_file(&ours_full).ok() } else { None };
-        let theirs_hash = if in_theirs { hash_file(&theirs_full).ok() } else { None };
-
-        // Get sizes
-        let base_size = if in_base { fs::metadata(&base_full).ok().map(|m| m.len()) } else { None };
-        let ours_size = if in_ours { fs::metadata(&ours_full).ok().map(|m| m.len()) } else { None };
-        let theirs_size = if in_theirs { fs::metadata(&theirs_full).ok().map(|m| m.len()) } else { None };
+        // Get sizes (only for files)
+        let (base_size, ours_size, theirs_size) = if is_dir {
+            (None, None, None)
+        } else {
+            let base_size = if in_base { fs::metadata(&base_full).ok().map(|m| m.len()) } else { None };
+            let ours_size = if in_ours { fs::metadata(&ours_full).ok().map(|m| m.len()) } else { None };
+            let theirs_size = if in_theirs { fs::metadata(&theirs_full).ok().map(|m| m.len()) } else { None };
+            (base_size, ours_size, theirs_size)
+        };
 
         // Determine status
-        let status = self.determine_status(
-            in_base, in_ours, in_theirs,
-            &base_hash, &ours_hash, &theirs_hash,
-        );
-
-        // Skip unchanged unless showing them
-        if status == ThreeWayStatus::Unchanged && !self.config.show_unchanged {
-            return None;
-        }
-
-        // Skip non-conflicts if conflict_only mode
-        if self.config.conflict_only && !status.is_conflict() {
-            return None;
-        }
+        let status = if is_dir {
+            // For directories, determine status based on existence only
+            self.determine_directory_status(in_base, in_ours, in_theirs)
+        } else {
+            self.determine_status(
+                in_base, in_ours, in_theirs,
+                &base_hash, &ours_hash, &theirs_hash,
+            )
+        };
 
         let mut entry = ThreeWayEntry::new(relative_path.to_path_buf(), status, is_dir);
         entry.base_exists = in_base;
@@ -151,6 +173,33 @@ impl<'a> ThreeWayComparator<'a> {
         entry.theirs_size = theirs_size;
 
         Some(entry)
+    }
+
+    /// Determine status for directories based on existence only
+    fn determine_directory_status(
+        &self,
+        in_base: bool,
+        in_ours: bool,
+        in_theirs: bool,
+    ) -> ThreeWayStatus {
+        match (in_base, in_ours, in_theirs) {
+            // All three exist - unchanged directory
+            (true, true, true) => ThreeWayStatus::Unchanged,
+            // Base exists, ours exists, theirs deleted
+            (true, true, false) => ThreeWayStatus::DeletedTheirs,
+            // Base exists, ours deleted, theirs exists
+            (true, false, true) => ThreeWayStatus::DeletedOurs,
+            // Base exists, both deleted
+            (true, false, false) => ThreeWayStatus::DeletedBoth,
+            // Base doesn't exist, ours added
+            (false, true, false) => ThreeWayStatus::AddedOurs,
+            // Base doesn't exist, theirs added
+            (false, false, true) => ThreeWayStatus::AddedTheirs,
+            // Base doesn't exist, both added (same directory)
+            (false, true, true) => ThreeWayStatus::AddedBothSame,
+            // None exist (shouldn't happen)
+            (false, false, false) => ThreeWayStatus::Unchanged,
+        }
     }
 
     fn determine_status(

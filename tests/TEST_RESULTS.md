@@ -4,8 +4,8 @@
 
 | 項目 | 内容 |
 |-----|------|
-| 実施日 | 2026-01-13 |
-| 実施時刻 | 17:40 JST |
+| 実施日 | 2026-01-21 |
+| 実施時刻 | 10:30 JST |
 | 実行環境 | Linux (WSL2) |
 | Rustバージョン | stable |
 | 結果 | **全テストPASS** |
@@ -15,8 +15,44 @@
 | カテゴリ | テスト数 | PASS | FAIL | スキップ |
 |---------|---------|------|------|---------|
 | ユニットテスト | 136 | 136 | 0 | 0 |
-| 結合テスト | 209 | 209 | 0 | 0 |
-| **合計** | **345** | **345** | **0** | **0** |
+| 結合テスト | 219 | 219 | 0 | 0 |
+| **合計** | **355** | **355** | **0** | **0** |
+
+## 変更内容（v3.1）
+
+### レビュー指摘修正 V2
+
+レビューにより以下の不具合が修正され、対応するテストが追加されました：
+
+1. **三方向比較でディレクトリ変更検出**
+   - 修正: `three_way.rs`に`determine_directory_status()`関数を追加
+   - テスト追加: REV2-001
+
+2. **三方向比較統計計算タイミング**
+   - 修正: `compare_path_unfiltered()`を追加し、フィルタリング前に統計計算
+   - テスト追加: REV2-002
+
+3. **--filter-status無効値でエラー終了**
+   - 修正: `StatusFilter::is_valid_status()`で無効値をチェック
+   - テスト追加: REV2-003, REV2-004
+
+4. **統計行が0件でも常に表示**
+   - 修正: `summary.rs`で条件分岐を削除、常に全行表示
+   - テスト追加: REV2-005, REV2-006
+
+5. **--copy-deletedでファイルのみコピー**
+   - 修正: `copier.rs`でディレクトリをスキップ
+   - テスト追加: REV2-007
+
+### シンボリックリンク変更タイプ表示
+
+シンボリックリンクのタグにAdded/Deleted/Changed状態を含める機能を検証：
+
+1. **SymlinkChangeType列挙型追加**
+   - `types.rs`: Added/Deleted/Changed を表す列挙型を追加
+   - テスト追加: SYM-CHANGE-001, SYM-CHANGE-002, SYM-CHANGE-003
+
+---
 
 ## 変更内容（v3.0）
 
@@ -578,6 +614,8 @@ CompareDirectory{source, target}
 | 2026-01-13 | 02:30 | 122/122 | 188/188 | PASS | ユニットテスト3件追加（summary, types）、結合テスト5件追加（tree_display, three_way_excel_format） |
 | 2026-01-13 | 12:15 | 129/129 | 194/194 | PASS | ユニットテスト7件追加（types, copier）、結合テスト6件追加（CP932コンソール出力テスト） |
 | 2026-01-13 | 15:30 | 130/130 | 199/199 | PASS | CompareDirectoryルートノード表示テスト3件、CP932 Box Drawing文字テスト2件追加 |
+| 2026-01-13 | 17:40 | 136/136 | 209/209 | PASS | Treeフォーマット改善テスト2件、ユニットテスト6件追加 |
+| 2026-01-21 | 10:30 | 136/136 | 219/219 | PASS | レビュー指摘修正V2テスト7件、シンボリックリンク変更タイプテスト3件追加 |
 
 ---
 
@@ -878,6 +916,26 @@ cargo test 2>&1 | tee test_output.txt
 | UT-3301 | test_cp932_conversion_box_drawing | PASS | Box Drawing文字がJIS X 0208罫線バイト（0x84XX）に正しく変換されることを確認 |
 | IT-3301 | test_cp932_box_drawing_encoding | PASS | Box Drawing文字（├, └, │, ─）がCP932で正しくエンコードされることを確認 |
 | IT-3302 | test_cp932_mixed_box_drawing_and_text | PASS | Box Drawing文字と日本語テキストの混合がCP932で正しく処理されることを確認 |
+
+### 36. レビュー指摘修正テスト V2 (7テスト)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| REV2-001 | test_three_way_directory_change_detection | PASS | 三方向比較でディレクトリの追加/削除が検出されることを確認 |
+| REV2-002 | test_three_way_statistics_before_filtering | PASS | フィルタリング後もUnchanged統計が正しく表示されることを確認 |
+| REV2-003 | test_filter_status_invalid_value_error | PASS | 無効なfilter-status値で終了コード1でエラーメッセージが表示されることを確認 |
+| REV2-004 | test_filter_status_invalid_with_valid_error | PASS | 有効/無効混在のfilter-statusで終了コード1が返されることを確認 |
+| REV2-005 | test_statistics_rows_always_shown | PASS | Added/Modified/Deletedが0件でも統計行が表示されることを確認 |
+| REV2-006 | test_statistics_shows_zero_counts | PASS | 差分なし時も全統計行が表示されることを確認 |
+| REV2-007 | test_copy_deleted_files_only_not_directories | PASS | --copy-deletedで削除ファイルはコピー、ディレクトリはスキップされることを確認 |
+
+### 37. シンボリックリンク変更タイプテスト (3テスト - Unix only)
+
+| テストID | テスト名 | 結果 | 備考 |
+|---------|---------|------|------|
+| SYM-CHANGE-001 | test_symlink_added_tag_format | PASS | 追加シンボリックリンクが[symlink: added]形式で表示されることを確認 |
+| SYM-CHANGE-002 | test_symlink_deleted_tag_format | PASS | 削除シンボリックリンクが[symlink: deleted]形式で表示されることを確認 |
+| SYM-CHANGE-003 | test_symlink_changed_tag_format | PASS | 変更シンボリックリンクが変更情報を含めて表示されることを確認 |
 
 ## パス展開機能の不具合修正
 
