@@ -1,0 +1,153 @@
+name: Release (CLI)
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            use-cross: false
+            bin_ext: ""
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            use-cross: true
+            bin_ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            use-cross: false
+            bin_ext: ".exe"
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            use-cross: false
+            bin_ext: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract crate information
+        shell: bash
+        run: |
+          echo "PROJECT_NAME=$(sed -n 's/^name = \"\(.*\)\"/\1/p' Cargo.toml | head -n1)" >> $GITHUB_ENV
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "RELEASE_TAG=${{ inputs.tag }}" >> $GITHUB_ENV
+          else
+            echo "RELEASE_TAG=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use-cross
+        shell: bash
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build (musl via cross)
+        if: matrix.use-cross
+        shell: bash
+        run: |
+          cross build --release --target ${{ matrix.target }}
+
+      - name: Build (cargo)
+        if: ${{ !matrix.use-cross }}
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Package artifacts (Linux/macOS)
+        if: ${{ !startsWith(matrix.os, 'windows') }}
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}${{ matrix.bin_ext }}"
+          OUTDIR="dist/${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
+          mkdir -p "${OUTDIR}"
+
+          cp -a "${BIN}" "${OUTDIR}/"
+          cp -a README.md "${OUTDIR}/" 2>/dev/null || true
+          cp -a LICENSE* "${OUTDIR}/" 2>/dev/null || true
+
+          (cd dist && zip -r "${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}.zip" "$(basename "${OUTDIR}")")
+          tar -czf "${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}.tar.gz" -C dist "$(basename "${OUTDIR}")"
+
+          echo "ZIP_PATH=${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}.zip" >> $GITHUB_ENV
+          echo "TGZ_PATH=${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}.tar.gz" >> $GITHUB_ENV
+
+      - name: Package artifacts (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}${{ matrix.bin_ext }}"
+          $outdir = "dist/${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $outdir | Out-Null
+          Copy-Item $bin $outdir -Force
+          if (Test-Path "README.md") { Copy-Item "README.md" $outdir -Force }
+          Get-ChildItem -Path "." -Filter "LICENSE*" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName $outdir -Force }
+
+          $zip = "${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path $outdir -DestinationPath $zip
+
+          $tgz = "${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}.tar.gz"
+          if (Test-Path $tgz) { Remove-Item $tgz -Force }
+          tar -czf $tgz -C "dist" ("${{ env.PROJECT_NAME }}-${{ env.RELEASE_TAG }}-${{ matrix.target }}")
+
+          echo "ZIP_PATH=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "TGZ_PATH=$tgz" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload artifacts (zip/tar.gz)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ env.ZIP_PATH }}
+            ${{ env.TGZ_PATH }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract release tag
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "RELEASE_TAG=${{ inputs.tag }}" >> $GITHUB_ENV
+          else
+            echo "RELEASE_TAG=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: ls -R artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: artifacts/*/*
